@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { createBrowserRouter, Navigate, RouterProvider, useNavigate } from 'react-router-dom';
 import { Toaster } from 'sonner';
 
+import { getBaseUrl, getUserId } from './api/client';
 import { MCPHubPage } from './pages/mcp';
 import { SkillHubPage } from './pages/skill';
 import { RouteError } from '@/components/error/RouteError';
@@ -65,7 +66,9 @@ const router = createBrowserRouter([
 
 function App() {
 	const { t } = useTranslation();
-	const [setupComplete, setSetupComplete] = useState(() => !!localStorage.getItem('server_url'));
+	const [setupComplete, setSetupComplete] = useState(
+		() => !!getBaseUrl() && !!getUserId(),
+	);
 	const tours = useMemo(() => [buildChatTour(t)], [t]);
 
 	if (!setupComplete) {

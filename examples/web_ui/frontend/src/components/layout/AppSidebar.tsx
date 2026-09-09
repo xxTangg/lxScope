@@ -12,7 +12,7 @@ import {
 import { useOnborda } from 'onborda';
 import { useNavigate, useLocation } from 'react-router-dom';
 
-import AgentScope from '@/assets/images/agentscope_white.svg?react';
+import AgentScope from '@/assets/images/agentscope.svg?react';
 import MCPSvg from '@/assets/images/mcp.svg?react';
 import { CHAT_TOUR_NAME } from '@/components/tour/chatTourSteps';
 import {
@@ -57,9 +57,7 @@ export function AppSidebar() {
 			className="w-[calc(var(--sidebar-width-icon)+1px)]! bg-transparent"
 		>
 			<SidebarHeader>
-				<div className="flex items-center justify-center size-8 mt-2 rounded-full bg-primary">
-					<AgentScope className="size-5 items-center justify-center rounded-lg" />
-				</div>
+				<AgentScope className="mt-2 size-8" />
 			</SidebarHeader>
 			<SidebarContent>
 				<SidebarGroup>

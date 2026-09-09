@@ -299,11 +299,36 @@ class ReActConfig(BaseModel):
 
     max_iters: int = Field(
         title="Max Iterations",
-        default=50,
+        default=12,
         description="The maximum number of reasoning-acting iterations in "
         "one reply",
+        ge=1,
     )
     """The maximum number of iterations for the reasoning-acting loop."""
+
+    max_tool_calls_per_reply: int = Field(
+        title="Max Tool Calls per Reply",
+        default=6,
+        description=(
+            "The maximum number of completed tool calls in one reply. "
+            "Once reached, the agent must summarize with no more tool calls. "
+            "Set to 0 to disable this limit."
+        ),
+        ge=0,
+    )
+    """Hard tool-call budget for a single reply. ``0`` disables it."""
+
+    max_tool_errors_per_reply: int = Field(
+        title="Max Tool Errors per Reply",
+        default=2,
+        description=(
+            "The maximum number of failed tool calls in one reply. Once "
+            "reached, the agent must report the failure and summarize with "
+            "no more tool calls. Set to 0 to disable this limit."
+        ),
+        ge=0,
+    )
+    """Hard failed-tool budget for a single reply. ``0`` disables it."""
 
     structured_output_grace_iters: int = Field(
         title="Grace Iters for Structured Output",

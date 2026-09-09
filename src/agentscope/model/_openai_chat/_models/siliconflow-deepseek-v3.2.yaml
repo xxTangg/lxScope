@@ -1,0 +1,15 @@
+name: deepseek-ai/DeepSeek-V3.2
+label: SiliconFlow DeepSeek-V3.2
+status: active
+
+input_types:
+  - text/plain
+
+output_types:
+  - text/plain
+
+# SiliconFlow's model name is sent through the OpenAI-compatible
+# /v1/chat/completions endpoint. These limits only shape the UI controls;
+# the provider remains authoritative at request time.
+context_size: 32768
+output_size: 8192

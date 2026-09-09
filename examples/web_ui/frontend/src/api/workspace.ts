@@ -8,6 +8,7 @@ import type {
 	MCPClient,
 	MCPClientStatus,
 	Skill,
+	WorkspaceDownloadTokenResponse,
 } from './types';
 
 export interface UploadOptions {
@@ -129,6 +130,24 @@ export const workspaceApi = {
 			{ agent_id: agentId, session_id: sessionId },
 			{ silent: true },
 		),
+
+	files: {
+		/** Mint a path-bound token and build a browser-native download URL. */
+		downloadUrl: async (agentId: string, sessionId: string, path: string) => {
+			const { token } = await client.post<WorkspaceDownloadTokenResponse>(
+				'/workspace/files/download-token',
+				undefined,
+				{ agent_id: agentId, session_id: sessionId, path },
+			);
+			const url = new URL('/workspace/files', getBaseUrl());
+			url.searchParams.set('agent_id', agentId);
+			url.searchParams.set('session_id', sessionId);
+			url.searchParams.set('path', path);
+			url.searchParams.set('download', 'true');
+			url.searchParams.set('token', token);
+			return url.toString();
+		},
+	},
 
 	mcp: {
 		list: (agentId: string, sessionId: string) =>

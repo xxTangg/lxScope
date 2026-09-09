@@ -112,7 +112,10 @@
 		"audioGenerating": "正在生成音频…",
 		"playAudio": "播放音频",
 		"pauseAudio": "暂停音频",
+		"workspaceFile": "工作区文件",
+		"downloadFile": "下载文件",
 		"running": "运行中...",
+		"executionTrace": "执行过程（{{count}} 项）",
 		"hintSource": {
 			"tool_output": "工具输出",
 			"team": "团队",
@@ -140,6 +143,7 @@
 		"subagentConfirmTitle": "{{name}} 请求确认",
 		"newSession": "新会话",
 		"greeting": "我们从哪儿开始？",
+		"replyPending": "消息已发送，正在等待回复…",
 		"maxItersExceeded": {
 			"title": "已达到最大迭代次数",
 			"description": "输入新消息可继续对话，或点击继续以完成当前任务。",

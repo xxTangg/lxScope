@@ -2,7 +2,7 @@ import { CircleAlert, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 
 import { healthApi } from '@/api';
-import { ApiError, TIMEOUT_STATUS } from '@/api/client.ts';
+import { ApiError, getBaseUrl, getUserId, TIMEOUT_STATUS } from '@/api/client.ts';
 import type { HealthResponse } from '@/api/types.ts';
 import { Alert, AlertDescription } from '@/components/ui/alert.tsx';
 import { Button } from '@/components/ui/button.tsx';
@@ -39,8 +39,8 @@ function notReadyComponents(detail: string): string {
 
 export const SetupPage = ({ onComplete, className }: Props) => {
 	const { t } = useTranslation();
-	const [url, setUrl] = useState(() => localStorage.getItem('server_url') ?? '');
-	const [username, setUsername] = useState(() => localStorage.getItem('username') ?? '');
+	const [url, setUrl] = useState(getBaseUrl);
+	const [username, setUsername] = useState(getUserId);
 	const [checking, setChecking] = useState(false);
 	const [errorMsg, setErrorMsg] = useState('');
 

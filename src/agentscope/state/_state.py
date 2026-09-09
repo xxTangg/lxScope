@@ -159,6 +159,16 @@ class ReplyContext(BaseModel):
     """The current iteration of the agent's reasoning-acting loop in this
     reply."""
 
+    completed_tool_calls: int = 0
+    """The number of non-internal tool calls completed in this reply."""
+
+    failed_tool_calls: int = 0
+    """The number of non-internal tool calls that failed in this reply."""
+
+    tool_limit_finalization_attempted: bool = False
+    """Whether the one text-only finalization after a tool safety limit has
+    already been attempted."""
+
     structured_schema: Type[BaseModel] | dict | None = None
     """The reply's structured output requirement, a pydantic model class in
     process and serialized as its JSON schema dict."""

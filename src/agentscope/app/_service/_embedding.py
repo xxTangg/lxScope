@@ -69,9 +69,11 @@ def build_embedding_model(
         )
 
     context_size: int | None = None
+    pass_dimensions = True
     for card in embedding_cls.list_models():
         if card.name == config.model:
             context_size = card.context_size
+            pass_dimensions = card.pass_dimensions
             break
 
     parameters = (
@@ -88,6 +90,11 @@ def build_embedding_model(
     }
     if context_size is not None:
         kwargs["context_size"] = context_size
+    # ``pass_dimensions`` is currently an OpenAI-compatible client option;
+    # keep it provider-specific so other embedding implementations do not
+    # receive an unexpected constructor argument.
+    if config.type == "openai_credential":
+        kwargs["pass_dimensions"] = pass_dimensions
 
     return embedding_cls(**kwargs)
 

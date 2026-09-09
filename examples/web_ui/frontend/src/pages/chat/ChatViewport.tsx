@@ -10,6 +10,7 @@ import {
 	UsersRound,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 
 import type {
 	ChatModelConfig,
@@ -18,7 +19,7 @@ import type {
 	TTSModelConfig,
 	UpdateSessionRequest,
 } from '@/api';
-import { sessionApi } from '@/api';
+import { chatApi, sessionApi } from '@/api';
 import MCPSvg from '@/assets/images/mcp.svg?react';
 import { ChatContent } from '@/components/chat/ChatContent.tsx';
 import { SubagentHitlCard } from '@/components/chat/SubagentHitlCard';
@@ -49,6 +50,7 @@ import {
 } from '@/components/ui/resizable.tsx';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { useAvailableModels } from '@/hooks/useAvailableModels';
+import { useChatAttachmentContentTypes } from '@/hooks/useChatAttachmentContentTypes';
 import { useKnowledgeBaseMiddlewareSchema } from '@/hooks/useKnowledgeBaseMiddlewareSchema';
 import { useKnowledgeBases } from '@/hooks/useKnowledgeBases';
 import { useMessages } from '@/hooks/useMessages';
@@ -56,6 +58,7 @@ import { useSessions } from '@/hooks/useSessions';
 import { useWorkspace } from '@/hooks/useWorkspace.ts';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { useTranslation } from '@/i18n/useI18n';
+import { formatApiErrorForAlert } from '@/lib/api-error';
 
 interface ChatViewportProps {
 	/**
@@ -94,6 +97,33 @@ const KNOWN_PANELS: Record<PanelKey, true> = {
 	knowledge: true,
 	team: true,
 };
+
+/** Keep non-file model capabilities (for example thinking) out of accept. */
+function modelAttachmentInputTypes(inputTypes: string[]): string[] {
+	return inputTypes.filter(
+		(type) =>
+			/^(image|video|audio|text)\/.+/.test(type) ||
+			type === 'application/pdf' ||
+			type.startsWith('application/vnd.') ||
+			type.startsWith('application/msword') ||
+			type.startsWith('application/vnd.openxmlformats'),
+	);
+}
+
+/** Return whether a browser File can be sent to the model without parsing. */
+function isNativeModelAttachment(file: File, inputTypes: string[]): boolean {
+	const mediaType = file.type.toLowerCase();
+	const dot = file.name.lastIndexOf('.');
+	const extension = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
+	return inputTypes.some((accepted) => {
+		const normalized = accepted.toLowerCase();
+		if (normalized.startsWith('.')) return normalized === extension;
+		if (normalized.endsWith('/*')) {
+			return mediaType.startsWith(normalized.slice(0, -1));
+		}
+		return normalized === mediaType;
+	});
+}
 
 /**
  * Restore the persisted dock layout, dropping anything that is no
@@ -172,6 +202,10 @@ export function ChatViewport({ agentId, sessionId, onTeamUpdated }: ChatViewport
 	const { t } = useTranslation();
 	const { sessions, refetch: refetchSessions } = useSessions(agentId);
 	const { groups } = useAvailableModels();
+	const {
+		mediaTypes: parserAttachmentMediaTypes,
+		extensions: parserAttachmentExtensions,
+	} = useChatAttachmentContentTypes();
 
 	const [selectedModel, setSelectedModel] = useState<ChatModelConfig | null>(null);
 	const [selectedFallbackModel, setSelectedFallbackModel] = useState<ChatModelConfig | null>(
@@ -502,6 +536,86 @@ export function ChatViewport({ agentId, sessionId, onTeamUpdated }: ChatViewport
 		return null;
 	}, [groups, selectedModel?.type, selectedModel?.model]);
 
+	const nativeAttachmentInputTypes = useMemo(
+		() => modelAttachmentInputTypes(selectedModelCard?.input_types ?? []),
+		[selectedModelCard],
+	);
+	const allowedAttachmentInputTypes = useMemo(
+		() =>
+			Array.from(
+				new Set([
+					...nativeAttachmentInputTypes,
+					...parserAttachmentExtensions,
+					...parserAttachmentMediaTypes,
+				]),
+			),
+		[
+			nativeAttachmentInputTypes,
+			parserAttachmentExtensions,
+			parserAttachmentMediaTypes,
+		],
+	);
+	const processChatAttachment = useCallback(
+		async (file: File) => {
+			if (!isNativeModelAttachment(file, nativeAttachmentInputTypes)) {
+				try {
+					const parsed = await chatApi.parseAttachment(file);
+					return {
+						id: crypto.randomUUID(),
+						type: 'text' as const,
+						text: `[File: ${file.name}]\n${parsed.text}`,
+						created_at: new Date().toISOString(),
+					};
+				} catch (error) {
+					toast.error(formatApiErrorForAlert(error));
+					throw error;
+				}
+			}
+
+			const filePath = (file as File & { path?: string }).path;
+			if (filePath) {
+				return {
+					id: crypto.randomUUID(),
+					type: 'data' as const,
+					source: {
+						type: 'url' as const,
+						url: `file://${filePath}`,
+						media_type: file.type || 'application/octet-stream',
+					},
+					name: file.name,
+					created_at: new Date().toISOString(),
+				};
+			}
+			if (file.type === 'text/plain') {
+				const text = await file.text();
+				return {
+					id: crypto.randomUUID(),
+					type: 'text' as const,
+					text: `[File: ${file.name}]\n${text}`,
+					created_at: new Date().toISOString(),
+				};
+			}
+			const buffer = await file.arrayBuffer();
+			const bytes = new Uint8Array(buffer);
+			let binary = '';
+			for (let index = 0; index < bytes.byteLength; index++) {
+				binary += String.fromCharCode(bytes[index]);
+			}
+			return {
+				id: crypto.randomUUID(),
+				type: 'data' as const,
+				source: {
+					type: 'base64' as const,
+					media_type: file.type || 'application/octet-stream',
+					data: btoa(binary),
+				},
+				name: file.name,
+				created_at: new Date().toISOString(),
+			};
+		},
+		[nativeAttachmentInputTypes],
+	);
+
 	/**
 	 * Pick the first model the available-models endpoint surfaces, used
 	 * as a sensible default when the current session has no model
@@ -830,60 +944,8 @@ export function ChatViewport({ agentId, sessionId, onTeamUpdated }: ChatViewport
 											/>
 										) : null
 									}
-									allowedInputTypes={(
-										selectedModelCard?.input_types ?? []
-									).filter(
-										(t) =>
-											/^(image|video|audio|text)\/.+/.test(t) ||
-											t === 'application/pdf' ||
-											t.startsWith('application/vnd.') ||
-											t.startsWith('application/msword') ||
-											t.startsWith('application/vnd.openxmlformats'),
-									)}
-									fileProcessor={async (file) => {
-										const filePath = (file as File & { path?: string }).path;
-										if (filePath) {
-											return {
-												id: crypto.randomUUID(),
-												type: 'data' as const,
-												source: {
-													type: 'url' as const,
-													url: `file://${filePath}`,
-													media_type:
-														file.type || 'application/octet-stream',
-												},
-												name: file.name,
-												created_at: new Date().toISOString(),
-											};
-										}
-										if (file.type === 'text/plain') {
-											const text = await file.text();
-											return {
-												id: crypto.randomUUID(),
-												type: 'text' as const,
-												text: `[File: ${file.name}]\n${text}`,
-												created_at: new Date().toISOString(),
-											};
-										}
-										const buffer = await file.arrayBuffer();
-										const bytes = new Uint8Array(buffer);
-										let binary = '';
-										for (let i = 0; i < bytes.byteLength; i++) {
-											binary += String.fromCharCode(bytes[i]);
-										}
-										const base64 = btoa(binary);
-										return {
-											id: crypto.randomUUID(),
-											type: 'data' as const,
-											source: {
-												type: 'base64' as const,
-												media_type: file.type || 'application/octet-stream',
-												data: base64,
-											},
-											name: file.name,
-											created_at: new Date().toISOString(),
-										};
-									}}
+									allowedInputTypes={allowedAttachmentInputTypes}
+									fileProcessor={processChatAttachment}
 								/>
 							</div>
 						</div>

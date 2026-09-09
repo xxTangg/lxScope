@@ -34,9 +34,12 @@ def _mock_resp(embeddings: list[list[float]]) -> EmbeddingResponse:
 class OllamaListModelsTest(IsolatedAsyncioTestCase):
     """Test list_models for Ollama."""
 
-    async def test_list_models_empty(self) -> None:
-        """Ollama has no pre-defined YAMLs, returns empty list."""
-        self.assertEqual(OllamaEmbeddingModel.list_models(), [])
+    async def test_list_models(self) -> None:
+        """The bundled Ollama model card is exposed to the UI."""
+        cards = OllamaEmbeddingModel.list_models()
+        self.assertEqual([card.name for card in cards], ["nomic-embed-text"])
+        self.assertEqual(cards[0].dimensions, 768)
+        self.assertEqual(cards[0].context_size, 2048)
 
 
 class OllamaEmbeddingCallTest(IsolatedAsyncioTestCase):

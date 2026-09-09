@@ -135,6 +135,12 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 			.map((tc) => ({ replyId: lastMsg.id, toolCall: tc }));
 	}, [msgs]);
 
+	// REPLY_START can arrive noticeably later than the accepted chat
+	// request. Keep feedback in the message flow during that interval;
+	// once an assistant message appears, its own running footer takes over.
+	const waitingForReply =
+		phase !== 'idle' && msgs.length > 0 && msgs[msgs.length - 1].role === 'user';
+
 	// On an empty session the prompt and the input centre together, so every box
 	// down to the message list shrinks to its content instead of filling.
 	return (
@@ -163,10 +169,31 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 										<ASMessageBubble
 											key={message.id}
 											message={message}
+											agentId={agentId}
+											sessionId={sessionId}
 											onUserConfirm={onUserConfirm}
 										/>
 									</MessageScrollerItem>
 								))}
+								{waitingForReply && (
+									<MessageScrollerItem
+										key="reply-pending"
+										messageId="reply-pending"
+									>
+										<div
+											role="status"
+											aria-live="polite"
+											className="flex items-center gap-2 py-2 text-sm text-muted-foreground"
+										>
+											<Spinner className="size-4" />
+											<span>
+												{phase === 'interrupting'
+													? t('textInput.stopping')
+													: t('chat.replyPending')}
+											</span>
+										</div>
+									</MessageScrollerItem>
+								)}
 								{msgs.length > 0 &&
 									msgs[msgs.length - 1].finished_reason ===
 										ReplyFinishedReason.EXCEED_MAX_ITERS &&

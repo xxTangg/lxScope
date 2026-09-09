@@ -245,6 +245,12 @@ export interface DirectoryListing {
 	entries: DirectoryEntry[];
 }
 
+/** Short-lived capability for downloading one workspace file. */
+export interface WorkspaceDownloadTokenResponse {
+	token: string;
+	expires_at: number;
+}
+
 /** Git state of one directory. */
 export interface GitStatus {
 	/** `null` on a detached HEAD. */
@@ -449,6 +455,20 @@ export interface ChatRequest {
 	agent_id: string;
 	session_id: string;
 	input: Msg | Msg[] | UserConfirmResultEvent | ExternalExecutionResultEvent | null;
+}
+
+export interface ListChatAttachmentContentTypesResponse {
+	media_types: string[];
+	extensions: string[];
+}
+
+export interface ParseChatAttachmentResponse {
+	filename: string;
+	media_type: string;
+	text: string;
+	section_count: number;
+	omitted_media_count: number;
+	truncated: boolean;
 }
 
 // ─── MCP ──────────────────────────────────────────────────────────────────────

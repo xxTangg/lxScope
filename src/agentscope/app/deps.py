@@ -249,8 +249,9 @@ async def get_knowledge_base_service(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "Knowledge base feature is disabled — pass a "
-                "knowledge_base_manager to create_app() to enable it."
+                "Document parsing is disabled — pass knowledge_parsers "
+                "to create_app(), or enable the knowledge base feature "
+                "to use its default parser registry."
             ),
         )
     return service

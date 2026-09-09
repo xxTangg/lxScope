@@ -984,6 +984,8 @@ class Agent:
             # ===================================================================
             if is_awaiting:
                 async for evt in self._handle_incoming_event(event):
+                    if isinstance(evt, ToolResultEndEvent):
+                        self._record_tool_result(evt)
                     yield evt
             else:
                 await self._handle_incoming_messages(msgs)
@@ -991,6 +993,9 @@ class Agent:
                 self.state.reply_context = ReplyContext(
                     reply_id=_generate_id(),
                     cur_iter=0,
+                    completed_tool_calls=0,
+                    failed_tool_calls=0,
+                    tool_limit_finalization_attempted=False,
                     structured_schema=structured_schema,
                     structured_output=None,
                 )
@@ -1055,9 +1060,17 @@ class Agent:
                         final_msg = None
                         continue
 
-                    case Reasoning(hint=hint, tool_choice=tool_choice):
+                    case Reasoning(
+                        hint=hint,
+                        tool_choice=tool_choice,
+                        finalize_due_to_tool_limit=finalize_due_to_tool_limit,
+                    ):
                         made_progress = True
                         final_msg = None
+                        if finalize_due_to_tool_limit:
+                            self.state.reply_context.tool_limit_finalization_attempted = (
+                                True
+                            )
                         if hint:
                             self.state.append_context(self.name, [hint])
 
@@ -1099,7 +1112,13 @@ class Agent:
 
                     case Acting(tool_calls=tool_calls):
                         made_progress = True
-                        for batch in await self._batch_tool_calls(tool_calls):
+                        allowed_tool_calls, blocked_tool_calls = (
+                            self._apply_tool_call_budget(tool_calls)
+                        )
+                        parked_for_hitl = False
+                        for batch in await self._batch_tool_calls(
+                            allowed_tool_calls,
+                        ):
                             if batch.type == "sequential":
                                 evt_generator = (
                                     self._execute_sequential_tool_calls(
@@ -1122,6 +1141,8 @@ class Agent:
                             break_execution_for_hitl = False
                             break_execution_for_interruption = False
                             async for evt in evt_generator:
+                                if isinstance(evt, ToolResultEndEvent):
+                                    self._record_tool_result(evt)
                                 yield evt
                                 if isinstance(
                                     evt,
@@ -1151,7 +1172,26 @@ class Agent:
                                 return
 
                             if break_execution_for_hitl:
+                                parked_for_hitl = True
                                 break
+
+                        if not parked_for_hitl:
+                            for tool_call in blocked_tool_calls:
+                                async for evt in self._handle_error_tool_call(
+                                    tool_call,
+                                    message=(
+                                        "<system-reminder>This tool call was "
+                                        "not executed because the per-reply "
+                                        "tool-call safety limit was reached. "
+                                        "Return the best final answer from "
+                                        "the evidence already collected."
+                                        "</system-reminder>"
+                                    ),
+                                    state=ToolResultState.ERROR,
+                                ):
+                                    # Budget-rejected calls are deliberately
+                                    # not counted as executed tool calls.
+                                    yield evt
 
                 # One reasoning-acting round is over once every tool call it
                 # produced has a result. Reasoning that generated tool calls,
@@ -3245,6 +3285,69 @@ class Agent:
             return last_msg
         return None
 
+    def _apply_tool_call_budget(
+        self,
+        tool_calls: list[ToolCallBlock],
+    ) -> tuple[list[ToolCallBlock], list[ToolCallBlock]]:
+        """Split proposed calls into executable and budget-rejected calls."""
+        limit = self.react_config.max_tool_calls_per_reply
+        if limit == 0:
+            return tool_calls, []
+
+        remaining = max(
+            0,
+            limit - self.state.reply_context.completed_tool_calls,
+        )
+        return tool_calls[:remaining], tool_calls[remaining:]
+
+    def _record_tool_result(self, event: ToolResultEndEvent) -> None:
+        """Update the current reply's hard tool safety counters."""
+        if event.state not in (
+            ToolResultState.SUCCESS,
+            ToolResultState.ERROR,
+        ):
+            return
+
+        # Structured-output generation is framework bookkeeping rather than
+        # an exploratory tool call and must remain available at the limit.
+        tool_name: str | None = None
+        for msg in reversed(self.state.context):
+            for call in msg.get_content_blocks("tool_call"):
+                if call.id == event.tool_call_id:
+                    tool_name = call.name
+                    break
+            if tool_name is not None:
+                break
+        if tool_name == _GenerateStructuredOutput.name:
+            return
+
+        self.state.reply_context.completed_tool_calls += 1
+        if event.state == ToolResultState.ERROR:
+            self.state.reply_context.failed_tool_calls += 1
+
+    def _tool_limit_reason(self) -> str | None:
+        """Return the active per-reply tool safety limit, if any."""
+        error_limit = self.react_config.max_tool_errors_per_reply
+        if (
+            error_limit > 0
+            and self.state.reply_context.failed_tool_calls >= error_limit
+        ):
+            return (
+                f"{error_limit} tool calls failed in this reply. Report the "
+                "failure clearly and do not try alternative tools, paths, "
+                "workspaces, background tasks, or source-code inspection."
+            )
+
+        call_limit = self.react_config.max_tool_calls_per_reply
+        if (
+            call_limit > 0
+            and self.state.reply_context.completed_tool_calls >= call_limit
+        ):
+            return (
+                f"The per-reply limit of {call_limit} tool calls was reached."
+            )
+        return None
+
     def _next_action(
         self,
         final_msg: Msg | None = None,
@@ -3445,6 +3548,48 @@ class Agent:
             return Exit(
                 exit_events=exit_events,
                 exit_msg=final_msg,
+            )
+
+        # Tool safety limits are independent of the broader ReAct iteration
+        # budget. Give the model exactly one text-only call to explain what
+        # happened and summarize the evidence already collected.
+        tool_limit_reason = self._tool_limit_reason()
+        if tool_limit_reason is not None:
+            if self.state.reply_context.tool_limit_finalization_attempted:
+                return Exit(
+                    exit_events=[
+                        ReplyEndEvent(
+                            session_id=self.state.session_id,
+                            reply_id=self.state.reply_id,
+                            finished_reason=ReplyFinishedReason.COMPLETED,
+                        ),
+                    ],
+                    exit_msg=AssistantMsg(
+                        id=self.state.reply_id,
+                        name=self.name,
+                        content=(
+                            "I stopped after reaching the tool safety limit. "
+                            "The available tool results were insufficient to "
+                            "produce a reliable answer."
+                        ),
+                        finished_reason=ReplyFinishedReason.COMPLETED,
+                    ),
+                )
+
+            return Reasoning(
+                hint=HintBlock(
+                    hint=(
+                        "<system-reminder>Stop using tools now. "
+                        f"{tool_limit_reason} Summarize the work and evidence "
+                        "already available, distinguish confirmed facts from "
+                        "unknowns, and return the final answer as text. Do not "
+                        "call any tools.</system-reminder>"
+                    ),
+                    source='{"label": "System", "sublabel": '
+                    '"Tool Safety Limit Reached"}',
+                ),
+                tool_choice=ToolChoice(mode="none"),
+                finalize_due_to_tool_limit=True,
             )
 
         # At equality, the regular iteration budget is exhausted, but the

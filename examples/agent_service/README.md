@@ -13,7 +13,7 @@ Details about the agent service please refer to the [tutorial](https://docs.agen
 
 - Python ≥ 3.11
 - Node.js ≥ 20 with `npx`
-- [optional] Gaode/AMap API key in `AMAP_API_KEY` (for the `amap` MCP)
+- SiliconFlow API key in `.env` for the OpenAI-compatible chat and embedding APIs
 
 ## Quickstart
 

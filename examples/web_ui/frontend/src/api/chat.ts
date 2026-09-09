@@ -1,5 +1,44 @@
-import { client } from './client';
-import type { ChatRequest } from './types';
+import { ApiError, client, getBaseUrl, getUserId } from './client';
+import type {
+	ChatRequest,
+	ListChatAttachmentContentTypesResponse,
+	ParseChatAttachmentResponse,
+} from './types';
+
+/** Upload one document for server-side text extraction. */
+function parseAttachment(file: File): Promise<ParseChatAttachmentResponse> {
+	const formData = new FormData();
+	formData.append('file', file);
+
+	return new Promise((resolve, reject) => {
+		const xhr = new XMLHttpRequest();
+		const url = new URL('/chat/attachments/parse', getBaseUrl());
+		xhr.open('POST', url.toString(), true);
+		xhr.setRequestHeader('X-User-ID', getUserId());
+
+		xhr.onload = () => {
+			if (xhr.status >= 200 && xhr.status < 300) {
+				try {
+					resolve(JSON.parse(xhr.responseText) as ParseChatAttachmentResponse);
+				} catch (error) {
+					reject(error);
+				}
+				return;
+			}
+			let detail = xhr.responseText || xhr.statusText;
+			try {
+				const json = JSON.parse(xhr.responseText) as { detail?: unknown };
+				if (typeof json.detail === 'string') detail = json.detail;
+				else if (json.detail !== undefined) detail = JSON.stringify(json.detail);
+			} catch {
+				// Keep the raw response when it is not JSON.
+			}
+			reject(new ApiError(xhr.status, detail));
+		};
+		xhr.onerror = () => reject(new ApiError(0, 'Network error'));
+		xhr.send(formData);
+	});
+}
 
 /**
  * Chat API — fire-and-forget trigger for chat runs.
@@ -9,6 +48,15 @@ import type { ChatRequest } from './types';
  * response body of this POST.
  */
 export const chatApi = {
+	supportedAttachmentContentTypes: () =>
+		client.get<ListChatAttachmentContentTypesResponse>(
+			'/chat/attachments/supported_content_types',
+			undefined,
+			{ silent: true },
+		),
+
+	parseAttachment,
+
 	/**
 	 * Trigger a chat run for the specified session.
 	 *

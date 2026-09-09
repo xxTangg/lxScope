@@ -1,0 +1,10 @@
+name: nomic-embed-text
+label: Nomic Embed Text
+status: active
+input_types:
+  - text/plain
+output_types:
+  - application/x-embedding
+dimensions: 768
+context_size: 2048
+pass_dimensions: true

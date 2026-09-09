@@ -78,6 +78,21 @@ class EmbeddingModelCard(BaseModel):
     ``None`` indicates a fixed-dimension model.
     """
 
+    pass_dimensions: bool = Field(
+        default=True,
+        description=(
+            "Whether the provider API accepts the optional dimensions "
+            "request parameter."
+        ),
+    )
+    """Whether to send ``dimensions`` to the provider API.
+
+    Some OpenAI-compatible providers expose fixed-size embedding models
+    but reject the OpenAI-only ``dimensions`` request parameter.  Model
+    cards can disable that parameter without changing the stored vector
+    dimension used by the vector store.
+    """
+
     context_size: int | None = Field(
         default=None,
         description="Maximum input length (in tokens) per request.",
@@ -173,6 +188,7 @@ class EmbeddingModelCard(BaseModel):
             ),
             dimensions=config["dimensions"],
             supported_dimensions=config.get("supported_dimensions"),
+            pass_dimensions=config.get("pass_dimensions", True),
             context_size=config.get("context_size"),
             parameter_schema=final_schema,
             parameter_overrides=overrides,

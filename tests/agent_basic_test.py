@@ -892,6 +892,90 @@ class AgentBasicTest(IsolatedAsyncioTestCase):
             "Sequential result: x",
         )
 
+    async def test_tool_call_budget_forces_final_text(self) -> None:
+        """Extra calls are rejected and followed by one text-only summary."""
+        self.agent.toolkit = Toolkit(tools=[MockSequentialTool()])
+        self.agent.react_config = ReActConfig(
+            max_iters=10,
+            max_tool_calls_per_reply=2,
+        )
+        self.model.set_responses(
+            [
+                ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id=f"tool_call_{index}",
+                            name="mock_sequential_tool",
+                            input=f'{{"input": "{index}"}}',
+                        )
+                        for index in range(3)
+                    ],
+                    is_last=True,
+                ),
+                ChatResponse(
+                    content=[TextBlock(text="Summary from collected results")],
+                    is_last=True,
+                ),
+            ],
+        )
+
+        msg = await self.agent.reply(UserMsg(name="user", content="Go"))
+
+        self.assertEqual(msg.finished_reason, ReplyFinishedReason.COMPLETED)
+        self.assertEqual(msg.get_text_content(), "Summary from collected results")
+        self.assertEqual(self.model.cnt, 2)
+        self.assertEqual(
+            self.agent.state.reply_context.completed_tool_calls,
+            2,
+        )
+        tool_results = self.agent.state.context[-1].get_content_blocks(
+            "tool_result",
+        )
+        self.assertEqual([result.state for result in tool_results], [
+            "success",
+            "success",
+            "error",
+        ])
+
+    async def test_tool_error_budget_stops_fallback_probing(self) -> None:
+        """Repeated unavailable tools lead to a final answer, not more probes."""
+        self.agent.react_config = ReActConfig(
+            max_iters=10,
+            max_tool_calls_per_reply=0,
+            max_tool_errors_per_reply=2,
+        )
+        self.model.set_responses(
+            [
+                ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id=f"missing_{index}",
+                            name="missing_tool",
+                            input="{}",
+                        ),
+                    ],
+                    is_last=True,
+                )
+                for index in range(2)
+            ]
+            + [
+                ChatResponse(
+                    content=[TextBlock(text="The required tool is unavailable")],
+                    is_last=True,
+                ),
+            ],
+        )
+
+        msg = await self.agent.reply(UserMsg(name="user", content="Go"))
+
+        self.assertEqual(msg.finished_reason, ReplyFinishedReason.COMPLETED)
+        self.assertEqual(msg.get_text_content(), "The required tool is unavailable")
+        self.assertEqual(self.model.cnt, 3)
+        self.assertEqual(self.agent.state.reply_context.failed_tool_calls, 2)
+        self.assertTrue(
+            self.agent.state.reply_context.tool_limit_finalization_attempted,
+        )
+
     async def test_thinking_only_response_continues_reasoning(self) -> None:
         """A thinking-only response should not end with an empty reply."""
         self.model.set_responses(

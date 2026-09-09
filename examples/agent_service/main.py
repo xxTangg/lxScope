@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """The example script to start the agent service."""
+from contextlib import asynccontextmanager
 import os
 
+from pydantic import SecretStr
 import uvicorn
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,41 +19,86 @@ from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
 from agentscope.app.storage import RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
-from agentscope.mcp import MCPClient, StdioMCPConfig, HttpMCPConfig
+from agentscope.credential import OpenAICredential
+from agentscope.mcp import MCPClient, StdioMCPConfig
 from agentscope.middleware import AgenticMemoryMiddleware, MiddlewareBase
 from agentscope.permission import PermissionContext, PermissionMode
-from agentscope.rag import ApproxTokenChunker, QdrantStore
+from agentscope.rag import (
+    ApproxTokenChunker,
+    ExcelParser,
+    ImageParser,
+    PDFParser,
+    PPTParser,
+    QdrantStore,
+    TextParser,
+    WordParser,
+)
 from agentscope.workspace import WorkspaceBase
+
+playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
+playwright_browsers_path = os.getenv(
+    "PLAYWRIGHT_BROWSERS_PATH",
+    "/ms-playwright",
+)
+playwright_mcp_args = (
+    ["--headless", "--browser", "chromium", "--no-sandbox"]
+    if playwright_mcp_command == "playwright-mcp"
+    else ["-y", "@playwright/mcp@latest"]
+)
 
 default_mcps = [
     MCPClient(
         name="browser-use",
         mcp_config=StdioMCPConfig(
-            command="npx",
-            args=["@playwright/mcp@latest"],
+            command=playwright_mcp_command,
+            args=playwright_mcp_args,
+            # Explicitly pass this to the child process. Some Playwright MCP
+            # launch paths do not reliably inherit the container environment
+            # and otherwise fall back to /root/.cache/ms-playwright.
+            env={"PLAYWRIGHT_BROWSERS_PATH": playwright_browsers_path},
         ),
         is_stateful=True,
     ),
 ]
 
-if os.getenv("AMAP_API_KEY"):
-    default_mcps.append(
-        MCPClient(
-            name="amap",
-            mcp_config=HttpMCPConfig(
-                url=f"https://mcp.amap.com/mcp?key="
-                f"{os.environ['AMAP_API_KEY']}",
-            ),
-            is_stateful=False,
-        ),
-    )
-
 storage = RedisStorage(
-    host="localhost",
-    port=6379,
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", "6379")),
+    password=os.getenv("REDIS_PASSWORD") or None,
 )
 
-vector_store = QdrantStore(location=":memory:")
+# Qdrant must be persistent in a service deployment.  The previous
+# ``:memory:`` configuration made every API restart look like an empty
+# knowledge base because all vectors disappeared with the process.
+vector_store = QdrantStore(
+    path=os.getenv("QDRANT_PATH", "/app/qdrant_data"),
+)
+
+
+async def _ensure_siliconflow_credential() -> None:
+    """Make the configured SiliconFlow credential available in the UI.
+
+    SiliconFlow exposes an OpenAI-compatible API, so the existing OpenAI
+    credential/model implementation is the correct adapter.  The record is
+    written under the same default user id that the Web UI sends.
+    """
+    api_key = os.getenv("SILICONFLOW_API_KEY")
+    if not api_key:
+        return
+
+    credential = OpenAICredential(
+        id=os.getenv("SILICONFLOW_CREDENTIAL_ID", "siliconflow"),
+        name="SiliconFlow",
+        api_key=SecretStr(api_key),
+        base_url=os.getenv(
+            "SILICONFLOW_BASE_URL",
+            "https://api.siliconflow.cn/v1",
+        ),
+    )
+    await storage.upsert_credential(
+        os.getenv("AGENTSCOPE_USER_ID", "local-user"),
+        credential,
+    )
 
 
 async def longterm_memory_factory(
@@ -91,7 +138,7 @@ app = create_app(
         # The default MCP servers that will be added into the workspace
         default_mcps=default_mcps,
     ),
-    # Knowledge base feature — backed by an in-memory Qdrant store. The
+    # Knowledge base feature — backed by a persistent local Qdrant store. The
     # CollectionPerKbManager allocates one collection per knowledge base,
     # so any embedding dimension is allowed.
     knowledge_base_manager=CollectionPerKbManager(
@@ -101,6 +148,16 @@ app = create_app(
     # Chunker classes users can pick from when creating a knowledge base;
     # the chosen type and parameters are pinned on the knowledge base.
     knowledge_chunkers=[ApproxTokenChunker],
+    # Register the built-in document parsers so the Web UI can accept
+    # text, PDF, Word, Excel, PowerPoint, and image files.
+    knowledge_parsers=[
+        TextParser(),
+        PDFParser(),
+        WordParser(),
+        ExcelParser(),
+        PPTParser(),
+        ImageParser(),
+    ],
     # Resource hubs the UI browses under /hub. Neither needs credentials
     # of its own — an individual MCP card declares whatever key it wants
     # from the user in its ``inputs_schema``. Passing a ClawHub token
@@ -161,7 +218,23 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
         DiscordChannel,
         FeishuChannel,
     ],
+    download_secret=os.getenv("AGENTSCOPE_DOWNLOAD_SECRET"),
 )
+
+# Seed the env-backed credential only after AgentScope has entered its normal
+# storage lifespan.  Keeping the wrapper here avoids changing the library's
+# generic application factory just for this deployment example.
+_base_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _application_lifespan(app_instance):
+    async with _base_lifespan(app_instance):
+        await _ensure_siliconflow_credential()
+        yield
+
+
+app.router.lifespan_context = _application_lifespan
 
 
 if __name__ == "__main__":
@@ -169,6 +242,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
-        reload=True,
+        port=int(os.getenv("AGENTSCOPE_PORT", "8000")),
+        reload=os.getenv("UVICORN_RELOAD", "false").lower()
+        in {"1", "true", "yes", "on"},
     )

@@ -1,0 +1,15 @@
+name: BAAI/bge-m3
+label: SiliconFlow BAAI/bge-m3
+status: active
+
+input_types:
+  - text/plain
+
+output_types:
+  - application/x-embedding
+
+# SiliconFlow's BAAI/bge-m3 returns a fixed 1024-dimensional vector and
+# does not support the optional OpenAI `dimensions` request parameter.
+dimensions: 1024
+context_size: 8192
+pass_dimensions: false

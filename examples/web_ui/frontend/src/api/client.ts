@@ -1,7 +1,13 @@
 import { toast } from 'sonner';
 
-export const getBaseUrl = () => localStorage.getItem('server_url') ?? '';
-export const getUserId = () => localStorage.getItem('username') ?? '';
+const getDefaultBaseUrl = () => {
+	const port = import.meta.env.VITE_AGENTSCOPE_API_PORT ?? '8001';
+	return `${window.location.protocol}//${window.location.hostname}:${port}`;
+};
+
+export const getBaseUrl = () => localStorage.getItem('server_url') ?? getDefaultBaseUrl();
+export const getUserId = () =>
+	localStorage.getItem('username') ?? import.meta.env.VITE_AGENTSCOPE_USER_ID ?? 'local-user';
 
 /**
  * Structured error thrown for non-2xx HTTP responses.

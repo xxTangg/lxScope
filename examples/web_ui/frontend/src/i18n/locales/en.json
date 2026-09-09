@@ -112,7 +112,10 @@
 		"audioGenerating": "Generating audio…",
 		"playAudio": "Play audio",
 		"pauseAudio": "Pause audio",
+		"workspaceFile": "Workspace file",
+		"downloadFile": "Download file",
 		"running": "Running...",
+		"executionTrace": "Execution trace ({{count}} items)",
 		"hintSource": {
 			"tool_output": "Tool Output",
 			"team": "Team",
@@ -140,6 +143,7 @@
 		"subagentConfirmTitle": "{{name}} requests confirmation",
 		"newSession": "New Session",
 		"greeting": "Where should we start?",
+		"replyPending": "Message sent. Waiting for a response…",
 		"maxItersExceeded": {
 			"title": "Reached the iteration limit",
 			"description": "Send a new message to keep going, or continue the current task.",

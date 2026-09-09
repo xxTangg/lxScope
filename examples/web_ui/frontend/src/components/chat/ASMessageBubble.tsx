@@ -14,6 +14,7 @@ import {
 	CheckCircle,
 	ChevronRight,
 	CirclePlay,
+	Download,
 	FileText,
 	FileVideo2,
 	Loader2,
@@ -25,10 +26,13 @@ import { useEffect, useRef, useState } from 'react';
 import { renderToolCall } from './tool-renderers';
 import { countDiffStats, DiffStats, getResultDiff } from './tool-renderers/_shared';
 import type { TFunction, ToolCallWithResult } from './tool-renderers/types';
+import { workspaceApi } from '@/api';
 import { Markdown } from '@/components/markdown';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
 	Attachment,
+	AttachmentAction,
+	AttachmentActions,
 	AttachmentContent,
 	AttachmentDescription,
 	AttachmentGroup,
@@ -358,12 +362,97 @@ function summarizeToolGroup(calls: ToolCallWithResult[], t: TFunction) {
 
 interface MessageBubbleProps {
 	message: Msg;
+	agentId: string | null;
+	sessionId: string | null;
 	onUserConfirm: (
 		toolCallBlock: ToolCallBlock,
 		confirm: boolean,
 		replyId: string,
 		rules?: ToolCallBlock['suggested_rules'],
 	) => void;
+}
+
+interface WorkspaceDownloadContext {
+	agentId: string;
+	sessionId: string;
+}
+
+// Generated artifacts are commonly reported as plain container paths instead
+// of DataBlocks. Restrict recognition to the service workspace tree and known
+// file extensions so ordinary prose containing slashes remains untouched.
+const WORKSPACE_FILE_PATH =
+	/(?:file:\/\/)?(\/app\/examples\/agent_service\/workspaces\/[^\r\n`"'<>]*?\.(?:tar\.gz|pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|json|ya?ml|xml|zip|png|jpe?g|gif|webp|svg|mp3|wav|m4a|mp4|mov|avi))/giu;
+
+function workspaceFilePaths(text: string): string[] {
+	const paths = new Set<string>();
+	for (const match of text.matchAll(WORKSPACE_FILE_PATH)) paths.add(match[1]);
+	return [...paths];
+}
+
+function WorkspaceFileDownloads({
+	text,
+	context,
+}: {
+	text: string;
+	context: WorkspaceDownloadContext;
+}) {
+	const { t } = useTranslation();
+	const [downloading, setDownloading] = useState<string | null>(null);
+	const paths = workspaceFilePaths(text);
+
+	if (paths.length === 0) return null;
+
+	const download = async (path: string) => {
+		setDownloading(path);
+		try {
+			const url = await workspaceApi.files.downloadUrl(
+				context.agentId,
+				context.sessionId,
+				path,
+			);
+			const anchor = document.createElement('a');
+			anchor.href = url;
+			anchor.download = path.split('/').pop() || 'download';
+			document.body.appendChild(anchor);
+			anchor.click();
+			anchor.remove();
+		} finally {
+			setDownloading(null);
+		}
+	};
+
+	return (
+		<AttachmentGroup className="mt-2 max-w-full">
+			{paths.map((path) => {
+				const filename = path.split('/').pop() || path;
+				const busy = downloading === path;
+				return (
+					<Attachment key={path} size="sm" className="max-w-full">
+						<AttachmentMedia variant="icon">
+							<FileText />
+						</AttachmentMedia>
+						<AttachmentContent>
+							<AttachmentTitle title={filename}>{filename}</AttachmentTitle>
+							<AttachmentDescription title={path}>
+								{t('messageBubble.workspaceFile')}
+							</AttachmentDescription>
+						</AttachmentContent>
+						<AttachmentActions>
+							<AttachmentAction
+								type="button"
+								disabled={downloading !== null}
+								title={t('messageBubble.downloadFile')}
+								aria-label={t('messageBubble.downloadFile')}
+								onClick={() => void download(path)}
+							>
+								{busy ? <Loader2 className="animate-spin" /> : <Download />}
+							</AttachmentAction>
+						</AttachmentActions>
+					</Attachment>
+				);
+			})}
+		</AttachmentGroup>
+	);
 }
 
 /**
@@ -383,9 +472,11 @@ interface MessageBubbleProps {
  * When `content` is empty and the message is still running, the bubble
  * body is omitted entirely so only the bottom status row renders.
  */
-export function ASMessageBubble({ message }: MessageBubbleProps) {
+export function ASMessageBubble({ message, agentId, sessionId }: MessageBubbleProps) {
 	const isUser = message.role === 'user';
 	const { t } = useTranslation();
+	const downloadContext =
+		!isUser && agentId && sessionId ? { agentId, sessionId } : undefined;
 
 	const isRunning = !message.finished_at;
 	const hasUsage =
@@ -409,6 +500,26 @@ export function ASMessageBubble({ message }: MessageBubbleProps) {
 	);
 
 	const blocks = groupToolCalls(message.content);
+	const nonDataBlocks = blocks.filter((block) => block.type !== 'data');
+	let traceBlocks: ExtendedContentBlock[] = [];
+	let primaryBlocks = nonDataBlocks;
+
+	// A persisted assistant reply contains the whole ReAct trajectory. Keep
+	// that audit trail accessible, but make the last text block read as the
+	// answer instead of presenting every intermediate note at equal weight.
+	if (!isUser && !isRunning) {
+		let finalTextIndex = -1;
+		for (let index = nonDataBlocks.length - 1; index >= 0; index -= 1) {
+			if (nonDataBlocks[index].type === 'text') {
+				finalTextIndex = index;
+				break;
+			}
+		}
+		if (finalTextIndex > 0) {
+			traceBlocks = nonDataBlocks.slice(0, finalTextIndex);
+			primaryBlocks = nonDataBlocks.slice(finalTextIndex);
+		}
+	}
 
 	const startMs = new Date(message.created_at).getTime();
 	const endMs = isRunning ? now : new Date(message.finished_at!).getTime();
@@ -418,15 +529,36 @@ export function ASMessageBubble({ message }: MessageBubbleProps) {
 	return (
 		<Message align={isUser ? 'end' : 'start'} data-role={message.role}>
 			<MessageContent>
-				{blocks
-					.filter((block) => block.type !== 'data')
-					.map((block, index) => (
-						<Bubble key={index} variant={isUser ? 'muted' : 'ghost'}>
-							<BubbleContent>
-								<ASBlock block={block} />
-							</BubbleContent>
-						</Bubble>
-					))}
+				{traceBlocks.length > 0 && (
+					<Bubble variant="ghost">
+						<BubbleContent>
+							<Collapsible defaultOpen={false}>
+								<CollapsibleTrigger asChild>
+									<div className="group flex w-full cursor-pointer items-center gap-2 text-sm text-muted-foreground hover:text-primary">
+										<span>
+											{t('messageBubble.executionTrace', {
+												count: traceBlocks.length,
+											})}
+										</span>
+										<ChevronRight className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-90" />
+									</div>
+								</CollapsibleTrigger>
+								<CollapsibleContent className="mt-2 flex w-full flex-col gap-y-2 rounded bg-muted p-2 text-sm text-muted-foreground">
+									{traceBlocks.map((block, index) => (
+										<ASBlock block={block} key={index} downloadContext={downloadContext} />
+									))}
+								</CollapsibleContent>
+							</Collapsible>
+						</BubbleContent>
+					</Bubble>
+				)}
+				{primaryBlocks.map((block, index) => (
+					<Bubble key={index} variant={isUser ? 'muted' : 'ghost'}>
+						<BubbleContent>
+							<ASBlock block={block} downloadContext={downloadContext} />
+						</BubbleContent>
+					</Bubble>
+				))}
 				{message.finished_reason === ReplyFinishedReason.ERROR && (
 					<Alert
 						variant="destructive"
@@ -446,7 +578,7 @@ export function ASMessageBubble({ message }: MessageBubbleProps) {
 					{blocks
 						.filter((block) => block.type === 'data')
 						.map((block, index) => (
-							<ASBlock block={block} key={index} />
+							<ASBlock block={block} key={index} downloadContext={downloadContext} />
 						))}
 				</AttachmentGroup>
 				{message.role !== 'user' && (
@@ -539,17 +671,23 @@ function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 
 interface ASBlockProps {
 	block: ExtendedContentBlock;
+	downloadContext?: WorkspaceDownloadContext;
 }
 
-export function ASBlock({ block, ...props }: ASBlockProps) {
+export function ASBlock({ block, downloadContext, ...props }: ASBlockProps) {
 	const { t } = useTranslation();
 
 	switch (block.type) {
 		case 'text':
 			return (
-				<Markdown animated isAnimating={!block.finished_at} {...props}>
-					{block.text}
-				</Markdown>
+				<>
+					<Markdown animated isAnimating={!block.finished_at} {...props}>
+						{block.text}
+					</Markdown>
+					{downloadContext && block.finished_at && (
+						<WorkspaceFileDownloads text={block.text} context={downloadContext} />
+					)}
+				</>
 			);
 		case 'data': {
 			const dataType = block.source.media_type.split('/')[0];
@@ -659,7 +797,7 @@ export function ASBlock({ block, ...props }: ASBlockProps) {
 					</CollapsibleTrigger>
 					<CollapsibleContent className="bg-muted p-2 rounded text-sm">
 						{items.map((item, index) => (
-							<ASBlock block={item} key={index} />
+							<ASBlock block={item} key={index} downloadContext={downloadContext} />
 						))}
 					</CollapsibleContent>
 				</Collapsible>

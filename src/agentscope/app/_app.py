@@ -97,6 +97,8 @@ def create_app(
     resource_access_policy: ResourceAccessPolicyBase | None = None,
     channels: list[Type[ChannelBase]] | None = None,
     download_secret: str | None = None,
+    chat_attachment_max_bytes: int = 20 * 1024 * 1024,
+    chat_attachment_max_chars: int = 200_000,
     title: str = "AgentScope",
     version: str = __version__,
     **kwargs: Any,
@@ -155,7 +157,8 @@ def create_app(
             endpoints entirely.
         knowledge_parsers (`list[ParserBase] | dict[str, ParserBase] | \
          None`, optional):
-            Parsers registered for knowledge base document uploads.
+            Parsers registered for knowledge base document uploads and
+            parser-backed chat attachments.
             Pass a **list** to have the service route by each parser's
             ``supported_media_types`` (later entries override earlier
             ones for overlapping types, with a warning); pass a
@@ -265,6 +268,13 @@ def create_app(
             be set explicitly behind a load balancer** — otherwise a
             token minted by one replica is rejected by the next, and
             downloads fail at random.
+        chat_attachment_max_bytes (`int`, defaults to 20 MiB):
+            Maximum uploaded file size accepted by the chat attachment
+            text-extraction endpoint.
+        chat_attachment_max_chars (`int`, defaults to 200,000):
+            Maximum extracted characters returned for one chat attachment.
+            Longer documents are truncated with an explicit marker before
+            they enter the model context.
         title (`str`, defaults to ``"AgentScope"``):
             OpenAPI title shown in the docs UI.
         version (`str`, defaults to the package version):
@@ -303,6 +313,12 @@ def create_app(
     app.state.mcp_hubs = _index_hubs(mcp_hubs, "MCP")
     app.state.skill_hubs = _index_hubs(skill_hubs, "skill")
     app.state.download_secret = download_secret or secrets.token_urlsafe(32)
+    if chat_attachment_max_bytes <= 0:
+        raise ValueError("chat_attachment_max_bytes must be greater than 0.")
+    if chat_attachment_max_chars <= 0:
+        raise ValueError("chat_attachment_max_chars must be greater than 0.")
+    app.state.chat_attachment_max_bytes = chat_attachment_max_bytes
+    app.state.chat_attachment_max_chars = chat_attachment_max_chars
 
     # Parser / chunker / blob-store defaults only make sense when the
     # KB feature is actually enabled.  When ``knowledge_base_manager`` is

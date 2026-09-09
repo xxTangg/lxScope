@@ -357,6 +357,11 @@ export function useMessages(
 
 			const userMsg = UserMsg({ name: 'user', content });
 			msgsRef.current = [...msgsRef.current, userMsg];
+			// Enter the running state before the fire-and-forget request.
+			// Waiting for REPLY_START leaves a visible dead period while the
+			// backend queues the run or waits for the upstream model's first
+			// token, which makes a successfully submitted message look stuck.
+			setPhase('streaming');
 			scheduleUpdate();
 
 			try {
@@ -366,6 +371,7 @@ export function useMessages(
 					input: userMsg,
 				});
 			} catch (e) {
+				setPhase('idle');
 				setError(e as Error);
 			}
 		},

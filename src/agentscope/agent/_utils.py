@@ -34,6 +34,8 @@ class Reasoning(BaseModel):
 
     hint: HintBlock | None = None
     tool_choice: ToolChoice | None = None
+    finalize_due_to_tool_limit: bool = False
+    """Whether this is the single text-only call forced by a tool limit."""
 
 
 class Exit(BaseModel):
