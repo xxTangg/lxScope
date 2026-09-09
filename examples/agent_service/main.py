@@ -2,6 +2,7 @@
 """The example script to start the agent service."""
 from contextlib import asynccontextmanager
 import os
+import sys
 
 from pydantic import SecretStr
 import uvicorn
@@ -243,6 +244,11 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=int(os.getenv("AGENTSCOPE_PORT", "8000")),
-        reload=os.getenv("UVICORN_RELOAD", "false").lower()
-        in {"1", "true", "yes", "on"},
+        # Hot reload forces a SelectorEventLoop on Windows, which cannot
+        # spawn the subprocesses that the builtin tools rely on
+        reload=(
+            os.getenv("UVICORN_RELOAD", "false").lower()
+            in {"1", "true", "yes", "on"}
+            and sys.platform != "win32"
+        ),
     )
