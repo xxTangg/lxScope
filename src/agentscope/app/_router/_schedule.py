@@ -113,6 +113,7 @@ async def create_schedule(
             description=body.description,
             cron_expression=body.cron_expression,
             timezone=body.timezone,
+            ended_at=body.ended_at,
             enabled=body.enabled,
             stateful=body.stateful,
             permission_mode=body.permission_mode,

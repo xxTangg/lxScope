@@ -83,12 +83,14 @@ class _Scheduler(SchedulerManager):
 def _request(
     cron_expression: str,
     timezone: str = "UTC",
+    ended_at: datetime | None = None,
 ) -> CreateScheduleRequest:
     """Build a minimal schedule request."""
     return CreateScheduleRequest(
         name="test schedule",
         cron_expression=cron_expression,
         timezone=timezone,
+        ended_at=ended_at,
         agent_id="agent-1",
         chat_model_config=ChatModelConfig(
             type="test",
@@ -140,6 +142,22 @@ class ScheduleValidationTest(IsolatedAsyncioTestCase):
         self.assertEqual(len(storage.upserted), 1)
         self.assertEqual(storage.upserted[0].id, response.schedule_id)
         self.assertListEqual(scheduler.notified, [response.schedule_id])
+
+    async def test_create_persists_end_time(self) -> None:
+        """The HTTP create path must preserve the activation end time."""
+        storage = _Storage()
+        scheduler = _Scheduler()
+        ended_at = datetime(2026, 12, 31, 23, 59, 59)
+
+        await create_schedule(
+            _request("0 9 * * *", ended_at=ended_at),
+            user_id="user-1",
+            storage=storage,
+            access=_Access(),
+            scheduler=scheduler,
+        )
+
+        self.assertEqual(storage.upserted[0].data.ended_at, ended_at)
 
     async def test_create_empty_timezone_does_not_persist(self) -> None:
         """An empty timezone must not silently mean server-local."""

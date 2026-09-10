@@ -2,6 +2,7 @@ import { format } from 'date-fns';
 import { ChevronDownIcon, CircleAlert, Loader2, PlusCircle } from 'lucide-react';
 import * as React from 'react';
 
+import { endOfDayInTimeZone } from './schedule-utils';
 import type { ChatModelConfig, PermissionMode } from '@/api';
 import { AgentSelect } from '@/components/select/AgentSelect';
 import { LlmSelect } from '@/components/select/LlmSelect';
@@ -164,6 +165,10 @@ export function CreateScheduleDialog({ open, onOpenChange, onCreated }: Props) {
 				description: form.description.trim(),
 				cron_expression: cronExpression,
 				timezone: form.timezone,
+				ended_at:
+					form.freq !== 'once' && form.endDate
+						? endOfDayInTimeZone(form.endDate, form.timezone)
+						: undefined,
 				agent_id: form.agentId,
 				chat_model_config: form.chatModelConfig!,
 				enabled: true,
