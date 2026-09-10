@@ -1,0 +1,452 @@
+# -*- coding: utf-8 -*-
+"""JWT authentication and lightweight account management for the Web UI."""
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import os
+import secrets
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from uuid import uuid4
+
+import jwt
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from pydantic import BaseModel, Field
+
+_DEFAULT_ISSUER = "agentscope-web-ui"
+_DEFAULT_AUDIENCE = "agentscope-api"
+_DEFAULT_TOKEN_MINUTES = 24 * 60
+_AUTH_KEY_PREFIX = "longxin:auth"
+
+
+class LoginRequest(BaseModel):
+    """Username/password login payload."""
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class RegisterRequest(BaseModel):
+    """Self-service registration payload."""
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=6, max_length=1024)
+
+
+class AuthUser(BaseModel):
+    """Public identity returned to the Web UI."""
+
+    id: str
+    username: str
+
+
+class LoginResponse(BaseModel):
+    """Bearer token response."""
+
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: AuthUser
+
+
+class TokenUsageResponse(BaseModel):
+    """Aggregate model token usage for the current user."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    total_tokens: int = 0
+    message_count: int = 0
+    session_count: int = 0
+
+
+class _StoredAccount(BaseModel):
+    username: str
+    user_id: str
+    salt: str
+    password_digest: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class _Account:
+    username: str
+    user_id: str
+    salt: bytes
+    password_digest: bytes
+
+
+def _derive_password(password: str, salt: bytes) -> bytes:
+    return hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32,
+    )
+
+
+def _unauthorized(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _account_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="This username is already registered.",
+    )
+
+
+class JWTAuthService:
+    """Authenticate configured and Redis-backed accounts and issue JWTs."""
+
+    def __init__(
+        self,
+        users: dict[str, tuple[str, str]],
+        secret: str,
+        *,
+        storage: Any | None = None,
+        on_registered: Callable[[str], Awaitable[None]] | None = None,
+        issuer: str = _DEFAULT_ISSUER,
+        audience: str = _DEFAULT_AUDIENCE,
+        token_minutes: int = _DEFAULT_TOKEN_MINUTES,
+    ) -> None:
+        if not users:
+            raise ValueError("At least one authentication account is required.")
+        if len(secret.encode("utf-8")) < 32:
+            raise ValueError("The JWT secret must be at least 32 bytes long.")
+        if token_minutes <= 0:
+            raise ValueError("JWT token lifetime must be greater than zero.")
+
+        accounts: dict[str, _Account] = {}
+        accounts_by_id: dict[str, _Account] = {}
+        for username, (user_id, password) in users.items():
+            normalized = self._normalize_username(username)
+            if not user_id.strip() or not password:
+                raise ValueError("Auth user ids and passwords are required.")
+            if normalized in accounts:
+                raise ValueError(f"Duplicate auth username {normalized!r}.")
+            if user_id in accounts_by_id:
+                raise ValueError(f"Duplicate auth user id {user_id!r}.")
+            salt = secrets.token_bytes(16)
+            account = _Account(
+                username=normalized,
+                user_id=user_id,
+                salt=salt,
+                password_digest=_derive_password(password, salt),
+            )
+            accounts[normalized] = account
+            accounts_by_id[user_id] = account
+
+        self._accounts = accounts
+        self._accounts_by_id = accounts_by_id
+        self._storage = storage
+        self._on_registered = on_registered
+        self._secret = secret
+        self._issuer = issuer
+        self._audience = audience
+        self._token_lifetime = timedelta(minutes=token_minutes)
+        self.router = self._build_router()
+
+    @staticmethod
+    def _normalize_username(username: str) -> str:
+        normalized = username.strip()
+        if not normalized or any(char.isspace() for char in normalized):
+            raise ValueError("Username cannot be empty or contain whitespace.")
+        return normalized
+
+    @staticmethod
+    def _username_key(username: str) -> str:
+        digest = hashlib.sha256(username.encode("utf-8")).hexdigest()
+        return f"{_AUTH_KEY_PREFIX}:username:{digest}"
+
+    @staticmethod
+    def _user_key(user_id: str) -> str:
+        return f"{_AUTH_KEY_PREFIX}:user:{user_id}"
+
+    def _redis_or_none(self) -> Any | None:
+        return self._storage.get_client() if self._storage is not None else None
+
+    def _redis(self) -> Any:
+        client = self._redis_or_none()
+        if client is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Account storage is not ready.",
+            )
+        return client
+
+    @property
+    def user_ids(self) -> tuple[str, ...]:
+        """Return environment-configured tenant ids for startup provisioning."""
+        return tuple(self._accounts_by_id)
+
+    async def _registered_by_username(self, username: str) -> _Account | None:
+        client = self._redis_or_none()
+        if client is None:
+            return None
+        raw = await client.get(self._username_key(username))
+        if raw is None:
+            return None
+        stored = _StoredAccount.model_validate_json(raw)
+        return _Account(
+            username=stored.username,
+            user_id=stored.user_id,
+            salt=base64.b64decode(stored.salt),
+            password_digest=base64.b64decode(stored.password_digest),
+        )
+
+    async def _registered_by_id(self, user_id: str) -> _Account | None:
+        client = self._redis_or_none()
+        if client is None:
+            return None
+        username = await client.get(self._user_key(user_id))
+        if not username:
+            return None
+        return await self._registered_by_username(username)
+
+    async def authenticate(self, username: str, password: str) -> AuthUser:
+        try:
+            normalized = self._normalize_username(username)
+        except ValueError as exc:
+            raise _unauthorized("Invalid username or password.") from exc
+        account = self._accounts.get(normalized)
+        if account is None:
+            account = await self._registered_by_username(normalized)
+        if account is None:
+            await asyncio.to_thread(_derive_password, password, b"longxin-login--")
+            raise _unauthorized("Invalid username or password.")
+
+        candidate = await asyncio.to_thread(_derive_password, password, account.salt)
+        if not hmac.compare_digest(candidate, account.password_digest):
+            raise _unauthorized("Invalid username or password.")
+        return AuthUser(id=account.user_id, username=account.username)
+
+    async def register(self, username: str, password: str) -> AuthUser:
+        try:
+            normalized = self._normalize_username(username)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        if normalized in self._accounts:
+            raise _account_conflict()
+
+        salt = secrets.token_bytes(16)
+        digest = await asyncio.to_thread(_derive_password, password, salt)
+        user_id = f"user-{uuid4().hex}"
+        stored = _StoredAccount(
+            username=normalized,
+            user_id=user_id,
+            salt=base64.b64encode(salt).decode("ascii"),
+            password_digest=base64.b64encode(digest).decode("ascii"),
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        client = self._redis()
+        created = await client.set(
+            self._username_key(normalized),
+            stored.model_dump_json(),
+            nx=True,
+        )
+        if not created:
+            raise _account_conflict()
+        await client.set(self._user_key(user_id), normalized)
+        if self._on_registered is not None:
+            await self._on_registered(user_id)
+        return AuthUser(id=user_id, username=normalized)
+
+    def issue_access_token(self, user: AuthUser) -> tuple[str, int]:
+        now = datetime.now(timezone.utc)
+        expires = now + self._token_lifetime
+        token = jwt.encode(
+            {
+                "sub": user.id,
+                "username": user.username,
+                "iss": self._issuer,
+                "aud": self._audience,
+                "iat": now,
+                "exp": expires,
+            },
+            self._secret,
+            algorithm="HS256",
+        )
+        return token, int(self._token_lifetime.total_seconds())
+
+    def _decode_identity(self, token: str) -> tuple[str, str]:
+        try:
+            payload = jwt.decode(
+                token,
+                self._secret,
+                algorithms=["HS256"],
+                issuer=self._issuer,
+                audience=self._audience,
+                options={"require": ["sub", "username", "iss", "aud", "iat", "exp"]},
+            )
+        except jwt.InvalidTokenError as exc:
+            raise _unauthorized("Invalid or expired access token.") from exc
+        user_id = payload.get("sub")
+        username = payload.get("username")
+        if not isinstance(user_id, str) or not isinstance(username, str):
+            raise _unauthorized("Invalid access token identity.")
+        return user_id, username
+
+    async def get_current_user(
+        self,
+        authorization: str | None = Header(default=None),
+    ) -> AuthUser:
+        scheme, _, token = (authorization or "").partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise _unauthorized("Bearer access token is required.")
+        user_id, username = self._decode_identity(token)
+        account = self._accounts_by_id.get(user_id)
+        if account is None:
+            account = await self._registered_by_id(user_id)
+        if account is None or account.username != username:
+            raise _unauthorized("This user is no longer available.")
+        return AuthUser(id=account.user_id, username=account.username)
+
+    async def get_current_user_id(
+        self,
+        authorization: str | None = Header(default=None),
+    ) -> str:
+        return (await self.get_current_user(authorization)).id
+
+    async def get_token_usage(self, user_id: str) -> TokenUsageResponse:
+        client = self._redis()
+        result = TokenUsageResponse()
+        pattern = f"agentscope:user:{user_id}:session:*:messages"
+        async for key in client.scan_iter(match=pattern, count=100):
+            result.session_count += 1
+            for raw in await client.lrange(key, 0, -1):
+                try:
+                    usage = json.loads(raw).get("usage")
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                if not isinstance(usage, dict):
+                    continue
+                result.message_count += 1
+                result.input_tokens += int(usage.get("input_tokens") or 0)
+                result.output_tokens += int(usage.get("output_tokens") or 0)
+                result.cache_input_tokens += int(usage.get("cache_input_tokens") or 0)
+                result.cache_creation_input_tokens += int(
+                    usage.get("cache_creation_input_tokens") or 0,
+                )
+        result.total_tokens = result.input_tokens + result.output_tokens
+        return result
+
+    @staticmethod
+    def _login_response(user: AuthUser, token: str, expires_in: int) -> LoginResponse:
+        return LoginResponse(access_token=token, expires_in=expires_in, user=user)
+
+    def _build_router(self) -> APIRouter:
+        router = APIRouter(prefix="/auth", tags=["auth"])
+
+        @router.get("/health", status_code=status.HTTP_204_NO_CONTENT)
+        async def auth_health() -> Response:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        @router.post("/login", response_model=LoginResponse)
+        async def login(body: LoginRequest) -> LoginResponse:
+            user = await self.authenticate(body.username, body.password)
+            token, expires_in = self.issue_access_token(user)
+            return self._login_response(user, token, expires_in)
+
+        @router.post(
+            "/register",
+            response_model=LoginResponse,
+            status_code=status.HTTP_201_CREATED,
+        )
+        async def register(body: RegisterRequest) -> LoginResponse:
+            user = await self.register(body.username, body.password)
+            token, expires_in = self.issue_access_token(user)
+            return self._login_response(user, token, expires_in)
+
+        @router.get("/me", response_model=AuthUser)
+        async def me(user: AuthUser = Depends(self.get_current_user)) -> AuthUser:
+            return user
+
+        @router.get("/usage", response_model=TokenUsageResponse)
+        async def usage(
+            user: AuthUser = Depends(self.get_current_user),
+        ) -> TokenUsageResponse:
+            return await self.get_token_usage(user.id)
+
+        @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+        async def logout(
+            _: AuthUser = Depends(self.get_current_user),
+        ) -> Response:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        return router
+
+
+def _parse_users(raw: str) -> dict[str, tuple[str, str]]:
+    try:
+        data: Any = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("AGENTSCOPE_AUTH_USERS must be valid JSON.") from exc
+    if not isinstance(data, dict):
+        raise ValueError("AGENTSCOPE_AUTH_USERS must be a JSON object.")
+
+    users: dict[str, tuple[str, str]] = {}
+    for username, config in data.items():
+        if not isinstance(username, str):
+            raise ValueError("Authentication usernames must be strings.")
+        if isinstance(config, str):
+            users[username] = (username, config)
+            continue
+        if not isinstance(config, dict):
+            raise ValueError(
+                f"Authentication config for {username!r} must be a password "
+                "string or an object.",
+            )
+        password = config.get("password")
+        user_id = config.get("user_id", username)
+        if not isinstance(password, str) or not isinstance(user_id, str):
+            raise ValueError(
+                f"Authentication config for {username!r} requires string "
+                "password and user_id values.",
+            )
+        users[username] = (user_id, password)
+    return users
+
+
+def load_auth_from_env(
+    *,
+    storage: Any | None = None,
+    on_registered: Callable[[str], Awaitable[None]] | None = None,
+) -> JWTAuthService:
+    raw_users = os.getenv("AGENTSCOPE_AUTH_USERS")
+    if raw_users:
+        users = _parse_users(raw_users)
+    else:
+        username = os.getenv("AGENTSCOPE_USERNAME", "admin")
+        user_id = os.getenv("AGENTSCOPE_USER_ID", "local-user")
+        password = os.getenv("AGENTSCOPE_PASSWORD", "change-me")
+        users = {username: (user_id, password)}
+
+    return JWTAuthService(
+        users,
+        os.getenv(
+            "AGENTSCOPE_JWT_SECRET",
+            "change-me-in-production-use-32-bytes",
+        ),
+        storage=storage,
+        on_registered=on_registered,
+        token_minutes=int(
+            os.getenv("AGENTSCOPE_JWT_EXPIRE_MINUTES", str(_DEFAULT_TOKEN_MINUTES)),
+        ),
+    )

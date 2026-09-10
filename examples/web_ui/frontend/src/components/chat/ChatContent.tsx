@@ -198,28 +198,28 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 									return (
 										<MessageScrollerItem
 											key={message.id}
-                                            messageId={message.id}
-                                        >
-                                            {at.getTime() - previousAt.getTime() >
-                                                TIME_MARKER_GAP_MS && (
-                                                <Marker
-                                                    variant="separator"
-                                                    className="mb-6 font-mono text-xs"
-                                                >
-                                                    <MarkerContent>
-                                                        {markerStamp(at, previousAt, i18n.language)}
-                                                    </MarkerContent>
-                                                </Marker>
-                                            )}
-                                            <ASMessageBubble
-                                                message={message}
-                                                agentId={agentId}
-                                                sessionId={sessionId}
-                                                onUserConfirm={onUserConfirm}
-                                            />
-                                        </MessageScrollerItem>
-                                    );
-                                })}
+											messageId={message.id}
+										>
+											{at.getTime() - previousAt.getTime() >
+												TIME_MARKER_GAP_MS && (
+												<Marker
+													variant="separator"
+													className="mb-6 font-mono text-xs"
+												>
+													<MarkerContent>
+														{markerStamp(at, previousAt, i18n.language)}
+													</MarkerContent>
+												</Marker>
+											)}
+											<ASMessageBubble
+												message={message}
+												agentId={agentId}
+												sessionId={sessionId}
+												onUserConfirm={onUserConfirm}
+											/>
+										</MessageScrollerItem>
+									);
+								})}
 								{waitingForReply && (
 									<MessageScrollerItem
 										key="reply-pending"

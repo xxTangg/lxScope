@@ -45,7 +45,12 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       AGENTSCOPE_PORT: 8000
       UVICORN_RELOAD: "false"
+      AGENTSCOPE_USERNAME: ${AGENTSCOPE_USERNAME:-admin}
       AGENTSCOPE_USER_ID: ${AGENTSCOPE_USER_ID:-local-user}
+      AGENTSCOPE_PASSWORD: ${AGENTSCOPE_PASSWORD:-change-me}
+      AGENTSCOPE_AUTH_USERS: ${AGENTSCOPE_AUTH_USERS:-}
+      AGENTSCOPE_JWT_SECRET: ${AGENTSCOPE_JWT_SECRET:-change-me-in-production-use-32-bytes}
+      AGENTSCOPE_JWT_EXPIRE_MINUTES: ${AGENTSCOPE_JWT_EXPIRE_MINUTES:-1440}
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       SILICONFLOW_BASE_URL: ${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
       SILICONFLOW_CHAT_MODEL: ${SILICONFLOW_CHAT_MODEL:-deepseek-ai/DeepSeek-V3.2}
@@ -69,9 +74,7 @@ services:
         - -c
         - >-
           import urllib.request;
-          r=urllib.request.Request('http://127.0.0.1:8000/health',
-          headers={'X-User-ID':'docker-healthcheck'});
-          urllib.request.urlopen(r, timeout=3)
+          urllib.request.urlopen('http://127.0.0.1:8000/auth/health', timeout=3)
       interval: 10s
       timeout: 5s
       retries: 20
@@ -84,7 +87,6 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_AGENTSCOPE_API_PORT: ${AGENTSCOPE_API_PORT:-8001}
-        VITE_AGENTSCOPE_USER_ID: ${AGENTSCOPE_USER_ID:-local-user}
     restart: unless-stopped
     depends_on:
       agentscope:

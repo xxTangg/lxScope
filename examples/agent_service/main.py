@@ -15,6 +15,7 @@ from agentscope.app.channel import (
     DiscordChannel,
     FeishuChannel,
 )
+from agentscope.app.deps import get_current_user_id
 from agentscope.app.hub import ClawSkillHub, GitHubMCPHub
 from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
@@ -35,6 +36,8 @@ from agentscope.rag import (
     WordParser,
 )
 from agentscope.workspace import WorkspaceBase
+
+from auth import load_auth_from_env
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
 playwright_browsers_path = os.getenv(
@@ -76,12 +79,12 @@ vector_store = QdrantStore(
 )
 
 
-async def _ensure_siliconflow_credential() -> None:
+async def _ensure_siliconflow_credential(user_ids: tuple[str, ...]) -> None:
     """Make the configured SiliconFlow credential available in the UI.
 
     SiliconFlow exposes an OpenAI-compatible API, so the existing OpenAI
-    credential/model implementation is the correct adapter.  The record is
-    written under the same default user id that the Web UI sends.
+    credential/model implementation is the correct adapter. The record is
+    provisioned for every configured authenticated user.
     """
     api_key = os.getenv("SILICONFLOW_API_KEY")
     if not api_key:
@@ -96,10 +99,19 @@ async def _ensure_siliconflow_credential() -> None:
             "https://api.siliconflow.cn/v1",
         ),
     )
-    await storage.upsert_credential(
-        os.getenv("AGENTSCOPE_USER_ID", "local-user"),
-        credential,
-    )
+    for user_id in user_ids:
+        await storage.upsert_credential(user_id, credential)
+
+
+async def _provision_registered_user(user_id: str) -> None:
+    """Give a newly registered account the configured default credential."""
+    await _ensure_siliconflow_credential((user_id,))
+
+
+auth = load_auth_from_env(
+    storage=storage,
+    on_registered=_provision_registered_user,
+)
 
 
 async def longterm_memory_factory(
@@ -221,6 +233,8 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
     ],
     download_secret=os.getenv("AGENTSCOPE_DOWNLOAD_SECRET"),
 )
+app.include_router(auth.router)
+app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal
 # storage lifespan.  Keeping the wrapper here avoids changing the library's
@@ -231,7 +245,7 @@ _base_lifespan = app.router.lifespan_context
 @asynccontextmanager
 async def _application_lifespan(app_instance):
     async with _base_lifespan(app_instance):
-        await _ensure_siliconflow_credential()
+        await _ensure_siliconflow_credential(auth.user_ids)
         yield
 
 

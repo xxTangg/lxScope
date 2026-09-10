@@ -507,8 +507,7 @@ function WorkspaceFileDownloads({
 function ASMessageBubbleComponent({ message, agentId, sessionId }: MessageBubbleProps) {
 	const isUser = message.role === 'user';
 	const { t } = useTranslation();
-	const downloadContext =
-		!isUser && agentId && sessionId ? { agentId, sessionId } : undefined;
+	const downloadContext = !isUser && agentId && sessionId ? { agentId, sessionId } : undefined;
 
 	const isRunning = !message.finished_at;
 	const hasUsage =
@@ -584,7 +583,11 @@ function ASMessageBubbleComponent({ message, agentId, sessionId }: MessageBubble
 								</CollapsibleTrigger>
 								<CollapsibleContent className="mt-2 flex w-full flex-col gap-y-2 rounded bg-muted p-2 text-sm text-muted-foreground">
 									{traceBlocks.map((block, index) => (
-										<ASBlock block={block} key={index} downloadContext={downloadContext} />
+										<ASBlock
+											block={block}
+											key={index}
+											downloadContext={downloadContext}
+										/>
 									))}
 								</CollapsibleContent>
 							</Collapsible>

@@ -4,15 +4,15 @@
 		<meta charset="UTF-8" />
 		<link rel="icon" type="image/svg+xml" href="/agentscope.svg?v=20260906" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>龙信AI助手</title>
-        <script>
-            // Applied before the first paint, so the theme never flashes.
-            const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
-            const applyTheme = () =>
-                document.documentElement.classList.toggle('dark', darkQuery.matches);
-            applyTheme();
-            darkQuery.addEventListener('change', applyTheme);
-        </script>
+		<title>龙信助手</title>
+		<script>
+			// Applied before the first paint, so the theme never flashes.
+			const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+			const applyTheme = () =>
+				document.documentElement.classList.toggle('dark', darkQuery.matches);
+			applyTheme();
+			darkQuery.addEventListener('change', applyTheme);
+		</script>
 	</head>
 	<body>
 		<div id="root"></div>

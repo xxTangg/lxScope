@@ -202,10 +202,8 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	const { t } = useTranslation();
 	const { sessions, refetch: refetchSessions } = useSessions(agentId);
 	const { groups } = useAvailableModels();
-	const {
-		mediaTypes: parserAttachmentMediaTypes,
-		extensions: parserAttachmentExtensions,
-	} = useChatAttachmentContentTypes();
+	const { mediaTypes: parserAttachmentMediaTypes, extensions: parserAttachmentExtensions } =
+		useChatAttachmentContentTypes();
 
 	const [selectedModel, setSelectedModel] = useState<ChatModelConfig | null>(null);
 	const [selectedFallbackModel, setSelectedFallbackModel] = useState<ChatModelConfig | null>(
@@ -572,11 +570,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 					...parserAttachmentMediaTypes,
 				]),
 			),
-		[
-			nativeAttachmentInputTypes,
-			parserAttachmentExtensions,
-			parserAttachmentMediaTypes,
-		],
+		[nativeAttachmentInputTypes, parserAttachmentExtensions, parserAttachmentMediaTypes],
 	);
 	const processChatAttachment = useCallback(
 		async (file: File) => {

@@ -6,8 +6,13 @@ const getDefaultBaseUrl = () => {
 };
 
 export const getBaseUrl = () => localStorage.getItem('server_url') ?? getDefaultBaseUrl();
-export const getUserId = () =>
-	localStorage.getItem('username') ?? import.meta.env.VITE_AGENTSCOPE_USER_ID ?? 'local-user';
+const ACCESS_TOKEN_KEY = 'agentscope_access_token';
+
+export const getAccessToken = () => localStorage.getItem(ACCESS_TOKEN_KEY);
+export const setAccessToken = (token: string) => localStorage.setItem(ACCESS_TOKEN_KEY, token);
+export const clearAccessToken = () => localStorage.removeItem(ACCESS_TOKEN_KEY);
+
+export const AUTH_UNAUTHORIZED_EVENT = 'agentscope:auth-unauthorized';
 
 /**
  * Structured error thrown for non-2xx HTTP responses.
@@ -34,8 +39,8 @@ interface RequestOptions {
 	signal?: AbortSignal;
 	/** Overrides the stored server URL. Lets the setup page probe an address before persisting it. */
 	baseUrl?: string;
-	/** Overrides the stored username, for the same reason as `baseUrl`. */
-	userId?: string;
+	/** Public endpoints such as login opt out of the bearer token. */
+	authenticated?: boolean;
 	/** Gives up after this many ms and reports {@link TIMEOUT_STATUS}. Off by default — a streaming chat is meant to stay open. */
 	timeoutMs?: number;
 }
@@ -43,8 +48,10 @@ interface RequestOptions {
 /** Reported when `timeoutMs` elapses. Real 408s come from a server, so either way the request did not complete in time. */
 export const TIMEOUT_STATUS = 408;
 
-function buildHeaders(hasBody: boolean, userId?: string): Record<string, string> {
-	const headers: Record<string, string> = { 'X-User-ID': userId ?? getUserId() };
+function buildHeaders(hasBody: boolean, authenticated: boolean): Record<string, string> {
+	const headers: Record<string, string> = {};
+	const token = getAccessToken();
+	if (authenticated && token) headers.Authorization = `Bearer ${token}`;
 	if (hasBody) headers['Content-Type'] = 'application/json';
 	return headers;
 }
@@ -70,7 +77,7 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 		signal,
 		silent = false,
 		baseUrl,
-		userId,
+		authenticated = true,
 		timeoutMs,
 	} = options;
 	const url = new URL(path, baseUrl ?? getBaseUrl());
@@ -88,7 +95,7 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 	try {
 		res = await fetch(url.toString(), {
 			method,
-			headers: buildHeaders(body !== undefined, userId),
+			headers: buildHeaders(body !== undefined, authenticated),
 			body: body ? JSON.stringify(body) : undefined,
 			signal: combined,
 		});
@@ -114,6 +121,9 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 	if (!res.ok) {
 		const detail = await extractErrorDetail(res);
 		const error = new ApiError(res.status, detail);
+		if (res.status === 401 && authenticated && getAccessToken()) {
+			window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT));
+		}
 		if (!silent) toast.error(detail);
 		throw error;
 	}
@@ -131,14 +141,19 @@ export const client = {
 	get: <T>(
 		path: string,
 		params?: Record<string, string>,
-		options?: { silent?: boolean; baseUrl?: string; userId?: string; timeoutMs?: number },
+		options?: {
+			silent?: boolean;
+			baseUrl?: string;
+			authenticated?: boolean;
+			timeoutMs?: number;
+		},
 	) => request<T>(path, { method: 'GET', params, ...options }),
 	post: <T>(
 		path: string,
 		body?: unknown,
 		params?: Record<string, string>,
-		options?: { silent?: boolean },
-	) => request<T>(path, { method: 'POST', body, params, silent: options?.silent }),
+		options?: { silent?: boolean; authenticated?: boolean },
+	) => request<T>(path, { method: 'POST', body, params, ...options }),
 	patch: <T>(
 		path: string,
 		body?: unknown,

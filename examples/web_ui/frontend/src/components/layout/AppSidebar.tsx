@@ -7,6 +7,9 @@ import {
 	KeyRound,
 	Languages,
 	LibraryBig,
+	LogOut,
+	Repeat2,
+	Settings,
 	UserRound,
 } from 'lucide-react';
 import { useOnborda } from 'onborda';
@@ -15,6 +18,14 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import AgentScope from '@/assets/images/agentscope.svg?react';
 import MCPSvg from '@/assets/images/mcp.svg?react';
 import { CHAT_TOUR_NAME } from '@/components/tour/chatTourSteps';
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
 	Sidebar,
 	SidebarContent,
@@ -26,6 +37,7 @@ import {
 	SidebarMenuButton,
 	SidebarMenuItem,
 } from '@/components/ui/sidebar';
+import { useAuth } from '@/hooks/useAuth';
 import i18n from '@/i18n';
 import { useTranslation } from '@/i18n/useI18n';
 
@@ -34,6 +46,7 @@ export function AppSidebar() {
 	const location = useLocation();
 	const { t } = useTranslation();
 	const { startOnborda } = useOnborda();
+	const { user, logout } = useAuth();
 
 	const handleStartTour = () => {
 		if (!location.pathname.startsWith('/chat')) {
@@ -49,6 +62,11 @@ export function AppSidebar() {
 	const handleToggleLanguage = () => {
 		const next = i18n.language.startsWith('zh') ? 'en' : 'zh';
 		i18n.changeLanguage(next);
+	};
+
+	const handleLogout = async () => {
+		await logout();
+		navigate('/login', { replace: true });
 	};
 
 	return (
@@ -150,6 +168,53 @@ export function AppSidebar() {
 			<SidebarFooter>
 				<SidebarMenu>
 					<SidebarMenuItem>
+						<DropdownMenu>
+							<DropdownMenuTrigger asChild>
+								<SidebarMenuButton
+									tooltip={{
+										children: user?.username ?? t('auth.accountCenter'),
+										hidden: false,
+									}}
+									isActive={location.pathname === '/account'}
+									className="justify-center"
+								>
+									<UserRound />
+								</SidebarMenuButton>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent side="right" align="end" className="min-w-52">
+								<DropdownMenuLabel>
+									<div className="font-medium text-foreground">
+										{user?.username}
+									</div>
+									<div className="mt-0.5 font-sans text-xs font-normal">
+										{t('auth.brand')}
+									</div>
+								</DropdownMenuLabel>
+								<DropdownMenuSeparator />
+								<DropdownMenuItem onSelect={() => navigate('/account')}>
+									<UserRound />
+									{t('auth.accountAndUsage')}
+								</DropdownMenuItem>
+								<DropdownMenuItem onSelect={() => navigate('/setup')}>
+									<Settings />
+									{t('common.settings')}
+								</DropdownMenuItem>
+								<DropdownMenuSeparator />
+								<DropdownMenuItem onSelect={() => void handleLogout()}>
+									<Repeat2 />
+									{t('auth.switchAccount')}
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									variant="destructive"
+									onSelect={() => void handleLogout()}
+								>
+									<LogOut />
+									{t('auth.logout')}
+								</DropdownMenuItem>
+							</DropdownMenuContent>
+						</DropdownMenu>
+					</SidebarMenuItem>
+					<SidebarMenuItem>
 						<SidebarMenuButton
 							tooltip={{
 								children: i18n.language.startsWith('zh')
@@ -170,16 +235,6 @@ export function AppSidebar() {
 							className="justify-center"
 						>
 							<Compass />
-						</SidebarMenuButton>
-					</SidebarMenuItem>
-					<SidebarMenuItem>
-						<SidebarMenuButton
-							tooltip={{ children: t('common.settings'), hidden: false }}
-							isActive={location.pathname === '/setup'}
-							onClick={() => navigate('/setup')}
-							className="justify-center"
-						>
-							<UserRound />
 						</SidebarMenuButton>
 					</SidebarMenuItem>
 				</SidebarMenu>

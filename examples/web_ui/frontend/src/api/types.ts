@@ -1077,7 +1077,7 @@ export interface ListDocumentChunksResponse {
 /**
  * Response of `POST /knowledge_bases/{id}/documents/{doc}/download_token`
  * — a short-lived capability for browser-native fetches (`<iframe>`,
- * `<img>`, download links) that cannot carry the `X-User-ID` header.
+ * `<img>`, download links) that cannot carry the authorization header.
  */
 export interface DocumentDownloadTokenResponse {
 	token: string;
