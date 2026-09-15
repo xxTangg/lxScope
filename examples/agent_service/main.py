@@ -39,6 +39,7 @@ from agentscope.workspace import WorkspaceBase
 
 from admin_api import AdminService, admin_router, sales_hub_router
 from auth import load_auth_from_env
+from longxin_admin.credential_policy import AdminManagedCredentialPolicy
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
 from longxin_admin.upgrade import UpgradeService, upgrade_router
 
@@ -83,11 +84,11 @@ vector_store = QdrantStore(
 
 
 async def _ensure_siliconflow_credential(user_ids: tuple[str, ...]) -> None:
-    """Make the configured SiliconFlow credential available in the UI.
+    """Make the configured SiliconFlow credential available to administrators.
 
     SiliconFlow exposes an OpenAI-compatible API, so the existing OpenAI
     credential/model implementation is the correct adapter. The record is
-    provisioned for every configured authenticated user.
+    provisioned only for administrator-owned model configuration.
     """
     api_key = os.getenv("SILICONFLOW_API_KEY")
     if not api_key:
@@ -107,8 +108,8 @@ async def _ensure_siliconflow_credential(user_ids: tuple[str, ...]) -> None:
 
 
 async def _provision_registered_user(user_id: str) -> None:
-    """Give a newly registered account the configured default credential."""
-    await _ensure_siliconflow_credential((user_id,))
+    """Keep newly registered accounts free of provider credentials."""
+    del user_id
 
 
 auth = load_auth_from_env(
@@ -180,6 +181,7 @@ app = create_app(
     # only raises the rate limit.
     mcp_hubs=[GitHubMCPHub()],
     skill_hubs=[ClawSkillHub(api_token=os.getenv("CLAWHUB_API_TOKEN"))],
+    resource_access_policy=AdminManagedCredentialPolicy(auth),
     # Customize your own subagent templates
     custom_subagent_templates=[
         SubAgentTemplate(
@@ -238,6 +240,8 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
 )
 app.state.auth = auth
 app.state.plan_billing_service = PlanBillingService(storage, auth)
+app.state.credential_access_check = auth.is_admin_user
+app.state.chat_access_check = app.state.plan_billing_service.ensure_chat_allowed
 app.state.admin_service = AdminService(
     storage,
     auth,
@@ -261,7 +265,7 @@ _base_lifespan = app.router.lifespan_context
 @asynccontextmanager
 async def _application_lifespan(app_instance):
     async with _base_lifespan(app_instance):
-        await _ensure_siliconflow_credential(auth.user_ids)
+        await _ensure_siliconflow_credential(auth.admin_user_ids)
         yield
 
 

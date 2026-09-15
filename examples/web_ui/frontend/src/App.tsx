@@ -64,6 +64,11 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 	return children;
 }
 
+function AdminOnlyRoute({ children }: { children: React.ReactNode }) {
+	const { user } = useAuth();
+	return user?.role === 'admin' ? children : <Navigate to="/chat" replace />;
+}
+
 const router = createBrowserRouter([
 	{
 		element: (
@@ -87,7 +92,14 @@ const router = createBrowserRouter([
 					},
 					{ path: '/schedule', element: <SchedulePage /> },
 					{ path: '/channel', element: <ChannelPage /> },
-					{ path: '/credential', element: <CredentialPage /> },
+					{
+						path: '/credential',
+						element: (
+							<AdminOnlyRoute>
+								<CredentialPage />
+							</AdminOnlyRoute>
+						),
+					},
 					{ path: '/mcp', element: <MCPHubPage /> },
 					{ path: '/mcp/:hubId', element: <MCPHubPage /> },
 					{ path: '/skill', element: <SkillHubPage /> },

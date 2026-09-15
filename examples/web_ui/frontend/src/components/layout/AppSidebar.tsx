@@ -133,16 +133,18 @@ export function AppSidebar() {
 				<SidebarGroup>
 					<SidebarGroupContent>
 						<SidebarMenu>
-							<SidebarMenuItem>
-								<SidebarMenuButton
-									tooltip={{ children: t('common.credential'), hidden: false }}
-									isActive={location.pathname === '/credential'}
-									onClick={() => navigate('/credential')}
-									className="justify-center"
-								>
-									<KeyRound />
-								</SidebarMenuButton>
-							</SidebarMenuItem>
+							{user?.role === 'admin' && (
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										tooltip={{ children: t('common.credential'), hidden: false }}
+										isActive={location.pathname === '/credential'}
+										onClick={() => navigate('/credential')}
+										className="justify-center"
+									>
+										<KeyRound />
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+							)}
 							<SidebarMenuItem>
 								<SidebarMenuButton
 									tooltip={{ children: t('common.mcp-hub'), hidden: false }}

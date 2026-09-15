@@ -333,6 +333,19 @@ class AdminService:
 
     async def _view(self, account: AuthUser) -> AdminUserView:
         profile = await self._profile(account)
+        if self._plan_billing is not None and account.role == "user":
+            # Keep the administrator's member table aligned with the same
+            # usage projection returned by /account/plan.
+            current = await self._plan_billing.current_plan(account)
+            profile.update(
+                {
+                    "plan_id": current.plan_id,
+                    "plan_name": current.plan_name,
+                    "monthly_quota": current.monthly_quota,
+                    "monthly_used": current.monthly_used,
+                    "bonus_tokens": current.bonus_tokens,
+                },
+            )
         return AdminUserView(
             id=account.id,
             username=account.username,
@@ -409,6 +422,7 @@ class AdminService:
                 )
                 profile = await self._profile(account)
                 profile["bonus_tokens"] = body.bonus_tokens
+                profile["bonus_tokens_granted"] = body.bonus_tokens
                 await self._save_profile(profile)
                 system = await self._system()
             else:
@@ -485,6 +499,7 @@ class AdminService:
                         409,
                     )
                 profile["bonus_tokens"] = body.bonus_tokens
+                profile["bonus_tokens_granted"] = body.bonus_tokens
                 if delta:
                     system["pool_tokens"] -= delta
                     await self._save_system(system)

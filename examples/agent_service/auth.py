@@ -215,6 +215,24 @@ class JWTAuthService:
         """Return environment-configured tenant ids for startup provisioning."""
         return tuple(self._accounts_by_id)
 
+    @property
+    def admin_user_ids(self) -> tuple[str, ...]:
+        """Return configured administrator ids for application wiring."""
+        return tuple(
+            account.user_id
+            for account in self._accounts_by_id.values()
+            if account.role == "admin"
+        )
+
+    async def is_admin_user(self, user_id: str) -> bool:
+        """Return whether an account is an active administrator."""
+        account = await self._account_by_id(user_id)
+        return bool(
+            account is not None
+            and account.role == "admin"
+            and account.status == "active"
+        )
+
     @staticmethod
     def _capabilities(role: str) -> list[str]:
         if role == "admin":

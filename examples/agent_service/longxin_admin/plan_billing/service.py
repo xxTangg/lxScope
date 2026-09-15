@@ -164,6 +164,8 @@ class PlanBillingService:
             "monthly_quota": PLAN_BY_ID["plan_basic"].monthly_quota,
             "monthly_used": 0,
             "bonus_tokens": 0,
+            "bonus_tokens_granted": 0,
+            "usage_baseline_tokens": 0,
             "account_type": "standard",
             "created_at": _now(),
             "updated_at": _now(),
@@ -193,6 +195,7 @@ class PlanBillingService:
 
     async def current_plan(self, user: AuthUser) -> CurrentPlanView:
         profile = await self._profile(user)
+        profile = await self._sync_usage(user, profile)
         expires_at = profile.get("plan_expires_at")
         started_at = profile.get("plan_started_at")
         plan_status = "inactive"
@@ -218,6 +221,65 @@ class PlanBillingService:
             expires_at=expires_at,
             latest_order_id=profile.get("latest_plan_order_id"),
         )
+
+    async def _sync_usage(
+        self,
+        user: AuthUser,
+        profile: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Project persisted AgentScope usage into the member quota profile."""
+        if user.role == "admin":
+            return profile
+
+        usage = await self._auth.get_token_usage(user.id)
+        baseline = max(0, int(profile.get("usage_baseline_tokens", 0)))
+        consumed = max(0, int(usage.total_tokens) - baseline)
+        monthly_quota = max(0, int(profile.get("monthly_quota", 0)))
+        granted_bonus = max(
+            0,
+            int(
+                profile.get(
+                    "bonus_tokens_granted",
+                    profile.get("bonus_tokens", 0),
+                ),
+            ),
+        )
+        monthly_used = min(consumed, monthly_quota)
+        bonus_used = max(consumed - monthly_quota, 0)
+        bonus_remaining = max(granted_bonus - bonus_used, 0)
+        if (
+            int(profile.get("monthly_used", 0)) != monthly_used
+            or int(profile.get("bonus_tokens", 0)) != bonus_remaining
+            or "bonus_tokens_granted" not in profile
+            or "usage_baseline_tokens" not in profile
+        ):
+            profile["monthly_used"] = monthly_used
+            profile["bonus_tokens"] = bonus_remaining
+            profile["bonus_tokens_granted"] = granted_bonus
+            await self._save_profile(profile)
+        return profile
+
+    async def ensure_chat_allowed(self, user_id: str) -> None:
+        """Reject member chat when their administrator allocation is empty."""
+        account = await self._auth._account_by_id(user_id)
+        if account is None:
+            raise _error("user_not_found", "User not found.", 404)
+        user = self._auth._public_user(account)
+        if user.role == "admin":
+            return
+        current = await self.current_plan(user)
+        if current.status != "active":
+            raise _error(
+                "plan_inactive",
+                "The account has no active plan. Please contact an administrator.",
+                403,
+            )
+        if current.remaining_tokens <= 0:
+            raise _error(
+                "quota_exhausted",
+                "The account token balance is exhausted.",
+                403,
+            )
 
     async def _orders(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -483,6 +545,9 @@ class PlanBillingService:
             )
             if order["order_type"] in {"activation", "renewal"}:
                 profile["monthly_used"] = 0
+                profile["usage_baseline_tokens"] = (
+                    await self._auth.get_token_usage(order["user_id"])
+                ).total_tokens
             await self._save_profile(profile)
             await self._append_ledger(
                 entry_type="plan_allocation" if allocation >= 0 else "plan_refund",
@@ -575,9 +640,10 @@ class PlanBillingService:
             raise _error("user_not_found", "User not found.", 404)
         async with self._lock:
             profile = await self._profile(account)
+            was_activated = bool(profile.get("plan_started_at"))
             old_quota = int(profile.get("monthly_quota", 0))
             allocation = target.monthly_quota - old_quota
-            if not profile.get("plan_started_at"):
+            if not was_activated:
                 allocation = target.monthly_quota
             if allocation < 0 and int(profile.get("monthly_used", 0)) > target.monthly_quota:
                 raise _error(
@@ -604,6 +670,10 @@ class PlanBillingService:
                     or (datetime.now(timezone.utc) + timedelta(days=target.period_days)).isoformat(),
                 },
             )
+            if not was_activated:
+                profile["usage_baseline_tokens"] = (
+                    await self._auth.get_token_usage(user_id)
+                ).total_tokens
             await self._save_profile(profile)
             await self._append_ledger(
                 entry_type="admin_plan_allocation" if allocation >= 0 else "plan_refund",
