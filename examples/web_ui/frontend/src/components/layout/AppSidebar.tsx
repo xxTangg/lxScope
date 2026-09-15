@@ -10,6 +10,7 @@ import {
 	LogOut,
 	Repeat2,
 	Settings,
+	ShieldCheck,
 	UserRound,
 } from 'lucide-react';
 import { useOnborda } from 'onborda';
@@ -94,6 +95,18 @@ export function AppSidebar() {
 									<BotMessageSquare />
 								</SidebarMenuButton>
 							</SidebarMenuItem>
+							{user?.role === 'admin' && (
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										tooltip={{ children: t('admin.title'), hidden: false }}
+										isActive={location.pathname.startsWith('/admin')}
+										onClick={() => navigate('/admin')}
+										className="justify-center"
+									>
+										<ShieldCheck />
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+							)}
 							<SidebarMenuItem>
 								<SidebarMenuButton
 									tooltip={{ children: t('common.schedule'), hidden: false }}

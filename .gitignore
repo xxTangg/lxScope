@@ -166,3 +166,5 @@ yarn-error.log*
 lerna-debug.log*
 
 **/workspaces/
+# 本机个人部署备忘(不被 git 跟踪)
+LOCAL_DOCKER_README.md

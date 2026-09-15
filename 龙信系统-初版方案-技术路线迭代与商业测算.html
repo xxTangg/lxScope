@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>龙信系统初版方案｜技术路线、迭代计划与商业测算</title>
+  <style>
+    :root {
+      --ink: #172235;
+      --muted: #667085;
+      --line: #e6eaf0;
+      --paper: #ffffff;
+      --bg: #f4f7fb;
+      --blue: #246bfe;
+      --blue-soft: #eaf1ff;
+      --orange: #ee7d24;
+      --orange-soft: #fff2e7;
+      --green: #169b62;
+      --green-soft: #e8f8f0;
+      --red: #d9485f;
+      --shadow: 0 16px 44px rgba(24, 39, 75, .08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, -apple-system, sans-serif;
+      line-height: 1.65;
+    }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .page { max-width: 1240px; margin: 0 auto; padding: 30px 22px 70px; }
+    .eyebrow { color: var(--blue); font-weight: 700; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: clamp(30px, 4.5vw, 54px); line-height: 1.16; letter-spacing: -.04em; margin-bottom: 18px; }
+    h2 { font-size: 27px; line-height: 1.25; margin-bottom: 18px; letter-spacing: -.02em; }
+    h3 { font-size: 17px; margin-bottom: 8px; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 52px 52px 44px;
+      border-radius: 28px;
+      color: white;
+      background: linear-gradient(125deg, #142844 0%, #1c4b86 58%, #287de8 100%);
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 420px;
+      height: 420px;
+      right: -120px;
+      top: -180px;
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 50%;
+      box-shadow: 0 0 0 42px rgba(255,255,255,.04), 0 0 0 84px rgba(255,255,255,.035);
+    }
+    .hero-content { max-width: 760px; position: relative; z-index: 1; }
+    .hero .eyebrow { color: #a9c9ff; }
+    .hero-sub { color: #d7e6ff; font-size: 17px; max-width: 760px; margin-bottom: 28px; }
+    .hero-statement {
+      display: inline-block;
+      padding: 12px 16px;
+      color: #fff;
+      border-left: 4px solid #ffb066;
+      background: rgba(255,255,255,.11);
+      border-radius: 0 12px 12px 0;
+      font-size: 16px;
+    }
+    .hero-statement strong { color: #ffd49b; }
+    .section { margin-top: 32px; }
+    .section-intro { color: var(--muted); max-width: 780px; }
+    .three-col, .two-col { display: grid; gap: 18px; }
+    .three-col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 22px;
+      box-shadow: 0 8px 28px rgba(24,39,75,.04);
+    }
+    .card p:last-child { margin-bottom: 0; }
+    .track { min-height: 205px; }
+    .track-top { display: flex; align-items: center; gap: 12px; margin-bottom: 15px; }
+    .track-no {
+      display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px;
+      color: white; font-size: 18px; font-weight: 800; background: var(--blue);
+    }
+    .track:nth-child(2) .track-no { background: var(--orange); }
+    .track:nth-child(3) .track-no { background: var(--green); }
+    .track h3 { margin: 0; }
+    .track ul, .compact-list { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
+    .track li, .compact-list li { margin: 5px 0; }
+    .callout {
+      margin-top: 18px; padding: 15px 18px; border-radius: 14px; background: var(--blue-soft); color: #234a96;
+      border: 1px solid #d6e3ff;
+    }
+    .callout.orange { background: var(--orange-soft); border-color: #ffd9bd; color: #8a4b1d; }
+    .callout.green { background: var(--green-soft); border-color: #c8eedb; color: #176c49; }
+    .kicker { font-size: 12px; font-weight: 800; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; }
+    .route {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin-top: 20px;
+    }
+    .route-step { position: relative; padding: 20px 22px; min-height: 150px; background: var(--paper); border: 1px solid var(--line); }
+    .route-step:first-child { border-radius: 16px 0 0 16px; }
+    .route-step:last-child { border-radius: 0 16px 16px 0; }
+    .route-step + .route-step { border-left: 0; }
+    .route-step::after { content: "→"; position: absolute; right: -17px; top: 49px; width: 32px; height: 32px; display: grid; place-items: center; z-index: 2; color: white; background: var(--blue); border-radius: 50%; font-size: 20px; }
+    .route-step:last-child::after { display: none; }
+    .route-step strong { display: block; font-size: 18px; margin: 4px 0; }
+    .route-step span { color: var(--muted); font-size: 14px; }
+    .matrix { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .matrix th, .matrix td { text-align: left; padding: 13px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .matrix th { color: var(--muted); font-weight: 700; background: #fafbfd; }
+    .matrix tr:last-child td { border-bottom: 0; }
+    .status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 700; }
+    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    .status.partial { color: #9a5b14; }
+    .status.partial::before { background: var(--orange); }
+    .status.missing { color: var(--red); }
+    .status.missing::before { background: var(--red); }
+    .status.have { color: #16784d; }
+    .priority { display: grid; gap: 14px; }
+    .priority-row { display: grid; grid-template-columns: 74px 1fr 145px; gap: 16px; align-items: center; padding: 17px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); }
+    .priority-tag { font-weight: 800; font-size: 15px; }
+    .priority-tag.p0 { color: var(--red); }
+    .priority-tag.p1 { color: var(--orange); }
+    .priority-tag.p2 { color: var(--blue); }
+    .priority-title { font-weight: 800; }
+    .priority-desc { color: var(--muted); font-size: 14px; }
+    .priority-result { color: var(--muted); font-size: 13px; text-align: right; }
+    .calculator { background: linear-gradient(135deg, #fffaf5 0%, #fff 50%); border-color: #f7d9bf; }
+    .calc-layout { display: grid; grid-template-columns: 1.1fr .9fr; gap: 26px; align-items: start; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
+    label { display: block; font-size: 13px; color: var(--muted); font-weight: 700; }
+    input {
+      display: block; width: 100%; margin-top: 6px; padding: 11px 12px; border: 1px solid #d7dde8; border-radius: 10px;
+      color: var(--ink); background: white; font: inherit; font-size: 16px; outline: none;
+    }
+    input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(36,107,254,.14); }
+    .note { color: var(--muted); font-size: 12px; margin-top: 13px; }
+    .results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .result { padding: 15px; border-radius: 13px; background: white; border: 1px solid #f0e1d5; }
+    .result-label { color: var(--muted); font-size: 12px; }
+    .result-value { font-size: 25px; font-weight: 800; line-height: 1.2; margin-top: 4px; color: #9b4d12; }
+    .result-unit { font-size: 12px; color: var(--muted); }
+    .bar-wrap { margin-top: 20px; }
+    .bar-label { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    .bar { height: 10px; border-radius: 20px; background: #f1e8df; overflow: hidden; }
+    .bar > i { display: block; height: 100%; border-radius: inherit; background: var(--orange); transition: width .2s ease; }
+    .cadence { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+    .cadence-item { padding: 16px; border-radius: 14px; background: var(--paper); border: 1px solid var(--line); }
+    .cadence-day { color: var(--blue); font-weight: 800; font-size: 13px; }
+    .cadence-item strong { display: block; margin: 5px 0; }
+    .cadence-item span { color: var(--muted); font-size: 13px; }
+    .checklist { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+    .checklist li { display: flex; gap: 10px; align-items: flex-start; }
+    .check { flex: 0 0 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; color: white; background: var(--green); font-size: 13px; margin-top: 2px; }
+    .footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+    @media (max-width: 850px) {
+      .hero { padding: 36px 26px 32px; }
+      .three-col, .two-col, .calc-layout { grid-template-columns: 1fr; }
+      .route { grid-template-columns: 1fr; gap: 12px; }
+      .route-step, .route-step:first-child, .route-step:last-child { border-radius: 16px; border: 1px solid var(--line); }
+      .route-step + .route-step { border-left: 1px solid var(--line); }
+      .route-step::after { content: "↓"; right: calc(50% - 16px); top: auto; bottom: -22px; }
+      .route-step:last-child::after { display: none; }
+      .priority-row { grid-template-columns: 60px 1fr; }
+      .priority-result { grid-column: 2; text-align: left; }
+      .cadence { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 520px) {
+      .page { padding: 16px 12px 48px; }
+      .hero { border-radius: 20px; }
+      .form-grid, .results, .cadence { grid-template-columns: 1fr; }
+      .matrix { min-width: 650px; }
+      .table-scroll { overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-content">
+        <div class="eyebrow">龙信系统 · 今日初版方案</div>
+        <h1>先把路线拉齐，再让每次迭代被看见，最后把账算明白。</h1>
+        <p class="hero-sub">这不是一份单纯的技术差距报告，而是一份可以直接拿来对齐产品、技术和商业思路的初版方案。</p>
+        <div class="hero-statement"><strong>核心承诺：</strong>用户今天能看到变化，团队每天能交付结果，管理者能随时知道成本、并发和任务上限。</div>
+      </div>
+    </header>
+
+    <section class="section" aria-labelledby="three-points">
+      <div class="eyebrow">第一屏先对齐三件事</div>
+      <h2 id="three-points">从“能不能做”转向“用户能不能感知、公司能不能算清”</h2>
+      <div class="three-col">
+        <article class="card track">
+          <div class="track-top"><div class="track-no">1</div><h3>技术路线合并</h3></div>
+          <p>以现有 lxScope/AgentScope 能力为基线，不推倒重来，补齐龙信的企业产品层。</p>
+          <ul>
+            <li>复用 Agent、会话、知识库、权限和 Pipeline 底座</li>
+            <li>增加安全模式、租户边界、工作流和运营后台</li>
+            <li>形成长期可维护的“底座 + 产品层”结构</li>
+          </ul>
+        </article>
+        <article class="card track">
+          <div class="track-top"><div class="track-no">2</div><h3>功能迭代显性化</h3></div>
+          <p>不等“大版本”才让用户看到变化，每天都有可展示、可验证、可复盘的输出。</p>
+          <ul>
+            <li>每天一个可感知的功能或体验改进</li>
+            <li>每周一个可演示的稳定闭环</li>
+            <li>每次迭代都有截图、指标和验收场景</li>
+          </ul>
+        </article>
+        <article class="card track">
+          <div class="track-top"><div class="track-no">3</div><h3>商业模式测算</h3></div>
+          <p>建立一本关于 Token、算力、并发和任务额度的账，先把成本和上限算明白。</p>
+          <ul>
+            <li>一个任务平均消耗多少 Token</li>
+            <li>当前算力支持多少并发和每日任务</li>
+            <li>普通会员账号能够稳定完成多少任务</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="positioning">
+      <div class="eyebrow">路线合并方案</div>
+      <h2 id="positioning">不换底座，补齐三层产品能力</h2>
+      <p class="section-intro">当前项目已经有 Agent 平台底座，龙信下一阶段的重点不是再堆工具，而是把安全、工作流、运营和商业账本接到同一条产品路线中。</p>
+      <div class="route" aria-label="技术路线合并示意">
+        <div class="route-step">
+          <div class="kicker">现有底座</div>
+          <strong>Agent 运行层</strong>
+          <span>会话、消息流、任务中断、知识库、MCP、Skill、Pipeline、人工确认</span>
+        </div>
+        <div class="route-step">
+          <div class="kicker">下一阶段</div>
+          <strong>龙信产品层</strong>
+          <span>安全模式、租户隔离、Office 工作流、结果页、版本发布、管理员控制台</span>
+        </div>
+        <div class="route-step">
+          <div class="kicker">最终形成</div>
+          <strong>企业经营层</strong>
+          <span>Token 账本、套餐额度、并发控制、运营数据、审计和可恢复运维</span>
+        </div>
+      </div>
+      <div class="callout"><strong>路线原则：</strong>先基线拉齐，再高频交付；先把边界管住，再扩大 Agent 自主能力；先做一个真实工作流，再扩展通用 BPMN。</div>
+    </section>
+
+    <section class="section" aria-labelledby="capability">
+      <div class="eyebrow">现状与差距</div>
+      <h2 id="capability">当前系统已经有什么，还缺什么</h2>
+      <div class="card table-scroll">
+        <table class="matrix">
+          <thead><tr><th>能力</th><th>当前 lxScope</th><th>与龙信目标的关系</th></tr></thead>
+          <tbody>
+            <tr><td>Agent 与会话</td><td>有 Session、SSE、状态、停止、中断、任务工具和人工确认</td><td><span class="status have">底座已有</span></td></tr>
+            <tr><td>知识库</td><td>支持 PDF、Word、Excel、PPT、图片解析和向量检索</td><td><span class="status have">基本已有</span></td></tr>
+            <tr><td>账号体系</td><td>有 JWT 登录、注册、当前用户和 Token 汇总</td><td><span class="status partial">基础已有，企业管理缺失</span></td></tr>
+            <tr><td>Office 输出</td><td>有工作区和下载能力，有 Office 依赖，但缺少固定模板生成闭环</td><td><span class="status partial">需要产品化</span></td></tr>
+            <tr><td>权限安全</td><td>有权限引擎和 HITL，但默认使用本地工作区，并默认挂载浏览器 MCP</td><td><span class="status missing">与企业安全基线有冲突</span></td></tr>
+            <tr><td>工作流</td><td>有 GoalPipeline、重试、任务和人工确认</td><td><span class="status partial">有底座，缺工作流中心</span></td></tr>
+            <tr><td>计费与 HQ</td><td>没有套餐、余额、订单、充值、额度、总部和账本模型</td><td><span class="status missing">基本缺失</span></td></tr>
+            <tr><td>审计与恢复</td><td>支持本地卷备份和离线镜像，但缺少异地恢复和完整审计</td><td><span class="status partial">需要补齐</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout orange"><strong>关键提醒：</strong>当前服务默认启用 Playwright 浏览器 MCP，且示例部署使用 LocalWorkspaceManager。这与龙信文档要求的“默认关闭网络、主机读写和命令能力”不一致，应先建立企业安全模式。</div>
+    </section>
+
+    <section class="section" aria-labelledby="cadence-title">
+      <div class="eyebrow">让用户每天感知变化</div>
+      <h2 id="cadence-title">高频迭代不是“每天发代码”，而是每天交付一个可验证结果</h2>
+      <div class="cadence">
+        <div class="cadence-item"><div class="cadence-day">DAY 1</div><strong>安全模式开关</strong><span>用户能看到企业模式与开发模式的边界。</span></div>
+        <div class="cadence-item"><div class="cadence-day">DAY 2</div><strong>任务成本展示</strong><span>用户能看到本次任务 Token 和估算成本。</span></div>
+        <div class="cadence-item"><div class="cadence-day">DAY 3</div><strong>结果文件关联</strong><span>用户能从一条消息直接找到生成结果。</span></div>
+        <div class="cadence-item"><div class="cadence-day">DAY 4</div><strong>人工确认节点</strong><span>用户能暂停、确认、退回并继续任务。</span></div>
+      </div>
+      <div class="two-col" style="margin-top:18px">
+        <div class="card">
+          <h3>每日输出标准</h3>
+          <ul class="checklist">
+            <li><span class="check">✓</span><span>一个用户看得见的界面或流程变化</span></li>
+            <li><span class="check">✓</span><span>一个可重复的验收场景</span></li>
+            <li><span class="check">✓</span><span>一张截图或一段演示结果</span></li>
+            <li><span class="check">✓</span><span>一项指标：成功率、耗时、Token 或并发</span></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>每周稳定闭环</h3>
+          <p>以“上传资料 → 生成内容 → 人工确认 → 导出文件 → 查看成本”为一条主线，每周完成一个能让用户真正使用的闭环。</p>
+          <div class="callout green"><strong>用户感知目标：</strong>用户不需要了解底层 Agent，也能感觉到系统越来越快、越来越稳、越来越会办事。</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="business-title">
+      <div class="eyebrow">商业模式测算和验证</div>
+      <h2 id="business-title">先建立“一本 Token 账”</h2>
+      <p class="section-intro">下面是初版测算器。默认数字只是示例参数，不代表最终供应商价格；实际接入模型后，将输入真实单价、平均 Token、并发和任务耗时。</p>
+      <div class="card calculator">
+        <div class="calc-layout">
+          <div>
+            <h3>可调整参数</h3>
+            <div class="form-grid">
+              <label>单任务输入 Token<input id="inputTokens" type="number" min="0" step="1000" value="35000"></label>
+              <label>单任务输出 Token<input id="outputTokens" type="number" min="0" step="1000" value="8000"></label>
+              <label>输入价格（元/百万 Token）<input id="inputPrice" type="number" min="0" step="0.1" value="2"></label>
+              <label>输出价格（元/百万 Token）<input id="outputPrice" type="number" min="0" step="0.1" value="8"></label>
+              <label>可用并发槽位<input id="concurrency" type="number" min="1" step="1" value="20"></label>
+              <label>平均单任务耗时（分钟）<input id="duration" type="number" min="0.1" step="0.5" value="8"></label>
+              <label>每天可运行小时<input id="hours" type="number" min="0.1" step="0.5" value="8"></label>
+              <label>会员月 Token 额度<input id="memberQuota" type="number" min="0" step="10000" value="500000"></label>
+            </div>
+            <p class="note">建议下一步从真实任务采样：连续记录 100 个任务的输入 Token、输出 Token、耗时、失败原因和最终文件大小，再替换默认参数。</p>
+          </div>
+          <div>
+            <h3>实时测算结果</h3>
+            <div class="results" aria-live="polite">
+              <div class="result"><div class="result-label">单任务总 Token</div><div id="taskTokens" class="result-value">43,000</div><div class="result-unit">Token / 任务</div></div>
+              <div class="result"><div class="result-label">单任务模型成本</div><div id="taskCost" class="result-value">¥0.13</div><div class="result-unit">示例成本</div></div>
+              <div class="result"><div class="result-label">理论每日任务上限</div><div id="dailyCapacity" class="result-value">1,200</div><div class="result-unit">任务 / 天</div></div>
+              <div class="result"><div class="result-label">普通会员可做任务</div><div id="memberTasks" class="result-value">11</div><div class="result-unit">任务 / 月</div></div>
+            </div>
+            <div class="bar-wrap">
+              <div class="bar-label"><span>会员额度消耗：完成 1 个任务</span><strong id="quotaPercent">8.6%</strong></div>
+              <div class="bar"><i id="quotaBar" style="width:8.6%"></i></div>
+            </div>
+            <div class="callout orange"><strong>这本账最终要回答：</strong>一个会员多少钱、能做多少任务；一个任务毛利多少；当前服务器能承载多少并发；额度和算力谁先成为瓶颈。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="priorities">
+      <div class="eyebrow">今天给出的初版优先级</div>
+      <h2 id="priorities">先做三件事，形成可感知、可维护、可经营的系统</h2>
+      <div class="priority">
+        <div class="priority-row"><div class="priority-tag p0">P0</div><div><div class="priority-title">企业安全模式与租户隔离</div><div class="priority-desc">关闭默认浏览器/网络/主机命令，统一 JWT，补齐组织、角色、资源边界、审计和安全验收。</div></div><div class="priority-result">先把边界管住</div></div>
+        <div class="priority-row"><div class="priority-tag p0">P0</div><div><div class="priority-title">数据可靠性、Token 账本和恢复机制</div><div class="priority-desc">把任务、Token、文件、Qdrant、Redis 的数据链路记录清楚，完成备份、恢复和 RPO/RTO 验证。</div></div><div class="priority-result">先把账算清楚</div></div>
+        <div class="priority-row"><div class="priority-tag p1">P1</div><div><div class="priority-title">PPT/Word 工作流垂直闭环</div><div class="priority-desc">先做一套 PPT 和一套 Word 流程，支持上传、生成、人工确认、退回、重试、导出和结果关联。</div></div><div class="priority-result">先做出用户能用的结果</div></div>
+        <div class="priority-row"><div class="priority-tag p1">P1</div><div><div class="priority-title">企业管理和运营控制台</div><div class="priority-desc">增加用户、角色、套餐、额度、并发、用量账本、审计、版本发布和升级回滚。</div></div><div class="priority-result">让系统可经营</div></div>
+        <div class="priority-row"><div class="priority-tag p2">P2</div><div><div class="priority-title">高级 Office、OCR、引用和通用 BPMN</div><div class="priority-desc">在安全、可靠性和垂直工作流稳定后，再扩展复杂排版、引用定位、并行节点和受控联网搜索。</div></div><div class="priority-result">扩展上限</div></div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="next-step">
+      <div class="eyebrow">建议的下一步</div>
+      <h2 id="next-step">把“探索思考”变成下周可以验收的结果</h2>
+      <div class="two-col">
+        <div class="card">
+          <h3>第一周：拉齐基线</h3>
+          <ul class="compact-list">
+            <li>确定企业安全模式的默认工具清单</li>
+            <li>采样 100 个真实任务，建立 Token/耗时/失败账本</li>
+            <li>完成跨用户和跨租户访问验收</li>
+            <li>确定 PPT/Word 第一条业务流程</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>第二周：交付首个用户闭环</h3>
+          <ul class="compact-list">
+            <li>任务结果页和 Token 成本展示</li>
+            <li>一个可暂停、确认、退回、重试的 Office 流程</li>
+            <li>每日输出截图、演示和指标</li>
+            <li>形成第一版会员额度和算力测算表</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout green"><strong>最终判断：</strong>当前项目不需要推倒重来。最合理的路线是复用已有 Agent 底座，优先补齐安全、可靠、工作流和商业账本，让系统从“能运行”走向“用户能感知、团队能维护、公司能经营”。</div>
+    </section>
+
+    <footer class="footer">
+      <p>参考材料：D:\龙信系统-3.8.1\龙信系统-版本功能演进与发展方向-通俗版.md；D:\龙信系统-3.8.1\龙信系统-版本功能演进与产品技术方向总结.md</p>
+      <p>代码对比范围：D:\agentscope_lx\lxScope。本文为初版方案，价格、Token、并发和任务数据需要用真实运行数据继续校准。</p>
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      const ids = ["inputTokens", "outputTokens", "inputPrice", "outputPrice", "concurrency", "duration", "hours", "memberQuota"];
+      const fields = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
+      const output = {
+        taskTokens: document.getElementById("taskTokens"),
+        taskCost: document.getElementById("taskCost"),
+        dailyCapacity: document.getElementById("dailyCapacity"),
+        memberTasks: document.getElementById("memberTasks"),
+        quotaPercent: document.getElementById("quotaPercent"),
+        quotaBar: document.getElementById("quotaBar")
+      };
+      const number = (value) => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+      const fmt = (value, digits = 0) => new Intl.NumberFormat("zh-CN", { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value);
+      function calculate() {
+        const input = number(fields.inputTokens.value);
+        const outputTokens = number(fields.outputTokens.value);
+        const inputPrice = number(fields.inputPrice.value);
+        const outputPrice = number(fields.outputPrice.value);
+        const concurrency = Math.max(1, number(fields.concurrency.value));
+        const duration = Math.max(.1, number(fields.duration.value));
+        const hours = number(fields.hours.value);
+        const quota = number(fields.memberQuota.value);
+        const total = input + outputTokens;
+        const cost = input / 1000000 * inputPrice + outputTokens / 1000000 * outputPrice;
+        const capacity = concurrency * hours * 60 / duration;
+        const memberTasks = total > 0 ? Math.floor(quota / total) : 0;
+        const quotaPercent = quota > 0 ? Math.min(100, total / quota * 100) : 0;
+        output.taskTokens.textContent = fmt(total);
+        output.taskCost.textContent = "¥" + fmt(cost, 2);
+        output.dailyCapacity.textContent = fmt(capacity);
+        output.memberTasks.textContent = fmt(memberTasks);
+        output.quotaPercent.textContent = fmt(quotaPercent, 1) + "%";
+        output.quotaBar.style.width = quotaPercent + "%";
+      }
+      ids.forEach((id) => fields[id].addEventListener("input", calculate));
+      calculate();
+    }());
+  </script>
+</body>
+</html>

@@ -41,6 +41,8 @@ interface RequestOptions {
 	baseUrl?: string;
 	/** Public endpoints such as login opt out of the bearer token. */
 	authenticated?: boolean;
+	/** Optional correlation or idempotency headers for state-changing requests. */
+	headers?: Record<string, string>;
 	/** Gives up after this many ms and reports {@link TIMEOUT_STATUS}. Off by default — a streaming chat is meant to stay open. */
 	timeoutMs?: number;
 }
@@ -79,6 +81,7 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 		baseUrl,
 		authenticated = true,
 		timeoutMs,
+		headers: extraHeaders,
 	} = options;
 	const url = new URL(path, baseUrl ?? getBaseUrl());
 	if (params) {
@@ -95,7 +98,7 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 	try {
 		res = await fetch(url.toString(), {
 			method,
-			headers: buildHeaders(body !== undefined, authenticated),
+			headers: { ...buildHeaders(body !== undefined, authenticated), ...extraHeaders },
 			body: body ? JSON.stringify(body) : undefined,
 			signal: combined,
 		});
@@ -146,20 +149,32 @@ export const client = {
 			baseUrl?: string;
 			authenticated?: boolean;
 			timeoutMs?: number;
+			headers?: Record<string, string>;
 		},
 	) => request<T>(path, { method: 'GET', params, ...options }),
 	post: <T>(
 		path: string,
 		body?: unknown,
 		params?: Record<string, string>,
-		options?: { silent?: boolean; authenticated?: boolean },
+		options?: {
+			silent?: boolean;
+			authenticated?: boolean;
+			headers?: Record<string, string>;
+		},
 	) => request<T>(path, { method: 'POST', body, params, ...options }),
 	patch: <T>(
 		path: string,
 		body?: unknown,
 		params?: Record<string, string>,
-		options?: { silent?: boolean },
-	) => request<T>(path, { method: 'PATCH', body, params, silent: options?.silent }),
+		options?: { silent?: boolean; headers?: Record<string, string> },
+	) =>
+		request<T>(path, {
+			method: 'PATCH',
+			body,
+			params,
+			silent: options?.silent,
+			headers: options?.headers,
+		}),
 	delete: <T = void>(path: string, params?: Record<string, string>) =>
 		request<T>(path, { method: 'DELETE', params }),
 	stream: (path: string, options?: RequestOptions) => streamRequest(path, options),

@@ -10,9 +10,9 @@ import json
 import os
 import secrets
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import jwt
@@ -44,6 +44,10 @@ class AuthUser(BaseModel):
 
     id: str
     username: str
+    role: Literal["user", "admin"] = "user"
+    status: Literal["active", "locked", "banned", "deleted"] = "active"
+    capabilities: list[str] = Field(default_factory=list)
+    token_version: int = Field(default=0, exclude=True)
 
 
 class LoginResponse(BaseModel):
@@ -73,6 +77,11 @@ class _StoredAccount(BaseModel):
     salt: str
     password_digest: str
     created_at: str
+    role: Literal["user", "admin"] = "user"
+    status: Literal["active", "locked", "banned", "deleted"] = "active"
+    failed_attempts: int = 0
+    locked_until: str | None = None
+    token_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,11 @@ class _Account:
     user_id: str
     salt: bytes
     password_digest: bytes
+    role: Literal["user", "admin"] = "user"
+    status: Literal["active", "locked", "banned", "deleted"] = "active"
+    failed_attempts: int = 0
+    locked_until: str | None = None
+    token_version: int = 0
 
 
 def _derive_password(password: str, salt: bytes) -> bytes:
@@ -114,7 +128,7 @@ class JWTAuthService:
 
     def __init__(
         self,
-        users: dict[str, tuple[str, str]],
+        users: dict[str, tuple[str, str] | tuple[str, str, str]],
         secret: str,
         *,
         storage: Any | None = None,
@@ -132,7 +146,14 @@ class JWTAuthService:
 
         accounts: dict[str, _Account] = {}
         accounts_by_id: dict[str, _Account] = {}
-        for username, (user_id, password) in users.items():
+        for username, config in users.items():
+            if len(config) == 2:
+                user_id, password = config
+                configured_role = "admin" if username.strip().lower() == "admin" else "user"
+            else:
+                user_id, password, configured_role = config
+            if configured_role not in {"user", "admin"}:
+                raise ValueError("Auth roles must be either 'user' or 'admin'.")
             normalized = self._normalize_username(username)
             if not user_id.strip() or not password:
                 raise ValueError("Auth user ids and passwords are required.")
@@ -146,6 +167,7 @@ class JWTAuthService:
                 user_id=user_id,
                 salt=salt,
                 password_digest=_derive_password(password, salt),
+                role=configured_role,
             )
             accounts[normalized] = account
             accounts_by_id[user_id] = account
@@ -193,6 +215,43 @@ class JWTAuthService:
         """Return environment-configured tenant ids for startup provisioning."""
         return tuple(self._accounts_by_id)
 
+    @staticmethod
+    def _capabilities(role: str) -> list[str]:
+        if role == "admin":
+            return [
+                "admin.users.read",
+                "admin.users.write",
+                "admin.quota.read",
+                "admin.quota.write",
+                "admin.sales_hub.write",
+            ]
+        return ["chat.read", "chat.write"]
+
+    @classmethod
+    def _public_user(cls, account: _Account) -> AuthUser:
+        return AuthUser(
+            id=account.user_id,
+            username=account.username,
+            role=account.role,
+            status=account.status,
+            capabilities=cls._capabilities(account.role),
+            token_version=account.token_version,
+        )
+
+    @staticmethod
+    def _account_from_stored(stored: _StoredAccount) -> _Account:
+        return _Account(
+            username=stored.username,
+            user_id=stored.user_id,
+            salt=base64.b64decode(stored.salt),
+            password_digest=base64.b64decode(stored.password_digest),
+            role=stored.role,
+            status=stored.status,
+            failed_attempts=stored.failed_attempts,
+            locked_until=stored.locked_until,
+            token_version=stored.token_version,
+        )
+
     async def _registered_by_username(self, username: str) -> _Account | None:
         client = self._redis_or_none()
         if client is None:
@@ -201,12 +260,7 @@ class JWTAuthService:
         if raw is None:
             return None
         stored = _StoredAccount.model_validate_json(raw)
-        return _Account(
-            username=stored.username,
-            user_id=stored.user_id,
-            salt=base64.b64decode(stored.salt),
-            password_digest=base64.b64decode(stored.password_digest),
-        )
+        return self._account_from_stored(stored)
 
     async def _registered_by_id(self, user_id: str) -> _Account | None:
         client = self._redis_or_none()
@@ -217,22 +271,88 @@ class JWTAuthService:
             return None
         return await self._registered_by_username(username)
 
+    async def _account_by_username(self, username: str) -> _Account | None:
+        registered = await self._registered_by_username(username)
+        return registered or self._accounts.get(username)
+
+    async def _account_by_id(self, user_id: str) -> _Account | None:
+        registered = await self._registered_by_id(user_id)
+        return registered or self._accounts_by_id.get(user_id)
+
+    async def _save_account(self, account: _Account) -> None:
+        if account.user_id in self._accounts_by_id:
+            self._accounts_by_id[account.user_id] = account
+            self._accounts[account.username] = account
+        client = self._redis_or_none()
+        if client is None:
+            return
+        stored = _StoredAccount(
+            username=account.username,
+            user_id=account.user_id,
+            salt=base64.b64encode(account.salt).decode("ascii"),
+            password_digest=base64.b64encode(account.password_digest).decode("ascii"),
+            created_at=datetime.now(timezone.utc).isoformat(),
+            role=account.role,
+            status=account.status,
+            failed_attempts=account.failed_attempts,
+            locked_until=account.locked_until,
+            token_version=account.token_version,
+        )
+        await client.set(self._username_key(account.username), stored.model_dump_json())
+        await client.set(self._user_key(account.user_id), account.username)
+
+    @staticmethod
+    def _lock_is_active(account: _Account) -> bool:
+        if account.status != "locked":
+            return False
+        if not account.locked_until:
+            return True
+        try:
+            return datetime.fromisoformat(account.locked_until) > datetime.now(
+                timezone.utc,
+            )
+        except ValueError:
+            return True
+
     async def authenticate(self, username: str, password: str) -> AuthUser:
         try:
             normalized = self._normalize_username(username)
         except ValueError as exc:
             raise _unauthorized("Invalid username or password.") from exc
-        account = self._accounts.get(normalized)
-        if account is None:
-            account = await self._registered_by_username(normalized)
+        account = await self._account_by_username(normalized)
         if account is None:
             await asyncio.to_thread(_derive_password, password, b"longxin-login--")
             raise _unauthorized("Invalid username or password.")
+        if account.status in {"banned", "deleted"} or self._lock_is_active(account):
+            raise _unauthorized("This account is not available.")
 
         candidate = await asyncio.to_thread(_derive_password, password, account.salt)
         if not hmac.compare_digest(candidate, account.password_digest):
+            attempts = account.failed_attempts + 1
+            locked = attempts >= 5
+            await self._save_account(
+                replace(
+                    account,
+                    failed_attempts=attempts,
+                    status="locked" if locked else account.status,
+                    locked_until=(
+                        (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+                        if locked
+                        else account.locked_until
+                    ),
+                    token_version=account.token_version + (1 if locked else 0),
+                ),
+            )
             raise _unauthorized("Invalid username or password.")
-        return AuthUser(id=account.user_id, username=account.username)
+        if account.failed_attempts or account.status == "locked":
+            account = replace(
+                account,
+                failed_attempts=0,
+                status="active",
+                locked_until=None,
+            )
+            await self._save_account(account)
+        return self._public_user(account)
 
     async def register(self, username: str, password: str) -> AuthUser:
         try:
@@ -242,7 +362,7 @@ class JWTAuthService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
-        if normalized in self._accounts:
+        if await self._account_by_username(normalized):
             raise _account_conflict()
 
         salt = secrets.token_bytes(16)
@@ -254,6 +374,7 @@ class JWTAuthService:
             salt=base64.b64encode(salt).decode("ascii"),
             password_digest=base64.b64encode(digest).decode("ascii"),
             created_at=datetime.now(timezone.utc).isoformat(),
+            role="user",
         )
         client = self._redis()
         created = await client.set(
@@ -266,7 +387,101 @@ class JWTAuthService:
         await client.set(self._user_key(user_id), normalized)
         if self._on_registered is not None:
             await self._on_registered(user_id)
-        return AuthUser(id=user_id, username=normalized)
+        return self._public_user(self._account_from_stored(stored))
+
+    async def create_user(self, username: str, password: str) -> AuthUser:
+        """Create a normal user for the administrator API."""
+        try:
+            normalized = self._normalize_username(username)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        if await self._account_by_username(normalized):
+            raise _account_conflict()
+        salt = secrets.token_bytes(16)
+        digest = await asyncio.to_thread(_derive_password, password, salt)
+        account = _Account(
+            username=normalized,
+            user_id=f"user-{uuid4().hex}",
+            salt=salt,
+            password_digest=digest,
+        )
+        await self._save_account(account)
+        if self._on_registered is not None:
+            await self._on_registered(account.user_id)
+        return self._public_user(account)
+
+    async def list_accounts(self) -> list[AuthUser]:
+        """Return configured and persisted accounts for administration."""
+        accounts = dict(self._accounts_by_id)
+        client = self._redis_or_none()
+        if client is not None:
+            async for key in client.scan_iter(
+                match=f"{_AUTH_KEY_PREFIX}:username:*",
+                count=100,
+            ):
+                raw = await client.get(key)
+                if raw:
+                    account = self._account_from_stored(
+                        _StoredAccount.model_validate_json(raw),
+                    )
+                    accounts[account.user_id] = account
+        return [
+            self._public_user(account)
+            for account in sorted(accounts.values(), key=lambda item: item.username)
+        ]
+
+    async def set_status(
+        self,
+        user_id: str,
+        account_status: Literal["active", "locked", "banned", "deleted"],
+    ) -> AuthUser:
+        account = await self._account_by_id(user_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="User not found.")
+        updated = replace(
+            account,
+            status=account_status,
+            locked_until=None,
+            token_version=account.token_version + 1,
+        )
+        await self._save_account(updated)
+        return self._public_user(updated)
+
+    async def verify_password(self, user_id: str, password: str) -> bool:
+        account = await self._account_by_id(user_id)
+        if account is None:
+            return False
+        candidate = await asyncio.to_thread(_derive_password, password, account.salt)
+        return hmac.compare_digest(candidate, account.password_digest)
+
+    async def reset_password(self, user_id: str, password: str) -> AuthUser:
+        account = await self._account_by_id(user_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="User not found.")
+        salt = secrets.token_bytes(16)
+        digest = await asyncio.to_thread(_derive_password, password, salt)
+        updated = replace(
+            account,
+            salt=salt,
+            password_digest=digest,
+            failed_attempts=0,
+            locked_until=None,
+            status="active" if account.status == "locked" else account.status,
+            token_version=account.token_version + 1,
+        )
+        await self._save_account(updated)
+        return self._public_user(updated)
+
+    async def revoke_sessions(self, user_id: str) -> AuthUser:
+        account = await self._account_by_id(user_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="User not found.")
+        updated = replace(account, token_version=account.token_version + 1)
+        await self._save_account(updated)
+        return self._public_user(updated)
 
     def issue_access_token(self, user: AuthUser) -> tuple[str, int]:
         now = datetime.now(timezone.utc)
@@ -279,13 +494,14 @@ class JWTAuthService:
                 "aud": self._audience,
                 "iat": now,
                 "exp": expires,
+                "token_version": user.token_version,
             },
             self._secret,
             algorithm="HS256",
         )
         return token, int(self._token_lifetime.total_seconds())
 
-    def _decode_identity(self, token: str) -> tuple[str, str]:
+    def _decode_identity(self, token: str) -> tuple[str, str, int]:
         try:
             payload = jwt.decode(
                 token,
@@ -301,7 +517,10 @@ class JWTAuthService:
         username = payload.get("username")
         if not isinstance(user_id, str) or not isinstance(username, str):
             raise _unauthorized("Invalid access token identity.")
-        return user_id, username
+        token_version = payload.get("token_version", 0)
+        if not isinstance(token_version, int):
+            raise _unauthorized("Invalid access token version.")
+        return user_id, username, token_version
 
     async def get_current_user(
         self,
@@ -310,13 +529,17 @@ class JWTAuthService:
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.lower() != "bearer" or not token:
             raise _unauthorized("Bearer access token is required.")
-        user_id, username = self._decode_identity(token)
-        account = self._accounts_by_id.get(user_id)
-        if account is None:
-            account = await self._registered_by_id(user_id)
-        if account is None or account.username != username:
+        user_id, username, token_version = self._decode_identity(token)
+        account = await self._account_by_id(user_id)
+        if (
+            account is None
+            or account.username != username
+            or account.token_version != token_version
+            or account.status in {"banned", "deleted"}
+            or self._lock_is_active(account)
+        ):
             raise _unauthorized("This user is no longer available.")
-        return AuthUser(id=account.user_id, username=account.username)
+        return self._public_user(account)
 
     async def get_current_user_id(
         self,
@@ -393,7 +616,7 @@ class JWTAuthService:
         return router
 
 
-def _parse_users(raw: str) -> dict[str, tuple[str, str]]:
+def _parse_users(raw: str) -> dict[str, tuple[str, str, str]]:
     try:
         data: Any = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -401,12 +624,13 @@ def _parse_users(raw: str) -> dict[str, tuple[str, str]]:
     if not isinstance(data, dict):
         raise ValueError("AGENTSCOPE_AUTH_USERS must be a JSON object.")
 
-    users: dict[str, tuple[str, str]] = {}
+    users: dict[str, tuple[str, str, str]] = {}
     for username, config in data.items():
         if not isinstance(username, str):
             raise ValueError("Authentication usernames must be strings.")
         if isinstance(config, str):
-            users[username] = (username, config)
+            role = "admin" if username.strip().lower() == "admin" else "user"
+            users[username] = (username, config, role)
             continue
         if not isinstance(config, dict):
             raise ValueError(
@@ -415,12 +639,20 @@ def _parse_users(raw: str) -> dict[str, tuple[str, str]]:
             )
         password = config.get("password")
         user_id = config.get("user_id", username)
-        if not isinstance(password, str) or not isinstance(user_id, str):
+        role = config.get(
+            "role",
+            "admin" if username.strip().lower() == "admin" else "user",
+        )
+        if (
+            not isinstance(password, str)
+            or not isinstance(user_id, str)
+            or role not in {"user", "admin"}
+        ):
             raise ValueError(
                 f"Authentication config for {username!r} requires string "
-                "password and user_id values.",
+                "password, user_id and a valid role.",
             )
-        users[username] = (user_id, password)
+        users[username] = (user_id, password, role)
     return users
 
 
@@ -436,7 +668,7 @@ def load_auth_from_env(
         username = os.getenv("AGENTSCOPE_USERNAME", "admin")
         user_id = os.getenv("AGENTSCOPE_USER_ID", "local-user")
         password = os.getenv("AGENTSCOPE_PASSWORD", "change-me")
-        users = {username: (user_id, password)}
+        users = {username: (user_id, password, "admin")}
 
     return JWTAuthService(
         users,

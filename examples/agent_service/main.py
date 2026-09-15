@@ -37,6 +37,7 @@ from agentscope.rag import (
 )
 from agentscope.workspace import WorkspaceBase
 
+from admin_api import AdminService, admin_router, sales_hub_router
 from auth import load_auth_from_env
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
@@ -233,7 +234,11 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
     ],
     download_secret=os.getenv("AGENTSCOPE_DOWNLOAD_SECRET"),
 )
+app.state.auth = auth
+app.state.admin_service = AdminService(storage, auth)
 app.include_router(auth.router)
+app.include_router(admin_router)
+app.include_router(sales_hub_router)
 app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal
