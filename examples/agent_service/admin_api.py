@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from pydantic import BaseModel, Field
 
 from auth import AuthUser, JWTAuthService
+from longxin_admin.plan_billing.catalog import PLAN_VALUES
 from sales_hub_client import SalesHubClient, SalesHubClientError
 
 
@@ -26,11 +27,10 @@ _PREFIX = "longxin:admin:v1"
 _SALES_HUB_KEY = "longxin:sales-hub:v1:config"
 _LEDGER_KEY = f"{_PREFIX}:ledger"
 _AUDIT_KEY = f"{_PREFIX}:audit"
-_PLANS: dict[str, tuple[str, int]] = {
-    "plan_basic": ("Basic", 100_000),
-    "plan_pro": ("Pro", 500_000),
-    "plan_flagship": ("Flagship", 2_000_000),
-}
+# The plan-billing extension owns the catalog.  This projection keeps the
+# existing member-management API backward compatible without duplicating the
+# plan definitions in the legacy admin module.
+_PLANS = PLAN_VALUES
 
 
 def _now() -> str:
@@ -252,9 +252,15 @@ class RemotePasswordResetRequest(BaseModel):
 class AdminService:
     """Persist product management data beside the existing AgentScope store."""
 
-    def __init__(self, storage: Any, auth: JWTAuthService) -> None:
+    def __init__(
+        self,
+        storage: Any,
+        auth: JWTAuthService,
+        plan_billing: Any | None = None,
+    ) -> None:
         self._storage = storage
         self._auth = auth
+        self._plan_billing = plan_billing
         self._lock = asyncio.Lock()
         self._sales_hub_client = SalesHubClient(self._hub_connection_config)
 
@@ -376,7 +382,13 @@ class AdminService:
             raise _error("plan_not_found", "The selected plan does not exist.", 409)
         async with self._lock:
             system = await self._system()
-            if body.bonus_tokens > int(system["pool_tokens"]):
+            explicit_plan = self._plan_billing is not None and "plan_id" in body.model_fields_set
+            required_tokens = (
+                _PLANS[body.plan_id][1] + body.bonus_tokens
+                if explicit_plan
+                else body.bonus_tokens
+            )
+            if required_tokens > int(system["pool_tokens"]):
                 raise _error(
                     "quota_insufficient",
                     "The system token pool is insufficient.",
@@ -386,20 +398,34 @@ class AdminService:
                 body.username.lower(),
                 body.initial_password,
             )
-            plan_name, monthly_quota = _PLANS[body.plan_id]
-            await self._save_profile(
-                {
-                    "user_id": account.id,
-                    "plan_id": body.plan_id,
-                    "plan_name": plan_name,
-                    "monthly_quota": monthly_quota,
-                    "monthly_used": 0,
-                    "bonus_tokens": body.bonus_tokens,
-                    "account_type": "standard",
-                    "created_at": _now(),
-                    "updated_at": _now(),
-                },
-            )
+            # ``plan_id`` has a compatibility default.  Only an explicitly
+            # selected plan is provisioned immediately; old callers that
+            # omit it keep the original inactive-basic behavior.
+            if explicit_plan:
+                await self._plan_billing.admin_assign_plan(
+                    account.id,
+                    body.plan_id,
+                    "admin",
+                )
+                profile = await self._profile(account)
+                profile["bonus_tokens"] = body.bonus_tokens
+                await self._save_profile(profile)
+                system = await self._system()
+            else:
+                plan_name, monthly_quota = _PLANS[body.plan_id]
+                await self._save_profile(
+                    {
+                        "user_id": account.id,
+                        "plan_id": body.plan_id,
+                        "plan_name": plan_name,
+                        "monthly_quota": monthly_quota,
+                        "monthly_used": 0,
+                        "bonus_tokens": body.bonus_tokens,
+                        "account_type": "standard",
+                        "created_at": _now(),
+                        "updated_at": _now(),
+                    },
+                )
             if body.bonus_tokens:
                 system["pool_tokens"] -= body.bonus_tokens
                 await self._save_system(system)
@@ -436,10 +462,19 @@ class AdminService:
             profile = await self._profile(account_view)
             system = await self._system()
             if body.plan_id is not None:
-                if body.plan_id not in _PLANS:
-                    raise _error("plan_not_found", "The selected plan does not exist.", 409)
-                profile["plan_id"] = body.plan_id
-                profile["plan_name"], profile["monthly_quota"] = _PLANS[body.plan_id]
+                if self._plan_billing is not None:
+                    await self._plan_billing.admin_assign_plan(
+                        user_id,
+                        body.plan_id,
+                        actor_id,
+                    )
+                    profile = await self._profile(account_view)
+                    system = await self._system()
+                else:
+                    if body.plan_id not in _PLANS:
+                        raise _error("plan_not_found", "The selected plan does not exist.", 409)
+                    profile["plan_id"] = body.plan_id
+                    profile["plan_name"], profile["monthly_quota"] = _PLANS[body.plan_id]
             if body.bonus_tokens is not None:
                 old_bonus = int(profile.get("bonus_tokens", 0))
                 delta = body.bonus_tokens - old_bonus
@@ -1353,12 +1388,14 @@ async def sales_hub_ping(
 ) -> HubPingResponse:
     await service.authorize_hub(authorization)
     system = await service._system()
+    upgrade_service = getattr(request.app.state, "upgrade_service", None)
+    versions = await upgrade_service.current_versions() if upgrade_service is not None else {}
     return HubPingResponse(
         ok=True,
         system_id=system["system_id"],
         system_name=os.getenv("LONGXIN_SYSTEM_NAME", "Longxin AgentScope"),
-        app_version=os.getenv("LONGXIN_APP_VERSION", "3.8.1"),
-        core_version=os.getenv("LONGXIN_CORE_VERSION", "unknown"),
+        app_version=versions.get("app") or os.getenv("LONGXIN_APP_VERSION", "3.8.1"),
+        core_version=versions.get("core") or os.getenv("LONGXIN_CORE_VERSION", "unknown"),
         checked_at=_now(),
         request_id=request.headers.get("X-Request-ID", ""),
     )

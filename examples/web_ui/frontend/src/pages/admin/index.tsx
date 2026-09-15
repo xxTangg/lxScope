@@ -28,6 +28,13 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
+import {
+	ModelConfigCard,
+	PlanOrdersCard,
+	planBillingApi,
+	RechargeMethodsCard,
+	UpgradeAdminCard,
+} from '@/features/longxin-admin';
 import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { formatNumber } from '@/utils/common';
@@ -75,12 +82,12 @@ export function AdminPage() {
 	const [keyword, setKeyword] = useState('');
 	const [newUsername, setNewUsername] = useState('');
 	const [newPassword, setNewPassword] = useState('');
+	const [newPlanId, setNewPlanId] = useState('plan_basic');
 	const [bonusTokens, setBonusTokens] = useState('0');
 	const [testDefaultTokens, setTestDefaultTokens] = useState('');
 	const [systemId, setSystemId] = useState('');
 	const [hubUrl, setHubUrl] = useState('');
 	const [hubToken, setHubToken] = useState('');
-	const [rechargeAmount, setRechargeAmount] = useState('');
 
 	const enabled = user?.role === 'admin';
 	const overview = useQuery({
@@ -103,9 +110,9 @@ export function AdminPage() {
 		queryFn: adminApi.hubConfig,
 		enabled,
 	});
-	const recharges = useQuery({
-		queryKey: ['admin', user?.id, 'recharges'],
-		queryFn: () => adminApi.rechargeRequests(20),
+	const plans = useQuery({
+		queryKey: ['longxin-plan-billing', 'plans'],
+		queryFn: planBillingApi.plans,
 		enabled,
 	});
 
@@ -127,6 +134,7 @@ export function AdminPage() {
 		onSuccess: async () => {
 			setNewUsername('');
 			setNewPassword('');
+			setNewPlanId('plan_basic');
 			setBonusTokens('0');
 			await refresh();
 		},
@@ -155,21 +163,6 @@ export function AdminPage() {
 		mutationFn: adminApi.verifyHub,
 		onSuccess: refresh,
 	});
-	const createRecharge = useMutation({
-		mutationFn: adminApi.createRechargeRequest,
-		onSuccess: async () => {
-			setRechargeAmount('');
-			await refresh();
-		},
-	});
-	const syncRecharge = useMutation({
-		mutationFn: adminApi.syncRecharge,
-		onSuccess: refresh,
-	});
-	const reportUsage = useMutation({
-		mutationFn: adminApi.reportUsage,
-		onSuccess: refresh,
-	});
 
 	if (!user || user.role !== 'admin') {
 		return <Navigate to="/chat" replace />;
@@ -181,24 +174,21 @@ export function AdminPage() {
 		users.error?.message,
 		hub.error?.message,
 		createUser.error?.message,
+		plans.error?.message,
 		updateUser.error?.message,
 		deleteUser.error?.message,
 		updateQuota.error?.message,
 		updateHub.error?.message,
 		verifyHub.error?.message,
-		recharges.error?.message,
-		createRecharge.error?.message,
-		syncRecharge.error?.message,
-		reportUsage.error?.message,
 	].find((message): message is string => Boolean(message));
 	const userItems = users.data?.users ?? [];
-	const rechargeItems = recharges.data?.orders ?? [];
 
 	const submitCreateUser = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		createUser.mutate({
 			username: newUsername.trim(),
 			initial_password: newPassword,
+			plan_id: newPlanId,
 			bonus_tokens: Number(bonusTokens) || 0,
 		});
 	};
@@ -215,12 +205,6 @@ export function AdminPage() {
 			hub_url: hubUrl.trim(),
 			...(hubToken ? { token: hubToken } : {}),
 		});
-	};
-
-	const submitRecharge = (event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		if (!rechargeAmount) return;
-		createRecharge.mutate({ amount: rechargeAmount });
 	};
 
 	return (
@@ -263,6 +247,7 @@ export function AdminPage() {
 				</div>
 
 				<div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+					<div className="flex flex-col gap-6">
 					<Card>
 						<CardHeader>
 							<CardTitle className="flex items-center gap-2">
@@ -274,7 +259,7 @@ export function AdminPage() {
 						<CardContent className="space-y-5">
 							<form
 								onSubmit={submitCreateUser}
-								className="grid gap-3 rounded-lg bg-muted/40 p-3 sm:grid-cols-4"
+								className="grid gap-3 rounded-lg bg-muted/40 p-3 sm:grid-cols-5"
 							>
 								<div className="space-y-1.5">
 									<Label htmlFor="admin-new-username">{t('admin.username')}</Label>
@@ -306,6 +291,21 @@ export function AdminPage() {
 										value={bonusTokens}
 										onChange={(event) => setBonusTokens(event.target.value)}
 									/>
+								</div>
+								<div className="space-y-1.5">
+									<Label htmlFor="admin-plan">{t('admin.plan')}</Label>
+									<select
+										id="admin-plan"
+										value={newPlanId}
+										onChange={(event) => setNewPlanId(event.target.value)}
+										className="border-input bg-background ring-offset-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+									>
+										{(plans.data?.plans ?? []).map((plan) => (
+											<option key={plan.id} value={plan.id}>
+												{plan.name} · {plan.monthly_quota.toLocaleString()} Token/月
+											</option>
+										))}
+									</select>
 								</div>
 								<div className="flex items-end">
 									<Button type="submit" className="w-full" disabled={createUser.isPending}>
@@ -409,6 +409,10 @@ export function AdminPage() {
 						</CardContent>
 					</Card>
 
+					<PlanOrdersCard />
+					<UpgradeAdminCard />
+					</div>
+
 					<div className="flex flex-col gap-6">
 						<Card>
 							<CardHeader>
@@ -452,6 +456,8 @@ export function AdminPage() {
 								</form>
 							</CardContent>
 						</Card>
+
+						<ModelConfigCard />
 
 						<Card>
 							<CardHeader>
@@ -524,91 +530,7 @@ export function AdminPage() {
 							</CardContent>
 						</Card>
 
-						<Card>
-							<CardHeader>
-								<CardTitle className="flex items-center gap-2">
-									<BadgeDollarSign className="size-4" />
-									{t('admin.recharge')}
-								</CardTitle>
-								<CardDescription>{t('admin.rechargeDescription')}</CardDescription>
-							</CardHeader>
-							<CardContent className="space-y-4">
-								<form onSubmit={submitRecharge} className="flex gap-2">
-									<Input
-										type="number"
-										min="0.01"
-										step="0.01"
-										value={rechargeAmount}
-										onChange={(event) => setRechargeAmount(event.target.value)}
-										placeholder={t('admin.rechargeAmount')}
-										required
-									/>
-									<Button type="submit" disabled={createRecharge.isPending}>
-										{createRecharge.isPending ? (
-											<Loader2 className="animate-spin" />
-										) : (
-											<BadgeDollarSign />
-										)}
-										{t('admin.submitRecharge')}
-									</Button>
-								</form>
-								<div className="flex flex-wrap gap-2">
-									<Button
-										type="button"
-										variant="outline"
-										disabled={syncRecharge.isPending}
-										onClick={() => syncRecharge.mutate()}
-									>
-										{syncRecharge.isPending ? (
-											<Loader2 className="animate-spin" />
-										) : (
-											<RefreshCw />
-										)}
-										{t('admin.pollRecharge')}
-									</Button>
-									<Button
-										type="button"
-										variant="outline"
-										disabled={reportUsage.isPending}
-										onClick={() => reportUsage.mutate()}
-									>
-										{reportUsage.isPending ? (
-											<Loader2 className="animate-spin" />
-										) : (
-											<Database />
-										)}
-										{t('admin.reportUsage')}
-									</Button>
-								</div>
-								<div className="space-y-2">
-									<div className="text-xs font-medium text-muted-foreground">
-										{t('admin.recentRecharge')}
-									</div>
-									{rechargeItems.length === 0 ? (
-										<div className="text-xs text-muted-foreground">{t('admin.noRecharge')}</div>
-									) : (
-										rechargeItems.slice(0, 5).map((item) => (
-											<div
-												key={item.order_id}
-												className="flex items-center justify-between gap-2 rounded-md border px-2 py-2 text-xs"
-											>
-												<div className="min-w-0">
-													<div className="truncate font-mono">{item.order_id}</div>
-													<div className="text-muted-foreground">
-														{item.amount} - {item.status}
-													</div>
-												</div>
-												<Badge variant={item.delivery_status === 'delivered' ? 'default' : 'outline'}>
-													{item.delivery_status === 'delivered'
-														? t('admin.delivered')
-														: t('admin.waitingDelivery')}
-												</Badge>
-											</div>
-										))
-									)}
-								</div>
-							</CardContent>
-						</Card>
+						<RechargeMethodsCard />
 					</div>
 				</div>
 			</div>

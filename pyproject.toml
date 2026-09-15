@@ -62,6 +62,7 @@ models = [
 # ------------ Service ------------
 service = [
     "fastapi",
+    "python-multipart",
     "uvicorn",
     "apscheduler",
     "ag-ui-protocol>=0.1.10",

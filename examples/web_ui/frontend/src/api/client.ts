@@ -50,11 +50,11 @@ interface RequestOptions {
 /** Reported when `timeoutMs` elapses. Real 408s come from a server, so either way the request did not complete in time. */
 export const TIMEOUT_STATUS = 408;
 
-function buildHeaders(hasBody: boolean, authenticated: boolean): Record<string, string> {
+function buildHeaders(hasJsonBody: boolean, authenticated: boolean): Record<string, string> {
 	const headers: Record<string, string> = {};
 	const token = getAccessToken();
 	if (authenticated && token) headers.Authorization = `Bearer ${token}`;
-	if (hasBody) headers['Content-Type'] = 'application/json';
+	if (hasJsonBody) headers['Content-Type'] = 'application/json';
 	return headers;
 }
 
@@ -98,8 +98,11 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 	try {
 		res = await fetch(url.toString(), {
 			method,
-			headers: { ...buildHeaders(body !== undefined, authenticated), ...extraHeaders },
-			body: body ? JSON.stringify(body) : undefined,
+			headers: {
+				...buildHeaders(body !== undefined && !(body instanceof FormData), authenticated),
+				...extraHeaders,
+			},
+			body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
 			signal: combined,
 		});
 	} catch (e) {
@@ -162,6 +165,14 @@ export const client = {
 			headers?: Record<string, string>;
 		},
 	) => request<T>(path, { method: 'POST', body, params, ...options }),
+	form: <T>(
+		path: string,
+		body: FormData,
+		options?: {
+			silent?: boolean;
+			headers?: Record<string, string>;
+		},
+	) => request<T>(path, { method: 'POST', body, ...options }),
 	patch: <T>(
 		path: string,
 		body?: unknown,

@@ -106,6 +106,17 @@ export interface RechargeRequestListResponse {
 	request_id: string;
 }
 
+export interface RedeemRechargeCodeResponse {
+	operation_id: string;
+	state: 'completed';
+	system_id: string;
+	amount: string;
+	tokens: number;
+	ledger_id: string;
+	pool_tokens_after: number;
+	request_id: string;
+}
+
 export interface SalesHubConfig {
 	system_id: string;
 	hub_url: string;
@@ -174,6 +185,11 @@ export const adminApi = {
 	createRechargeRequest: (body: { amount: string; note?: string }) =>
 		client.post<RechargeRequest>('/admin/quota/recharge-requests', body, undefined, {
 			headers: idempotencyHeaders(),
+		}),
+	redeemRechargeCode: (code: string) =>
+		client.post<RedeemRechargeCodeResponse>('/admin/quota/redeem-code', {
+			code,
+			confirm: true,
 		}),
 	syncRecharge: () =>
 		client.post<OperationResponse>(

@@ -57,6 +57,11 @@ services:
       SILICONFLOW_EMBEDDING_MODEL: ${SILICONFLOW_EMBEDDING_MODEL:-BAAI/bge-m3}
       SILICONFLOW_EMBEDDING_DIMENSIONS: ${SILICONFLOW_EMBEDDING_DIMENSIONS:-1024}
       QDRANT_PATH: ${QDRANT_PATH:-/app/qdrant_data}
+      LONGXIN_DATA_DIR: ${LONGXIN_DATA_DIR:-/app/longxin-data}
+      LONGXIN_APP_TARGET_DIR: ${LONGXIN_APP_TARGET_DIR:-}
+      LONGXIN_CORE_TARGET_DIR: ${LONGXIN_CORE_TARGET_DIR:-}
+      LONGXIN_UPGRADE_RESTART_COMMAND: ${LONGXIN_UPGRADE_RESTART_COMMAND:-}
+      LONGXIN_UPGRADE_HEALTHCHECK_URL: ${LONGXIN_UPGRADE_HEALTHCHECK_URL:-http://127.0.0.1:8000/health}
       PLAYWRIGHT_MCP_COMMAND: playwright-mcp
       # Keep the MCP child process on the same browser directory used during
       # image build. The compatibility symlink in Dockerfile covers clients
@@ -67,6 +72,7 @@ services:
       - agentscope-workspaces:/app/examples/agent_service/workspaces
       - agentscope-blobs:/app/blobs
       - qdrant-data:/app/qdrant_data
+      - longxin-data:/app/longxin-data
     healthcheck:
       test:
         - CMD
@@ -105,3 +111,4 @@ volumes:
   agentscope-workspaces:
   agentscope-blobs:
   qdrant-data:
+  longxin-data:

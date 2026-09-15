@@ -62,6 +62,13 @@ SILICONFLOW_EMBEDDING_DIMENSIONS=1024
 
 # 可选：Redis 密码
 REDIS_PASSWORD=
+
+# 管理员升级与备份。确认部署目录后再填写两个 target 路径。
+LONGXIN_DATA_DIR=/app/longxin-data
+LONGXIN_APP_TARGET_DIR=
+LONGXIN_CORE_TARGET_DIR=
+LONGXIN_UPGRADE_RESTART_COMMAND=
+LONGXIN_UPGRADE_HEALTHCHECK_URL=http://127.0.0.1:8000/health
 ```
 
 生产环境可使用以下命令生成随机密钥：
@@ -184,6 +191,7 @@ Compose 使用以下 Docker 数据卷：
 - `agentscope-workspaces`：用户工作区
 - `agentscope-blobs`：上传和生成的文件
 - `qdrant-data`：向量数据库数据
+- `longxin-data`：管理员发布包、升级临时文件和升级备份
 
 执行普通的 `docker compose down` 不会删除这些数据。不要在生产环境随意执行下面的命令：
 

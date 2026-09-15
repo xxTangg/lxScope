@@ -39,6 +39,8 @@ from agentscope.workspace import WorkspaceBase
 
 from admin_api import AdminService, admin_router, sales_hub_router
 from auth import load_auth_from_env
+from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
+from longxin_admin.upgrade import UpgradeService, upgrade_router
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
 playwright_browsers_path = os.getenv(
@@ -235,10 +237,19 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
     download_secret=os.getenv("AGENTSCOPE_DOWNLOAD_SECRET"),
 )
 app.state.auth = auth
-app.state.admin_service = AdminService(storage, auth)
+app.state.plan_billing_service = PlanBillingService(storage, auth)
+app.state.admin_service = AdminService(
+    storage,
+    auth,
+    plan_billing=app.state.plan_billing_service,
+)
+app.state.upgrade_service = UpgradeService(storage, auth)
+app.state.sales_hub_authorizer = app.state.admin_service.authorize_hub
 app.include_router(auth.router)
 app.include_router(admin_router)
 app.include_router(sales_hub_router)
+app.include_router(plan_billing_router)
+app.include_router(upgrade_router)
 app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal
