@@ -1,0 +1,440 @@
+openapi: 3.1.0
+info:
+  title: Longxin Sales Operations API
+  version: 1.0.0
+  description: |
+    销售总台对外 canonical 合同。新客户端必须使用 /api/v1、snake_case、UTC ISO 8601
+    时间和十进制定点金额字符串。旧的 /api/* 路径只作为迁移兼容别名，不属于新联调入口。
+servers:
+  - url: http://127.0.0.1:44100
+security: []
+paths:
+  /health:
+    get:
+      summary: 健康检查
+      responses:
+        '200': { description: 服务正常 }
+  /api/v1/auth/login:
+    post:
+      summary: 销售员工登录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '200': { description: 登录成功并设置 HttpOnly 会话 Cookie }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/me:
+    get:
+      summary: 当前销售员工
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: 当前员工信息 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/logout:
+    post:
+      summary: 注销当前会话
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: 会话已注销 }
+  /api/v1/dashboard:
+    get:
+      summary: 经营总览
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: 客户、额度、趋势和待办 }
+  /api/v1/customers:
+    get:
+      summary: 客户列表
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: '{customers, total, request_id}' }
+    post:
+      summary: 创建客户并生成一次性 Token
+      security: [{ staffCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/CustomerRequest' } }
+      responses:
+        '201': { description: customer、api_token_once、request_id }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/customers/{customer_id}:
+    get:
+      summary: 客户详情
+      security: [{ staffCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CustomerId' }]
+      responses:
+        '200': { description: 客户详情和最近报表摘要 }
+    patch:
+      summary: 修改客户档案
+      security: [{ staffCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CustomerId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/CustomerPatch' } }
+      responses:
+        '200': { description: 修改后的 customer }
+    delete:
+      summary: 停用客户档案
+      security: [{ staffCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CustomerId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200': { description: 操作结果 }
+  /api/v1/customers/{customer_id}/api-token/rotate:
+    post:
+      summary: 轮换客户 Token，仅一次性返回新 Token
+      security: [{ staffCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CustomerId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200': { description: api_token_once 和脱敏客户信息 }
+  /api/v1/customers/{customer_id}/verify-connection:
+    post:
+      summary: 验证总部到客户的双向连接
+      security: [{ staffCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CustomerId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200': { description: outbound、inbound、ping 和 request_id }
+  /api/v1/customers/{customer_id}/usage-reports:
+    get:
+      summary: 查看客户用量快照
+      security: [{ staffCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CustomerId' }]
+      responses:
+        '200': { description: '{reports, total, request_id}' }
+  /api/v1/customers/{customer_id}/recharge-orders:
+    get:
+      summary: 查看客户充值订单
+      security: [{ staffCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CustomerId' }]
+      responses:
+        '200': { description: '{orders, total, request_id}' }
+  /api/v1/customers/{customer_id}/recharge-codes:
+    post:
+      summary: 签发绑定客户的离线充值码
+      security: [{ staffCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CustomerId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { type: string, pattern: '^\\d+(\\.\\d{1,2})?$' }
+                note: { type: string, maxLength: 500 }
+      responses:
+        '201': { description: 签名充值码和订单 }
+  /api/v1/customers/{customer_id}/reset-admin-password:
+    post:
+      summary: 远程重置客户管理员密码
+      security: [{ staffCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CustomerId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties: { username: { type: string } }
+      responses:
+        '200': { description: 一次性新密码 }
+  /api/v1/recharge-requests:
+    get:
+      summary: 总部员工查询充值申请
+      security: [{ staffCookie: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, issued, approved, rejected] }
+      responses:
+        '200': { description: '{orders, total, request_id}' }
+  /api/v1/recharge-requests/{order_id}/{action}:
+    post:
+      summary: 审批或拒绝充值申请
+      security: [{ staffCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+        - name: action
+          in: path
+          required: true
+          schema: { type: string, enum: [approve, reject] }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount: { type: string }
+                reason: { type: string }
+      responses:
+        '200': { description: 订单和送达状态 }
+  /api/v1/integration/recharge-requests:
+    post:
+      summary: 客户系统提交线上充值申请
+      security: [{ customerBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/RechargeRequest' } }
+      responses:
+        '201': { description: order_id、pending、not_delivered、request_id }
+  /api/v1/integration/recharge-requests/poll:
+    get:
+      summary: 客户轮询已审批充值码
+      security: [{ customerBearer: [] }]
+      responses:
+        '200': { description: order_id、code 或空结果 }
+  /api/v1/integration/recharge-codes/legacy:
+    get:
+      summary: 客户同步历史离线充值码 nonce
+      security: [{ customerBearer: [] }]
+      responses:
+        '200': { description: system_id、nonces、request_id }
+  /api/v1/integration/recharge-requests/{order_id}/ack:
+    post:
+      summary: 客户确认充值码已兑换
+      security: [{ customerBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200': { description: 已确认 }
+  /api/v1/integration/usage-reports:
+    post:
+      summary: 客户上报额度和用量快照
+      security: [{ customerBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/UsageReport' } }
+      responses:
+        '200': { description: 已接收 }
+  /api/v1/integration/verify-connection:
+    post:
+      summary: 客户系统请求双向连接验证
+      security: [{ customerBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200': { description: outbound、inbound、system_name、request_id }
+  /api/v1/integration/releases/{artifact_type}/latest:
+    get:
+      summary: 客户下载最新应用或核心升级包
+      security: [{ customerBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/ArtifactType' }]
+      responses:
+        '200': { description: tar.gz 二进制包 }
+  /api/v1/integration/public-key:
+    get:
+      summary: 客户获取总部充值码验签公钥
+      security: [{ customerBearer: [] }]
+      responses:
+        '200': { description: public_key_pem、system_id、request_id }
+  /api/v1/releases:
+    get:
+      summary: 查询当前应用和核心发布包
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: app、core、request_id }
+  /api/v1/releases/{artifact_type}:
+    post:
+      summary: 上传并校验应用或核心升级包
+      security: [{ staffCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ArtifactType' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - name: version
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties: { file: { type: string, format: binary } }
+      responses:
+        '201': { description: 发布包元数据 }
+  /api/v1/upgrade-all/{artifact_type}:
+    post:
+      summary: 向选定客户下发升级命令
+      security: [{ staffCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ArtifactType' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_ids]
+              properties:
+                customer_ids: { type: array, items: { type: string } }
+      responses:
+        '200': { description: 逐客户结果和 request_id }
+  /api/v1/settings:
+    get:
+      summary: 读取总部设置
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: 设置和 request_id }
+    patch:
+      summary: 更新总部设置
+      security: [{ staffCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { token_exchange_rate: { type: integer, minimum: 1 } }
+      responses:
+        '200': { description: 更新后的设置 }
+  /api/v1/staff/password:
+    patch:
+      summary: 修改当前销售员工密码
+      security: [{ staffCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200': { description: 修改成功 }
+  /api/v1/public-key:
+    get:
+      summary: 总部员工查看充值码公钥
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: public_key_pem 和 request_id }
+  /api/v1/reconciliation:
+    get:
+      summary: 充值、额度和用量对账
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: '{items, total, request_id}' }
+  /api/v1/alerts:
+    get:
+      summary: 余额和报表告警
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: '{alerts, total, request_id}' }
+  /api/v1/audit/events:
+    get:
+      summary: 查询操作审计摘要
+      security: [{ staffCookie: [] }]
+      responses:
+        '200': { description: '{events, total, request_id}' }
+components:
+  securitySchemes:
+    staffCookie: { type: apiKey, in: cookie, name: sh_session }
+    customerBearer: { type: http, scheme: bearer }
+  parameters:
+    CustomerId:
+      name: customer_id
+      in: path
+      required: true
+      schema: { type: string }
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      schema: { type: string }
+    ArtifactType:
+      name: artifact_type
+      in: path
+      required: true
+      schema: { type: string, enum: [app, core] }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, maxLength: 128 }
+  responses:
+    Unauthorized:
+      description: 缺少或无效认证
+      content:
+        application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } }
+    Conflict:
+      description: 状态冲突或幂等键复用
+      content:
+        application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } }
+  schemas:
+    CustomerRequest:
+      type: object
+      required: [name, system_id, protocol, port]
+      properties:
+        name: { type: string }
+        system_id: { type: string }
+        protocol: { type: string, enum: [http, https] }
+        configured_ip: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        environment: { type: string, enum: [production, test, unclassified] }
+        contact: { type: string }
+        notes: { type: string }
+    CustomerPatch:
+      type: object
+      properties:
+        name: { type: string }
+        system_id: { type: string }
+        protocol: { type: string, enum: [http, https] }
+        configured_ip: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        environment: { type: string, enum: [production, test, unclassified] }
+        contact: { type: string }
+        notes: { type: string }
+        status: { type: string, enum: [active, disabled] }
+    RechargeRequest:
+      type: object
+      required: [system_id, amount]
+      properties:
+        system_id: { type: string }
+        amount: { type: string, pattern: '^\\d+(\\.\\d{1,2})?$' }
+        note: { type: string, maxLength: 500 }
+        requested_at: { type: string, format: date-time }
+    UsageReport:
+      type: object
+      required: [system_id, pool_tokens, total_recharged, app_version, client_reported_at]
+      properties:
+        system_id: { type: string }
+        pool_tokens: { type: integer, minimum: 0 }
+        total_recharged: { type: string }
+        app_version: { type: string }
+        cumulative_consumed: { type: integer, minimum: 0, nullable: true }
+        cumulative_credits: { type: integer, minimum: 0, nullable: true }
+        client_reported_at: { type: string, format: date-time }
+    ErrorResponse:
+      type: object
+      required: [detail, request_id]
+      properties:
+        detail:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            fields: { type: object, additionalProperties: { type: string } }
+        request_id: { type: string }

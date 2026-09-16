@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sales_console}
+      POSTGRES_USER: ${POSTGRES_USER:-sales}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+    volumes:
+      - sales_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  sales-api:
+    build:
+      context: .
+      dockerfile: services/sales-api/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SALES_DATA_DIR: /var/lib/sales-api
+      SALES_API_PORT: 44100
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://127.0.0.1:44101}
+      SALES_PUBLIC_URL: ${SALES_PUBLIC_URL:-http://127.0.0.1:44100}
+      SALES_ADMIN_USERNAME: ${SALES_ADMIN_USERNAME:-admin}
+      SALES_ADMIN_PASSWORD: ${SALES_ADMIN_PASSWORD:-}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://sales:change-me-in-production@postgres:5432/sales_console}
+    ports:
+      - '44100:44100'
+    volumes:
+      - sales_data:/var/lib/sales-api
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:44100/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  admin-web:
+    build:
+      context: .
+      dockerfile: apps/admin-web/Dockerfile
+    depends_on:
+      sales-api:
+        condition: service_healthy
+    ports:
+      - '44101:80'
+    restart: unless-stopped
+
+volumes:
+  sales_data:
+  sales_postgres_data:
