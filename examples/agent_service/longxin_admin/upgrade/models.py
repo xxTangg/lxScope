@@ -64,6 +64,16 @@ class RollbackRequest(BaseModel):
     admin_password: str = Field(min_length=1, max_length=1024)
 
 
+class BackupRestoreRequest(BaseModel):
+    confirm: bool = False
+    admin_password: str = Field(min_length=1, max_length=1024)
+
+
+class BackupDeleteRequest(BaseModel):
+    confirm: bool = False
+    reason: str = Field(min_length=4, max_length=300)
+
+
 class BackupMeta(BaseModel):
     backup_id: str
     artifact_type: ArtifactType
@@ -97,4 +107,13 @@ class UpgradeOperation(BaseModel):
 class UpgradeOperationListResponse(BaseModel):
     operations: list[UpgradeOperation] = Field(default_factory=list)
     total: int
+    request_id: str = ""
+
+
+class UpgradeStatusResponse(BaseModel):
+    app_version: str | None = None
+    core_version: str | None = None
+    health: Literal["ok", "degraded", "unknown"] = "unknown"
+    latest_operation: UpgradeOperation | None = None
+    target_configured: dict[str, bool] = Field(default_factory=dict)
     request_id: str = ""

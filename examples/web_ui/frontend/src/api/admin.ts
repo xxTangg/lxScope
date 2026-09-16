@@ -107,6 +107,37 @@ export interface RechargeRequestListResponse {
 	request_id: string;
 }
 
+export interface AuditEvent {
+	event_id: string;
+	actor_type: 'admin' | 'user' | 'system';
+	actor_id: string;
+	actor_name: string;
+	target_user_id: string | null;
+	target_user_name: string | null;
+	action: string;
+	resource_type: string | null;
+	resource_id: string | null;
+	reason: string;
+	request_id: string;
+	status: 'completed' | 'failed';
+	result_summary: string | null;
+	created_at: string;
+}
+
+export interface AuditEventResponse {
+	events: AuditEvent[];
+	total: number;
+	request_id: string;
+}
+
+export interface AuditResourceResponse {
+	target_user_id: string;
+	resource_type: 'overview' | 'session' | 'document';
+	resource_id: string | null;
+	data: Record<string, unknown>;
+	request_id: string;
+}
+
 export interface RedeemRechargeCodeResponse {
 	operation_id: string;
 	state: 'completed';
@@ -136,6 +167,17 @@ export interface SalesHubConfigUpdate {
 	public_key?: string;
 }
 
+export interface AdminPolicy {
+	admin_api_requires_admin_role: boolean;
+	credential_management: 'admin_only';
+	sales_hub_authentication: 'customer_bearer_token';
+	recharge_legacy_hmac_enabled: boolean;
+	high_risk_plugin_installation: 'disabled';
+	policy_mutation_from_chat: boolean;
+	request_id_enforced: boolean;
+	generated_at: string;
+}
+
 export interface OperationResponse {
 	operation_id: string;
 	request_id: string;
@@ -157,27 +199,55 @@ const toParams = (params: Record<string, string | number | undefined>) =>
 
 export const adminApi = {
 	overview: () => client.get<AdminOverview>('/admin/overview'),
+	policy: () => client.get<AdminPolicy>('/admin/policy'),
 	users: (params: {
 		keyword?: string;
 		status?: string;
+		plan_id?: string;
 		page?: number;
 		page_size?: number;
 	} = {}) => client.get<UserListResponse>('/admin/users', toParams(params)),
 	createUser: (body: CreateUserRequest) =>
-		client.post<AdminUser>('/admin/users', body),
+		client.post<AdminUser>('/admin/users', body, undefined, { headers: idempotencyHeaders() }),
 	updateUser: (userId: string, body: UpdateUserRequest) =>
-		client.patch<AdminUser>(`/admin/users/${userId}`, body),
-	deleteUser: (userId: string) => client.delete(`/admin/users/${userId}`),
+		client.patch<AdminUser>(`/admin/users/${userId}`, body, undefined, {
+			headers: idempotencyHeaders(),
+		}),
+	deleteUser: (userId: string, reason: string) =>
+		client.delete(`/admin/users/${userId}`, undefined, {
+			body: { confirm: true, reason },
+			headers: idempotencyHeaders(),
+		}),
 	resetPassword: (userId: string, body: { reason: string; admin_password: string }) =>
 		client.post<ResetPasswordResponse>(
 			`/admin/users/${userId}/reset-password`,
 			body,
+			undefined,
+			{ headers: idempotencyHeaders() },
 		),
+	revokeSessions: (userId: string) =>
+		client.delete(`/admin/users/${userId}/sessions`, undefined, {
+			headers: idempotencyHeaders(),
+		}),
 	quota: () => client.get<SystemQuota>('/admin/quota'),
 	updateQuota: (test_default_tokens: number) =>
-		client.patch<SystemQuota>('/admin/quota', { test_default_tokens }),
+		client.patch<SystemQuota>('/admin/quota', { test_default_tokens }, undefined, {
+			headers: idempotencyHeaders(),
+		}),
 	ledger: (limit = 20) =>
 		client.get<LedgerResponse>('/admin/quota/ledger', toParams({ limit })),
+	auditEvents: (limit = 50) =>
+		client.get<AuditEventResponse>('/admin/audit/events', toParams({ limit })),
+	auditOverview: (body: { target_user_id: string; reason: string }) =>
+		client.post<AuditResourceResponse>('/admin/audit/overview', body),
+	auditSession: (
+		sessionId: string,
+		body: { overview_event_id: string; agent_id: string; reason: string },
+	) => client.post<AuditResourceResponse>(`/admin/audit/sessions/${encodeURIComponent(sessionId)}`, body),
+	auditDocument: (
+		documentId: string,
+		body: { overview_event_id: string; knowledge_base_id: string; reason: string },
+	) => client.post<AuditResourceResponse>(`/admin/audit/documents/${encodeURIComponent(documentId)}`, body),
 	rechargeRequests: (limit = 20) =>
 		client.get<RechargeRequestListResponse>(
 			'/admin/quota/recharge-requests',
@@ -188,10 +258,12 @@ export const adminApi = {
 			headers: idempotencyHeaders(),
 		}),
 	redeemRechargeCode: (code: string) =>
-		client.post<RedeemRechargeCodeResponse>('/admin/quota/redeem-code', {
-			code,
-			confirm: true,
-		}),
+		client.post<RedeemRechargeCodeResponse>(
+			'/admin/quota/redeem-code',
+			{ code, confirm: true },
+			undefined,
+			{ headers: idempotencyHeaders() },
+		),
 	syncRecharge: () =>
 		client.post<OperationResponse>(
 			'/admin/quota/recharge-requests/sync',
@@ -208,6 +280,11 @@ export const adminApi = {
 		),
 	hubConfig: () => client.get<SalesHubConfig>('/admin/sales-hub/config'),
 	updateHubConfig: (body: SalesHubConfigUpdate) =>
-		client.patch<SalesHubConfig>('/admin/sales-hub/config', body),
-	verifyHub: () => client.post<OperationResponse>('/admin/sales-hub/verify'),
+		client.patch<SalesHubConfig>('/admin/sales-hub/config', body, undefined, {
+			headers: idempotencyHeaders(),
+		}),
+	verifyHub: () =>
+		client.post<OperationResponse>('/admin/sales-hub/verify', undefined, undefined, {
+			headers: idempotencyHeaders(),
+		}),
 };

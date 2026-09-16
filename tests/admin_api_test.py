@@ -120,6 +120,9 @@ class _FakeHubClient:
                 "tokens": 1000,
                 "order_id": "ord-remote-1",
                 "nonce": "nonce-remote-1",
+                "version": "1",
+                "issued_at": "2026-09-16T00:00:00+00:00",
+                "expires_at": "2099-01-01T00:00:00+00:00",
             }
             payload_bytes = json_bytes = json_module_dumps(payload)
             signature = hmac.new(
@@ -152,7 +155,15 @@ class _FakeHubClient:
             )
         if method == "POST" and url.endswith("/api/v1/integration/recharge-requests/ord-remote-1/ack"):
             self.acked_orders.append("ord-remote-1")
-            return httpx.Response(200, json={"status": "delivered"})
+            return httpx.Response(
+                200,
+                json={
+                    "order_id": "ord-remote-1",
+                    "status": "approved",
+                    "delivery_status": "delivered",
+                    "request_id": (headers or {}).get("X-Request-ID", ""),
+                },
+            )
         if method == "POST" and url.endswith("/api/v1/integration/usage-reports"):
             self.reported_payloads.append(json or {})
             return httpx.Response(
@@ -163,6 +174,8 @@ class _FakeHubClient:
                     "system_id": "system-test",
                     "accepted": True,
                     "reported_at": "2026-09-15T00:00:00Z",
+                    "cumulative_consumed_delta": 0,
+                    "cumulative_credits_delta": 1000,
                     "request_id": (headers or {}).get("X-Request-ID", "report-request"),
                 },
             )
@@ -232,7 +245,7 @@ class AdminApiTest(IsolatedAsyncioTestCase):
 
         created = self.client.post(
             "/admin/users",
-            headers=headers,
+            headers={**headers, "Idempotency-Key": "idem-create-alice"},
             json={
                 "username": "alice",
                 "initial_password": "alice-password",
@@ -243,24 +256,60 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         user_id = created.json()["id"]
         self.assertEqual(created.json()["role"], "user")
 
+        replayed = self.client.post(
+            "/admin/users",
+            headers={**headers, "Idempotency-Key": "idem-create-alice"},
+            json={
+                "username": "alice",
+                "initial_password": "alice-password",
+                "bonus_tokens": 0,
+            },
+        )
+        self.assertEqual(replayed.status_code, 201)
+        self.assertEqual(replayed.json()["id"], user_id)
+        reused = self.client.post(
+            "/admin/users",
+            headers={**headers, "Idempotency-Key": "idem-create-alice"},
+            json={
+                "username": "alice-two",
+                "initial_password": "alice-password",
+                "bonus_tokens": 0,
+            },
+        )
+        self.assertEqual(reused.status_code, 409)
+        self.assertEqual(reused.json()["detail"]["code"], "idempotency_key_reused")
+
         users = self.client.get("/admin/users", headers=headers)
         self.assertEqual(users.status_code, 200)
         self.assertEqual(users.json()["total"], 2)
 
         banned = self.client.patch(
             f"/admin/users/{user_id}",
-            headers=headers,
+            headers={**headers, "Idempotency-Key": "idem-update-alice"},
             json={"status": "banned"},
         )
         self.assertEqual(banned.status_code, 200)
         self.assertEqual(banned.json()["status"], "banned")
+
+        deleted = self.client.delete(
+            f"/admin/users/{user_id}",
+            headers={**headers, "Idempotency-Key": "idem-delete-alice"},
+            json={"confirm": True, "reason": "account closure requested"},
+        )
+        self.assertEqual(deleted.status_code, 204)
+        deleted_again = self.client.delete(
+            f"/admin/users/{user_id}",
+            headers={**headers, "Idempotency-Key": "idem-delete-alice"},
+            json={"confirm": True, "reason": "account closure requested"},
+        )
+        self.assertEqual(deleted_again.status_code, 204)
 
     def test_normal_user_cannot_enter_admin_api(self) -> None:
         login = self._login("admin", "admin-password")
         admin_headers = {"Authorization": f"Bearer {login['access_token']}"}
         created = self.client.post(
             "/admin/users",
-            headers=admin_headers,
+            headers={**admin_headers, "Idempotency-Key": "idem-create-member"},
             json={
                 "username": "member",
                 "initial_password": "member-password",
@@ -273,12 +322,61 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         response = self.client.get("/admin/overview", headers=member_headers)
         self.assertEqual(response.status_code, 403)
 
+    def test_reset_password_expires_and_audit_is_queryable(self) -> None:
+        login = self._login("admin", "admin-password")
+        headers = {
+            "Authorization": f"Bearer {login['access_token']}",
+            "X-Request-ID": "req-reset-1",
+        }
+        created = self.client.post(
+            "/admin/users",
+            headers={**headers, "Idempotency-Key": "idem-create-reset-target"},
+            json={"username": "reset-target", "initial_password": "old-password"},
+        )
+        self.assertEqual(created.status_code, 201)
+        user_id = created.json()["id"]
+
+        rejected = self.client.post(
+            f"/admin/users/{user_id}/reset-password",
+            headers={**headers, "Idempotency-Key": "idem-reset-invalid-1"},
+            json={"reason": "support reset", "admin_password": "wrong-password"},
+        )
+        self.assertEqual(rejected.status_code, 403)
+
+        reset = self.client.post(
+            f"/admin/users/{user_id}/reset-password",
+            headers={**headers, "Idempotency-Key": "idem-reset-1"},
+            json={"reason": "support reset", "admin_password": "admin-password"},
+        )
+        self.assertEqual(reset.status_code, 200)
+        self.assertGreater(reset.json()["expires_at"], "2026-01-01T00:00:00+00:00")
+        temporary_login = self._login("reset-target", reset.json()["temporary_password"])
+        self.assertEqual(temporary_login["user"]["id"], user_id)
+
+        revoked = self.client.delete(
+            f"/admin/users/{user_id}/sessions",
+            headers={**headers, "Idempotency-Key": "idem-revoke-reset-target"},
+        )
+        self.assertEqual(revoked.status_code, 204)
+        old_token = self.client.get(
+            "/auth/me",
+            headers={"Authorization": f"Bearer {temporary_login['access_token']}"},
+        )
+        self.assertEqual(old_token.status_code, 401)
+
+        events = self.client.get(
+            "/admin/audit/events",
+            headers={"Authorization": f"Bearer {login['access_token']}"},
+        )
+        self.assertEqual(events.status_code, 200)
+        self.assertTrue(any(item["action"] == "user.reset_password" for item in events.json()["events"]))
+
     def test_hub_token_and_ping_are_separate_from_browser_jwt(self) -> None:
         login = self._login("admin", "admin-password")
         headers = {"Authorization": f"Bearer {login['access_token']}"}
         saved = self.client.patch(
             "/admin/sales-hub/config",
-            headers=headers,
+            headers={**headers, "Idempotency-Key": "idem-config-ping"},
             json={
                 "system_id": "system-test",
                 "hub_url": "https://sales.example.test",
@@ -302,7 +400,7 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         headers = {"Authorization": f"Bearer {login['access_token']}"}
         saved = self.client.patch(
             "/admin/sales-hub/config",
-            headers=headers,
+            headers={**headers, "Idempotency-Key": "idem-config-verify"},
             json={
                 "system_id": "system-test",
                 "hub_url": "https://sales.example.test",
@@ -315,12 +413,13 @@ class AdminApiTest(IsolatedAsyncioTestCase):
             "outbound": True,
             "inbound": True,
             "ping": {"ok": True, "system_id": "system-test"},
+            "request_id": "req-verify-1",
         }
         try:
             with patch.object(hub_module.httpx, "AsyncClient", _VerifyHubClient):
                 verified = self.client.post(
                     "/admin/sales-hub/verify",
-                    headers=headers,
+                    headers={**headers, "X-Request-ID": "req-verify-1", "Idempotency-Key": "idem-verify-1"},
                 )
         finally:
             _VerifyHubClient.payload = {}
@@ -337,7 +436,7 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         headers = {"Authorization": f"Bearer {login['access_token']}"}
         saved = self.client.patch(
             "/admin/sales-hub/config",
-            headers=headers,
+            headers={**headers, "Idempotency-Key": "idem-config-recharge"},
             json={
                 "system_id": "system-test",
                 "hub_url": "https://sales.example.test",
@@ -349,7 +448,13 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         _FakeHubClient.submitted_payloads.clear()
         _FakeHubClient.reported_payloads.clear()
         _FakeHubClient.usage_response = None
-        with patch.dict(os.environ, {"LONGXIN_RECHARGE_CODE_SECRET": "test-secret"}):
+        with patch.dict(
+            os.environ,
+            {
+                "LONGXIN_RECHARGE_CODE_SECRET": "test-secret",
+                "LONGXIN_ALLOW_LEGACY_HMAC_CODES": "true",
+            },
+        ):
             with patch.object(hub_module.httpx, "AsyncClient", _FakeHubClient):
                 submitted = self.client.post(
                     "/admin/quota/recharge-requests",
@@ -418,7 +523,7 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         headers = {"Authorization": f"Bearer {login['access_token']}"}
         saved = self.client.patch(
             "/admin/sales-hub/config",
-            headers=headers,
+            headers={**headers, "Idempotency-Key": "idem-config-usage-invalid"},
             json={
                 "system_id": "system-test",
                 "hub_url": "https://sales.example.test",
@@ -433,7 +538,7 @@ class AdminApiTest(IsolatedAsyncioTestCase):
             with patch.object(hub_module.httpx, "AsyncClient", _FakeHubClient):
                 report = self.client.post(
                     "/admin/sales-hub/usage-report",
-                    headers=headers,
+                    headers={**headers, "Idempotency-Key": "idem-report-invalid-1"},
                 )
         finally:
             _FakeHubClient.usage_response = None

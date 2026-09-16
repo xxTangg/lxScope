@@ -67,6 +67,7 @@ service = [
     "apscheduler",
     "ag-ui-protocol>=0.1.10",
     "PyJWT>=2.10,<3",
+    "cryptography>=42,<47",
 ]
 # ------------ Storage backends ------------
 storage-redis = ["redis"]

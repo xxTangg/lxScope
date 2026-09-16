@@ -42,6 +42,10 @@ def _service(request: Request) -> PlanBillingService:
     return service
 
 
+def _request_id(request: Request) -> str:
+    return getattr(request.state, "request_id", "") or request.headers.get("X-Request-ID", "")
+
+
 @plan_billing_router.get("/plans", response_model=PlanCatalogResponse)
 async def list_plans(
     request: Request,
@@ -49,7 +53,7 @@ async def list_plans(
     service: PlanBillingService = Depends(_service),
 ) -> PlanCatalogResponse:
     response = service.catalog()
-    response.request_id = request.headers.get("X-Request-ID", "")
+    response.request_id = _request_id(request)
     return response
 
 
@@ -60,7 +64,7 @@ async def current_plan(
     service: PlanBillingService = Depends(_service),
 ) -> CurrentPlanView:
     response = await service.current_plan(user)
-    response.request_id = request.headers.get("X-Request-ID", "")
+    response.request_id = _request_id(request)
     return response
 
 
@@ -74,7 +78,7 @@ async def list_my_orders(
     return await service.list_orders(
         user_id=user.id,
         limit=limit,
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=_request_id(request),
     )
 
 
@@ -96,7 +100,7 @@ async def create_my_order(
         user,
         body,
         idempotency_key=idempotency_key,
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=_request_id(request),
     )
 
 
@@ -107,7 +111,7 @@ async def list_admin_plans(
     service: PlanBillingService = Depends(_service),
 ) -> PlanCatalogResponse:
     response = service.catalog()
-    response.request_id = request.headers.get("X-Request-ID", "")
+    response.request_id = _request_id(request)
     return response
 
 
@@ -122,7 +126,7 @@ async def list_admin_orders(
     return await service.list_orders(
         order_status=order_status,
         limit=limit,
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=_request_id(request),
     )
 
 
@@ -145,7 +149,7 @@ async def approve_order(
         actor,
         body,
         idempotency_key=idempotency_key,
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=_request_id(request),
     )
 
 
@@ -168,6 +172,5 @@ async def reject_order(
         actor,
         body,
         idempotency_key=idempotency_key,
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=_request_id(request),
     )
-

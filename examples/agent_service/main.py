@@ -8,6 +8,10 @@ from uuid import uuid4
 
 from pydantic import SecretStr
 import uvicorn
+from fastapi import HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -240,6 +244,63 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
     ],
     download_secret=os.getenv("AGENTSCOPE_DOWNLOAD_SECRET"),
 )
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Generate one correlation ID and echo it on every application response."""
+    request_id = request.headers.get("X-Request-ID", "").strip() or f"req-{uuid4().hex}"
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def admin_error_handler(request: Request, exc: HTTPException):
+    """Add the contract correlation ID only to the product API domains."""
+    if not (
+        request.url.path.startswith("/admin")
+        or request.url.path.startswith("/integration/sales/v1")
+    ):
+        return await http_exception_handler(request, exc)
+    if not isinstance(exc.detail, dict):
+        return await http_exception_handler(request, exc)
+    detail = dict(exc.detail)
+    detail.setdefault("request_id", getattr(request.state, "request_id", ""))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": detail},
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def admin_validation_error_handler(request: Request, exc: RequestValidationError):
+    if not (
+        request.url.path.startswith("/admin")
+        or request.url.path.startswith("/integration/sales/v1")
+    ):
+        from fastapi.exception_handlers import request_validation_exception_handler
+
+        return await request_validation_exception_handler(request, exc)
+    fields: dict[str, str] = {}
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error.get("loc", ()))
+        fields[location or "request"] = str(error.get("msg", "Invalid request."))
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "code": "validation_error",
+                "message": "The request payload is invalid.",
+                "fields": fields,
+                "request_id": getattr(request.state, "request_id", ""),
+            },
+        },
+    )
+
+
 app.state.auth = auth
 app.state.plan_billing_service = PlanBillingService(storage, auth)
 app.state.credential_access_check = auth.is_admin_user

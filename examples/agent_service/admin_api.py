@@ -16,9 +16,10 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from auth import AuthUser, JWTAuthService
+from longxin_admin.distributed_lock import DistributedLease
 from longxin_admin.plan_billing.catalog import PLAN_VALUES
 from sales_hub_client import SalesHubClient, SalesHubClientError
 
@@ -62,6 +63,61 @@ def _format_money(value: str, *, require_positive: bool = False) -> str:
     return format(quantized, ".2f")
 
 
+def _parse_utc_timestamp(value: Any, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise _error("invalid_recharge_code", f"The recharge code {field} is invalid.", 400)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise _error("invalid_recharge_code", f"The recharge code {field} is invalid.", 400) from exc
+    if parsed.tzinfo is None:
+        raise _error("invalid_recharge_code", f"The recharge code {field} needs a timezone.", 400)
+    return parsed.astimezone(timezone.utc)
+
+
+def _secret_cipher() -> Any | None:
+    secret = os.getenv("LONGXIN_CONFIG_ENCRYPTION_KEY") or os.getenv("AGENTSCOPE_JWT_SECRET")
+    if not secret:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError as exc:
+        raise _error(
+            "crypto_unavailable",
+            "Secret encryption support is not installed.",
+            503,
+        ) from exc
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def _seal_secret(value: str) -> str:
+    cipher = _secret_cipher()
+    if cipher is None:
+        return value
+    return "fernet:v1:" + cipher.encrypt(value.encode("utf-8")).decode("ascii")
+
+
+def _unseal_secret(value: str) -> str:
+    if not value.startswith("fernet:v1:"):
+        return value
+    cipher = _secret_cipher()
+    if cipher is None:
+        raise _error(
+            "secret_key_not_configured",
+            "The configuration encryption key is not configured.",
+            503,
+        )
+    try:
+        return cipher.decrypt(value.removeprefix("fernet:v1:").encode("ascii")).decode("utf-8")
+    except Exception as exc:
+        raise _error(
+            "secret_decryption_failed",
+            "The stored Sales Hub token could not be decrypted.",
+            503,
+        ) from exc
+
+
 def _error(
     code: str,
     message: str,
@@ -73,6 +129,38 @@ def _error(
     if fields:
         detail["fields"] = fields
     return HTTPException(status_code=status_code, detail=detail)
+
+
+def _decode_base64url(value: str) -> bytes:
+    try:
+        return base64.b64decode(
+            value.encode("ascii") + b"=" * (-len(value) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise _error("invalid_recharge_code", "The encoded recharge value is invalid.", 400) from exc
+
+
+def _load_ed25519_public_key(value: Any) -> Any:
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        if isinstance(value, str) and "BEGIN PUBLIC KEY" in value:
+            signer = serialization.load_pem_public_key(value.encode("utf-8"))
+        else:
+            encoded_key = str(value)
+            try:
+                key_bytes = _decode_base64url(encoded_key)
+            except HTTPException:
+                key_bytes = bytes.fromhex(encoded_key)
+            signer = Ed25519PublicKey.from_public_bytes(key_bytes)
+        if not isinstance(signer, Ed25519PublicKey):
+            raise TypeError("The configured key is not an Ed25519 public key.")
+        return signer
+    except Exception as exc:
+        raise _error("invalid_public_key", "The configured public key is invalid.", 422) from exc
 
 
 class AdminUserView(BaseModel):
@@ -115,6 +203,10 @@ class UserActionRequest(BaseModel):
     reason: str = Field(min_length=4, max_length=300)
 
 
+class DeleteUserRequest(UserActionRequest):
+    confirm: bool = False
+
+
 class ResetPasswordRequest(UserActionRequest):
     admin_password: str = Field(min_length=1, max_length=1024)
 
@@ -153,6 +245,7 @@ class LedgerEntryView(BaseModel):
     order_id: str | None = None
     related_user_id: str | None = None
     operator_id: str | None = None
+    idempotency_key: str | None = None
     source: str
     created_at: str
 
@@ -160,6 +253,51 @@ class LedgerEntryView(BaseModel):
 class LedgerListResponse(BaseModel):
     entries: list[LedgerEntryView]
     total: int
+    request_id: str
+
+
+class AuditEventView(BaseModel):
+    event_id: str
+    actor_type: Literal["admin", "user", "system"] = "admin"
+    actor_id: str
+    actor_name: str
+    target_user_id: str | None = None
+    target_user_name: str | None = None
+    action: str
+    resource_type: str | None = None
+    resource_id: str | None = None
+    reason: str
+    request_id: str = ""
+    status: Literal["completed", "failed"] = "completed"
+    result_summary: str | None = None
+    created_at: str
+
+
+class AuditEventListResponse(BaseModel):
+    events: list[AuditEventView]
+    total: int
+    request_id: str
+
+
+class AuditOverviewRequest(UserActionRequest):
+    target_user_id: str = Field(min_length=1, max_length=128)
+
+
+class AuditSessionAccessRequest(UserActionRequest):
+    overview_event_id: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+
+
+class AuditDocumentAccessRequest(UserActionRequest):
+    overview_event_id: str = Field(min_length=1, max_length=128)
+    knowledge_base_id: str = Field(min_length=1, max_length=128)
+
+
+class AuditResourceResponse(BaseModel):
+    target_user_id: str
+    resource_type: Literal["overview", "session", "document"]
+    resource_id: str | None = None
+    data: dict[str, Any]
     request_id: str
 
 
@@ -220,6 +358,13 @@ class RechargeAckRequest(BaseModel):
     ledger_id: str = Field(min_length=1, max_length=128)
 
 
+class RechargeAckResponse(BaseModel):
+    order_id: str = Field(min_length=1, max_length=128)
+    status: Literal["approved"]
+    delivery_status: Literal["delivered"]
+    request_id: str = Field(min_length=1, max_length=128)
+
+
 class UsageReportRequest(BaseModel):
     system_id: str = Field(min_length=1, max_length=128)
     pool_tokens: int = Field(ge=0)
@@ -235,8 +380,8 @@ class UsageReportResponse(BaseModel):
     system_id: str = Field(min_length=1, max_length=128)
     accepted: bool
     reported_at: str = Field(min_length=1)
-    cumulative_consumed_delta: int | None = None
-    cumulative_credits_delta: int | None = None
+    cumulative_consumed_delta: int = Field(ge=0)
+    cumulative_credits_delta: int = Field(ge=0)
     request_id: str = Field(min_length=1, max_length=128)
 
 
@@ -258,6 +403,17 @@ class SalesHubConfigUpdate(BaseModel):
     public_key: str | None = Field(default=None, max_length=16_384)
 
 
+class AdminPolicyView(BaseModel):
+    admin_api_requires_admin_role: bool
+    credential_management: Literal["admin_only"]
+    sales_hub_authentication: Literal["customer_bearer_token"]
+    recharge_legacy_hmac_enabled: bool
+    high_risk_plugin_installation: Literal["disabled"]
+    policy_mutation_from_chat: bool
+    request_id_enforced: bool
+    generated_at: str
+
+
 class HubPingResponse(BaseModel):
     ok: bool
     system_id: str
@@ -275,6 +431,13 @@ class RemotePasswordResetRequest(BaseModel):
     expires_at: str | None = None
 
 
+class RemotePasswordResetResponse(BaseModel):
+    ok: bool
+    operation_id: str
+    username: str
+    request_id: str
+
+
 class AdminService:
     """Persist product management data beside the existing AgentScope store."""
 
@@ -290,6 +453,13 @@ class AdminService:
         self._lock = asyncio.Lock()
         self._sales_hub_client = SalesHubClient(self._hub_connection_config)
 
+    def _mutation_lock(self) -> DistributedLease:
+        return DistributedLease(
+            self._client,
+            self._lock,
+            f"{_PREFIX}:mutation-lock",
+        )
+
     def _client(self) -> Any:
         client = self._storage.get_client()
         if client is None:
@@ -297,7 +467,23 @@ class AdminService:
         return client
 
     async def _hub_connection_config(self) -> dict[str, Any]:
-        return await self._read_json(_SALES_HUB_KEY) or {}
+        value = await self._read_json(_SALES_HUB_KEY) or {}
+        token = value.get("token")
+        if isinstance(token, str) and token:
+            value["token"] = _unseal_secret(token)
+        return value
+
+    @staticmethod
+    def _request_id(request: Request) -> str:
+        state_value = getattr(request.state, "request_id", "")
+        if state_value:
+            return state_value
+        value = request.headers.get("X-Request-ID", "").strip()
+        if value:
+            return value
+        generated = f"req-{uuid4().hex}"
+        request.state.request_id = generated
+        return generated
 
     @staticmethod
     def _user_key(user_id: str) -> str:
@@ -306,6 +492,56 @@ class AdminService:
     @staticmethod
     def _order_key(order_id: str) -> str:
         return f"{_PREFIX}:order:{order_id}"
+
+    @staticmethod
+    def _idempotency_key(operation: str, key: str) -> str:
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return f"{_PREFIX}:idempotency:{operation}:{digest}"
+
+    @staticmethod
+    def _fingerprint(payload: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    async def _read_idempotent(
+        self,
+        key: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        saved = await self._read_json(key)
+        if saved is None:
+            return None
+        # Accept the old raw-result format so an in-flight development
+        # deployment can be upgraded without replaying a remote operation.
+        if "fingerprint" not in saved or "result" not in saved:
+            return saved
+        if saved["fingerprint"] != self._fingerprint(payload):
+            raise _error(
+                "idempotency_key_reused",
+                "The idempotency key was already used with another request.",
+                409,
+            )
+        result = saved["result"]
+        return result if isinstance(result, dict) else None
+
+    async def _write_idempotent(
+        self,
+        key: str,
+        payload: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        await self._write_json(
+            key,
+            {
+                "fingerprint": self._fingerprint(payload),
+                "result": result,
+            },
+        )
 
     async def _read_json(self, key: str) -> dict[str, Any] | None:
         raw = await self._client().get(key)
@@ -392,6 +628,7 @@ class AdminService:
         *,
         keyword: str | None,
         account_status: str | None,
+        plan_id: str | None,
         page: int,
         page_size: int,
     ) -> UserListResponse:
@@ -405,21 +642,35 @@ class AdminService:
             ]
         if account_status:
             accounts = [item for item in accounts if item.status == account_status]
-        total = len(accounts)
+        views = [await self._view(item) for item in accounts]
+        if plan_id:
+            views = [item for item in views if item.plan_id == plan_id]
+        total = len(views)
         start = (page - 1) * page_size
-        views = [await self._view(item) for item in accounts[start : start + page_size]]
         return UserListResponse(
-            users=views,
+            users=views[start : start + page_size],
             total=total,
             page=page,
             page_size=page_size,
             request_id="",
         )
 
-    async def create_user(self, body: CreateUserRequest) -> AdminUserView:
+    async def create_user(
+        self,
+        body: CreateUserRequest,
+        actor: AuthUser,
+        *,
+        request_id: str,
+        idempotency_key: str,
+    ) -> AdminUserView:
         if body.plan_id not in _PLANS:
             raise _error("plan_not_found", "The selected plan does not exist.", 409)
-        async with self._lock:
+        request_fingerprint = {"operation": "user.create", **body.model_dump()}
+        idem_key = self._idempotency_key(f"user-create:{actor.id}", idempotency_key)
+        async with self._mutation_lock():
+            existing = await self._read_idempotent(idem_key, request_fingerprint)
+            if existing is not None:
+                return AdminUserView.model_validate(existing)
             system = await self._system()
             explicit_plan = self._plan_billing is not None and "plan_id" in body.model_fields_set
             required_tokens = (
@@ -475,29 +726,52 @@ class AdminService:
                     balance_after=int(system["pool_tokens"]),
                     related_user_id=account.id,
                     source="admin",
+                    idempotency_key=idempotency_key,
                 )
-            return await self._view(account)
+            view = await self._view(account)
+            await self._audit(
+                actor=actor,
+                action="user.create",
+                target_id=account.id,
+                reason="Administrator created a member.",
+                request_id=request_id,
+                result_summary=f"plan_id={view.plan_id}; bonus_tokens={body.bonus_tokens}",
+            )
+            await self._write_idempotent(idem_key, request_fingerprint, view.model_dump())
+            return view
 
     async def update_user(
         self,
         user_id: str,
         body: UpdateUserRequest,
-        actor_id: str,
+        actor: AuthUser,
+        *,
+        request_id: str,
+        idempotency_key: str,
     ) -> AdminUserView:
-        account = await self._auth._account_by_id(user_id)
-        if account is None:
-            raise _error("user_not_found", "User not found.", 404)
-        if user_id == actor_id and body.status in {"banned", "locked"}:
-            raise _error("last_admin_protected", "The current admin cannot be disabled.", 409)
-        if account.role == "admin" and body.status in {"banned", "locked"}:
-            active_admins = [
-                item
-                for item in await self._auth.list_accounts()
-                if item.role == "admin" and item.status == "active"
-            ]
-            if len(active_admins) <= 1:
-                raise _error("last_admin_protected", "At least one admin is required.", 409)
-        async with self._lock:
+        request_fingerprint = {
+            "operation": "user.update",
+            "user_id": user_id,
+            **body.model_dump(),
+        }
+        idem_key = self._idempotency_key(f"user-update:{actor.id}", idempotency_key)
+        async with self._mutation_lock():
+            existing = await self._read_idempotent(idem_key, request_fingerprint)
+            if existing is not None:
+                return AdminUserView.model_validate(existing)
+            account = await self._auth._account_by_id(user_id)
+            if account is None:
+                raise _error("user_not_found", "User not found.", 404)
+            if user_id == actor.id and body.status in {"banned", "locked"}:
+                raise _error("last_admin_protected", "The current admin cannot be disabled.", 409)
+            if account.role == "admin" and body.status in {"banned", "locked"}:
+                active_admins = [
+                    item
+                    for item in await self._auth.list_accounts()
+                    if item.role == "admin" and item.status == "active"
+                ]
+                if len(active_admins) <= 1:
+                    raise _error("last_admin_protected", "At least one admin is required.", 409)
             account_view = self._auth._public_user(account)
             profile = await self._profile(account_view)
             system = await self._system()
@@ -506,7 +780,7 @@ class AdminService:
                     await self._plan_billing.admin_assign_plan(
                         user_id,
                         body.plan_id,
-                        actor_id,
+                        actor.id,
                     )
                     profile = await self._profile(account_view)
                     system = await self._system()
@@ -535,55 +809,162 @@ class AdminService:
                         balance_after=int(system["pool_tokens"]),
                         related_user_id=user_id,
                         source="admin",
+                        idempotency_key=idempotency_key,
                     )
             await self._save_profile(profile)
             if body.status is not None:
                 account = await self._auth.set_status(user_id, body.status)
                 account_view = account
-            return await self._view(account_view)
+            view = await self._view(account_view)
+            await self._audit(
+                actor=actor,
+                action="user.update",
+                target_id=user_id,
+                reason="Administrator updated member settings.",
+                request_id=request_id,
+                result_summary=(
+                    f"status={view.status}; plan_id={view.plan_id}; "
+                    f"bonus_tokens={view.bonus_tokens}"
+                ),
+            )
+            await self._write_idempotent(idem_key, request_fingerprint, view.model_dump())
+            return view
 
-    async def delete_user(self, user_id: str, actor_id: str) -> None:
-        account = await self._auth._account_by_id(user_id)
-        if account is None:
-            raise _error("user_not_found", "User not found.", 404)
-        if user_id == actor_id or account.role == "admin":
-            raise _error("admin_protected", "An administrator cannot be deleted.", 409)
-        await self._auth.set_status(user_id, "deleted")
-        await self._auth.revoke_sessions(user_id)
+    async def delete_user(
+        self,
+        user_id: str,
+        actor: AuthUser,
+        body: DeleteUserRequest,
+        *,
+        request_id: str,
+        idempotency_key: str,
+    ) -> None:
+        if not body.confirm:
+            raise _error("confirmation_required", "Explicit confirmation is required.", 400)
+        request_fingerprint = {
+            "operation": "user.delete",
+            "user_id": user_id,
+            **body.model_dump(),
+        }
+        idem_key = self._idempotency_key(f"user-delete:{actor.id}", idempotency_key)
+        async with self._mutation_lock():
+            existing = await self._read_idempotent(idem_key, request_fingerprint)
+            if existing is not None:
+                return
+            account = await self._auth._account_by_id(user_id)
+            if account is None:
+                raise _error("user_not_found", "User not found.", 404)
+            if user_id == actor.id or account.role == "admin":
+                raise _error("admin_protected", "An administrator cannot be deleted.", 409)
+            await self._auth.set_status(user_id, "deleted")
+            await self._auth.revoke_sessions(user_id)
+            await self._audit(
+                actor=actor,
+                action="user.delete",
+                target_id=user_id,
+                reason=body.reason,
+                request_id=request_id,
+                result_summary="Member soft-deleted; profile and ledger retained.",
+            )
+            await self._write_idempotent(
+                idem_key,
+                request_fingerprint,
+                {"state": "completed", "user_id": user_id},
+            )
 
     async def reset_password(
         self,
         user_id: str,
         actor: AuthUser,
         body: ResetPasswordRequest,
+        *,
+        request_id: str = "",
+        idempotency_key: str | None = None,
     ) -> ResetPasswordResponse:
         if not await self._auth.verify_password(actor.id, body.admin_password):
             raise _error("admin_password_invalid", "The current admin password is invalid.", 403)
-        account = await self._auth._account_by_id(user_id)
-        if account is None or account.status == "deleted":
-            raise _error("user_not_found", "User not found.", 404)
-        temporary_password = secrets.token_urlsafe(12)
-        expires_at = _temporary_password_expiry()
-        updated = await self._auth.reset_password(
-            user_id,
-            temporary_password,
-            temporary_password_expires_at=expires_at,
-        )
-        await self._audit(
-            actor=actor,
-            action="user.reset_password",
-            target_id=user_id,
-            reason=body.reason,
-        )
-        return ResetPasswordResponse(
-            operation_id=f"op-{uuid4().hex}",
-            request_id="",
-            state="completed",
-            user_id=updated.id,
-            username=updated.username,
-            temporary_password=temporary_password,
-            expires_at=expires_at,
-        )
+        if not idempotency_key:
+            raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+        fingerprint_payload = {
+            "operation": "reset_password",
+            "user_id": user_id,
+            "reason": body.reason,
+        }
+        idem_key = self._idempotency_key("reset-password", idempotency_key)
+        async with self._mutation_lock():
+            existing = await self._read_json(idem_key)
+            if existing is not None:
+                if existing.get("fingerprint") != self._fingerprint(fingerprint_payload):
+                    raise _error(
+                        "idempotency_key_reused",
+                        "The idempotency key was already used with another request.",
+                        409,
+                    )
+                raise _error(
+                    "operation_already_processed",
+                    "The password reset operation was already processed; the temporary password was shown once.",
+                    409,
+                )
+            now = datetime.now(timezone.utc).timestamp()
+            rate_key = self._idempotency_key("password-reset-rate", actor.id)
+            rate_state = await self._read_json(rate_key) or {"timestamps": []}
+            timestamps = [
+                float(value)
+                for value in rate_state.get("timestamps", [])
+                if isinstance(value, (int, float)) and now - float(value) < 300
+            ]
+            if len(timestamps) >= 5:
+                raise _error(
+                    "rate_limited",
+                    "Password reset rate limit exceeded. Try again later.",
+                    429,
+                )
+            timestamps.append(now)
+            await self._write_json(rate_key, {"timestamps": timestamps})
+            account = await self._auth._account_by_id(user_id)
+            if account is None or account.status == "deleted":
+                raise _error("user_not_found", "User not found.", 404)
+            await self._write_json(
+                idem_key,
+                {
+                    "fingerprint": self._fingerprint(fingerprint_payload),
+                    "state": "started",
+                },
+            )
+            temporary_password = secrets.token_urlsafe(12)
+            expires_at = _temporary_password_expiry()
+            updated = await self._auth.reset_password(
+                user_id,
+                temporary_password,
+                temporary_password_expires_at=expires_at,
+            )
+            await self._audit(
+                actor=actor,
+                action="user.reset_password",
+                target_id=user_id,
+                reason=body.reason,
+                request_id=request_id,
+                result_summary="Temporary password issued; existing sessions revoked.",
+            )
+            result = ResetPasswordResponse(
+                operation_id=f"op-{uuid4().hex}",
+                request_id="",
+                state="completed",
+                user_id=updated.id,
+                username=updated.username,
+                temporary_password=temporary_password,
+                expires_at=expires_at,
+            )
+            await self._write_json(
+                idem_key,
+                {
+                    "fingerprint": self._fingerprint(fingerprint_payload),
+                    "state": "completed",
+                    "operation_id": result.operation_id,
+                    "user_id": result.user_id,
+                },
+            )
+            return result
 
     async def overview(self) -> dict[str, Any]:
         accounts = await self._auth.list_accounts()
@@ -614,12 +995,86 @@ class AdminService:
             "updated_at": system["updated_at"],
         }
 
+    async def policy(self) -> AdminPolicyView:
+        return AdminPolicyView(
+            admin_api_requires_admin_role=True,
+            credential_management="admin_only",
+            sales_hub_authentication="customer_bearer_token",
+            recharge_legacy_hmac_enabled=(
+                os.getenv("LONGXIN_ALLOW_LEGACY_HMAC_CODES", "false").lower() == "true"
+            ),
+            high_risk_plugin_installation="disabled",
+            policy_mutation_from_chat=False,
+            request_id_enforced=True,
+            generated_at=_now(),
+        )
+
     async def update_quota(self, body: QuotaUpdateRequest) -> dict[str, Any]:
-        async with self._lock:
+        async with self._mutation_lock():
             system = await self._system()
             system["test_default_tokens"] = body.test_default_tokens
             await self._save_system(system)
         return await self.quota()
+
+    async def update_quota_idempotent(
+        self,
+        body: QuotaUpdateRequest,
+        actor: AuthUser,
+        *,
+        request_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        request_fingerprint = {"operation": "quota.update_test_default", **body.model_dump()}
+        idem_key = self._idempotency_key(f"quota-update:{actor.id}", idempotency_key)
+        async with self._mutation_lock():
+            existing = await self._read_idempotent(idem_key, request_fingerprint)
+            if existing is not None:
+                return existing
+            system = await self._system()
+            system["test_default_tokens"] = body.test_default_tokens
+            await self._save_system(system)
+            await self._audit(
+                actor=actor,
+                action="quota.update_test_default",
+                target_id=None,
+                reason="Administrator updated the test account default.",
+                request_id=request_id,
+                result_summary=f"test_default_tokens={body.test_default_tokens}",
+            )
+            result = await self.quota()
+            await self._write_idempotent(idem_key, request_fingerprint, result)
+            return result
+
+    async def revoke_user_sessions(
+        self,
+        user_id: str,
+        actor: AuthUser,
+        *,
+        request_id: str,
+        idempotency_key: str,
+    ) -> None:
+        request_fingerprint = {"operation": "user.revoke_sessions", "user_id": user_id}
+        idem_key = self._idempotency_key(f"revoke-sessions:{actor.id}", idempotency_key)
+        async with self._mutation_lock():
+            existing = await self._read_idempotent(idem_key, request_fingerprint)
+            if existing is not None:
+                return
+            account = await self._auth._account_by_id(user_id)
+            if account is None:
+                raise _error("user_not_found", "User not found.", 404)
+            await self._auth.revoke_sessions(user_id)
+            await self._audit(
+                actor=actor,
+                action="user.revoke_sessions",
+                target_id=user_id,
+                reason="Administrator session revocation.",
+                request_id=request_id,
+            )
+            await self._write_idempotent(
+                idem_key,
+                request_fingerprint,
+                {"state": "completed", "user_id": user_id},
+            )
 
     async def _append_ledger(
         self,
@@ -632,6 +1087,7 @@ class AdminService:
         related_user_id: str | None = None,
         operator_id: str | None = None,
         source: str,
+        idempotency_key: str | None = None,
     ) -> LedgerEntryView:
         entry = LedgerEntryView(
             ledger_id=f"led-{uuid4().hex}",
@@ -642,18 +1098,60 @@ class AdminService:
             order_id=order_id,
             related_user_id=related_user_id,
             operator_id=operator_id,
+            idempotency_key=idempotency_key,
             source=source,
             created_at=_now(),
         )
         await self._client().rpush(_LEDGER_KEY, entry.model_dump_json())
         return entry
 
-    async def ledger(self, limit: int) -> list[LedgerEntryView]:
-        raw_entries = await self._client().lrange(_LEDGER_KEY, -limit, -1)
+    async def ledger(
+        self,
+        limit: int,
+        *,
+        entry_type: str | None = None,
+        related_user_id: str | None = None,
+        order_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[LedgerEntryView]:
+        raw_entries = await self._client().lrange(_LEDGER_KEY, 0, -1)
         result: list[LedgerEntryView] = []
         for raw in reversed(raw_entries):
             try:
-                result.append(LedgerEntryView.model_validate_json(raw))
+                entry = LedgerEntryView.model_validate_json(raw)
+            except ValueError:
+                continue
+            if entry_type and entry.type != entry_type:
+                continue
+            if related_user_id and entry.related_user_id != related_user_id:
+                continue
+            if order_id and entry.order_id != order_id:
+                continue
+            if since and entry.created_at < since:
+                continue
+            if until and entry.created_at > until:
+                continue
+            result.append(entry)
+            if len(result) >= limit:
+                break
+        return result
+
+    async def _cumulative_consumed(self) -> int:
+        total = 0
+        for account in await self._auth.list_accounts():
+            if account.role != "user" or account.status == "deleted":
+                continue
+            usage = await self._auth.get_token_usage(account.id)
+            total += max(0, int(usage.total_tokens))
+        return total
+
+    async def audit_events(self, limit: int) -> list[AuditEventView]:
+        raw_events = await self._client().lrange(_AUDIT_KEY, -limit, -1)
+        result: list[AuditEventView] = []
+        for raw in reversed(raw_events):
+            try:
+                result.append(AuditEventView.model_validate_json(raw))
             except ValueError:
                 continue
         return result
@@ -680,6 +1178,44 @@ class AdminService:
         except SalesHubClientError as exc:
             raise _error(exc.code, exc.message, exc.status_code) from exc
 
+    @staticmethod
+    def _normalize_recharge_poll_response(
+        remote: dict[str, Any],
+        system_id: str,
+    ) -> dict[str, Any]:
+        """Normalize the legacy single-order poll response locally.
+
+        The contract response is ``{"orders": [...], "request_id": ...}``.
+        Some Sales Hub deployments currently return one approved order at the
+        top level and call the code field ``code``.  Keep the contract shape as
+        the canonical form, but adapt that legacy response before validation so
+        the rest of the redemption and ACK flow remains unchanged.
+        """
+        request_id = remote.get("request_id")
+        raw_orders = remote.get("orders")
+        if isinstance(raw_orders, list):
+            orders: list[Any] = []
+            for raw_order in raw_orders:
+                if not isinstance(raw_order, dict):
+                    orders.append(raw_order)
+                    continue
+                order = dict(raw_order)
+                if "recharge_code" not in order and "code" in order:
+                    order["recharge_code"] = order["code"]
+                order.setdefault("system_id", system_id)
+                orders.append(order)
+            return {"orders": orders, "request_id": request_id}
+
+        if isinstance(remote.get("order_id"), str):
+            order = dict(remote)
+            if "recharge_code" not in order and "code" in order:
+                order["recharge_code"] = order["code"]
+            order.setdefault("system_id", system_id)
+            order.pop("request_id", None)
+            return {"orders": [order], "request_id": request_id}
+
+        return remote
+
     async def create_recharge_request(
         self,
         body: RechargeRequest,
@@ -687,78 +1223,82 @@ class AdminService:
         request_id: str = "",
         idempotency_key: str | None = None,
     ) -> RechargeRequestView:
-        if idempotency_key:
-            existing = await self._read_json(f"{_PREFIX}:idempotency:{idempotency_key}")
-            if existing:
-                return RechargeRequestView.model_validate(existing)
-        system = await self._system()
+        if not idempotency_key:
+            raise _error("idempotency_required", "Idempotency-Key is required.", 400)
         effective_request_id = request_id or f"req-{uuid4().hex}"
         amount = _format_money(body.amount, require_positive=True)
-        requested_at = _now()
-        json_body: dict[str, Any] = {
-            "system_id": system["system_id"],
+        request_fingerprint = {
+            "operation": "recharge_submit",
             "amount": amount,
-            "requested_at": requested_at,
+            "note": body.note,
         }
-        if body.note is not None:
-            json_body["note"] = body.note
-        remote = await self._hub_request(
-            "POST",
-            "/api/v1/integration/recharge-requests",
-            request_id=effective_request_id,
-            idempotency_key=idempotency_key,
-            json_body=json_body,
-        )
-        order_id = remote.get("order_id")
-        if not isinstance(order_id, str) or not order_id:
-            raise _error("hub_invalid_response", "Sales Hub did not return an order ID.", 502)
-        remote_request_id = remote.get("request_id")
-        if not isinstance(remote_request_id, str) or not remote_request_id:
-            raise _error(
-                "hub_invalid_response",
-                "Sales Hub did not return the request ID.",
-                502,
+        idem_key = self._idempotency_key("recharge-submit", idempotency_key)
+        requested_at = _now()
+        async with self._mutation_lock():
+            existing = await self._read_idempotent(idem_key, request_fingerprint)
+            if existing:
+                return RechargeRequestView.model_validate(existing)
+            system = await self._system()
+            json_body: dict[str, Any] = {
+                "system_id": system["system_id"],
+                "amount": amount,
+                "requested_at": requested_at,
+            }
+            if body.note is not None:
+                json_body["note"] = body.note
+            remote = await self._hub_request(
+                "POST",
+                "/api/v1/integration/recharge-requests",
+                request_id=effective_request_id,
+                idempotency_key=idempotency_key,
+                json_body=json_body,
             )
-        if remote_request_id != effective_request_id:
-            raise _error(
-                "request_id_mismatch",
-                "Sales Hub returned a different request ID.",
-                409,
+            order_id = remote.get("order_id")
+            if not isinstance(order_id, str) or not order_id:
+                raise _error("hub_invalid_response", "Sales Hub did not return an order ID.", 502)
+            remote_request_id = remote.get("request_id")
+            if not isinstance(remote_request_id, str) or not remote_request_id:
+                raise _error(
+                    "hub_invalid_response",
+                    "Sales Hub did not return the request ID.",
+                    502,
+                )
+            if remote_request_id != effective_request_id:
+                raise _error(
+                    "request_id_mismatch",
+                    "Sales Hub returned a different request ID.",
+                    409,
+                )
+            remote_system_id = remote.get("system_id", system["system_id"])
+            if remote_system_id != system["system_id"]:
+                raise _error("system_id_mismatch", "Sales Hub returned another system ID.", 409)
+            remote_status = remote.get("status")
+            if remote_status not in {"pending", "approved", "rejected", "unknown"}:
+                raise _error(
+                    "hub_invalid_response",
+                    "Sales Hub returned an invalid order status.",
+                    502,
+                )
+            delivery_status = remote.get("delivery_status")
+            if delivery_status not in {"not_delivered", "delivered"}:
+                raise _error(
+                    "hub_invalid_response",
+                    "Sales Hub returned an invalid delivery status.",
+                    502,
+                )
+            order = RechargeRequestView(
+                order_id=order_id,
+                system_id=system["system_id"],
+                amount=amount,
+                status=remote_status,
+                delivery_status=delivery_status,
+                created_at=_now(),
+                request_id=remote_request_id,
             )
-        remote_system_id = remote.get("system_id", system["system_id"])
-        if remote_system_id != system["system_id"]:
-            raise _error("system_id_mismatch", "Sales Hub returned another system ID.", 409)
-        remote_status = remote.get("status")
-        if remote_status not in {"pending", "approved", "rejected", "unknown"}:
-            raise _error(
-                "hub_invalid_response",
-                "Sales Hub returned an invalid order status.",
-                502,
-            )
-        delivery_status = remote.get("delivery_status")
-        if delivery_status not in {"not_delivered", "delivered"}:
-            raise _error(
-                "hub_invalid_response",
-                "Sales Hub returned an invalid delivery status.",
-                502,
-            )
-        order = RechargeRequestView(
-            order_id=order_id,
-            system_id=system["system_id"],
-            amount=amount,
-            status=remote_status,
-            delivery_status=delivery_status,
-            created_at=_now(),
-            request_id=remote_request_id,
-        )
-        await self._write_json(self._order_key(order.order_id), order.model_dump())
-        await self._client().rpush(f"{_PREFIX}:orders", order.order_id)
-        if idempotency_key:
-            await self._write_json(
-                f"{_PREFIX}:idempotency:{idempotency_key}",
-                order.model_dump(),
-            )
-        return order
+            await self._write_json(self._order_key(order.order_id), order.model_dump())
+            await self._client().rpush(f"{_PREFIX}:orders", order.order_id)
+            await self._write_idempotent(idem_key, request_fingerprint, order.model_dump())
+            return order
 
     async def recharge_requests(self, limit: int) -> list[RechargeRequestView]:
         ids = await self._client().lrange(f"{_PREFIX}:orders", -limit, -1)
@@ -777,6 +1317,7 @@ class AdminService:
         idempotency_key: str | None = None,
     ) -> OperationResponse:
         operation_id = f"op-{uuid4().hex}"
+        system_id = (await self._system())["system_id"]
         try:
             remote = await self._hub_request(
                 "GET",
@@ -797,8 +1338,29 @@ class AdminService:
                 error=detail,
             )
         try:
-            poll = RechargePollResponse.model_validate(remote)
-        except ValueError:
+            poll = RechargePollResponse.model_validate(
+                self._normalize_recharge_poll_response(remote, system_id),
+            )
+        except ValidationError as exc:
+            normalized = self._normalize_recharge_poll_response(remote, system_id)
+            details: dict[str, Any] = {
+                "response_keys": sorted(remote.keys()),
+                "normalized_keys": sorted(normalized.keys()),
+                "orders_type": type(normalized.get("orders")).__name__,
+                "order_item_keys": [
+                    sorted(item.keys())
+                    for item in normalized.get("orders", [])[:5]
+                    if isinstance(item, dict)
+                ],
+                "validation_errors": [
+                    {
+                        "location": ".".join(str(part) for part in error.get("loc", ())),
+                        "type": error.get("type", "validation_error"),
+                        "message": error.get("msg", "Invalid value."),
+                    }
+                    for error in exc.errors()
+                ],
+            }
             return OperationResponse(
                 operation_id=operation_id,
                 request_id=request_id,
@@ -806,9 +1368,19 @@ class AdminService:
                 error={
                     "code": "hub_invalid_response",
                     "message": "Sales Hub returned an invalid recharge poll response.",
+                    "details": details,
                 },
             )
-        system_id = (await self._system())["system_id"]
+        if poll.request_id != request_id:
+            return OperationResponse(
+                operation_id=operation_id,
+                request_id=request_id,
+                state="failed",
+                error={
+                    "code": "request_id_mismatch",
+                    "message": "Sales Hub did not echo the poll request ID.",
+                },
+            )
         completed: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         for item in poll.orders:
@@ -841,21 +1413,19 @@ class AdminService:
                         {
                             "order_id": item.order_id,
                             "code": "amount_mismatch",
-                            "message": "The Sales Hub amount does not match the local order.",
+                        "message": "The Sales Hub amount does not match the local order.",
                         },
                     )
                     continue
             if local is None:
-                local = RechargeRequestView(
-                    order_id=item.order_id,
-                    system_id=item.system_id,
-                    amount=item.amount,
-                    status="approved",
-                    delivery_status="not_delivered",
-                    created_at=_now(),
-                ).model_dump()
-                await self._write_json(self._order_key(item.order_id), local)
-                await self._client().rpush(f"{_PREFIX}:orders", item.order_id)
+                failures.append(
+                    {
+                        "order_id": item.order_id,
+                        "code": "recharge_order_not_found",
+                        "message": "The Sales Hub order does not match a local recharge request.",
+                    },
+                )
+                continue
             ledger_id = local.get("ledger_id")
             redemption_operation_id = local.get("redemption_operation_id")
             if not isinstance(ledger_id, str) or not isinstance(redemption_operation_id, str):
@@ -864,6 +1434,7 @@ class AdminService:
                         RedeemCodeRequest(code=item.recharge_code, confirm=True),
                         actor,
                         request_id=request_id,
+                        idempotency_key=f"{idempotency_key or operation_id}:redeem:{item.order_id}",
                     )
                 except HTTPException as exc:
                     detail = exc.detail if isinstance(exc.detail, dict) else {
@@ -884,7 +1455,7 @@ class AdminService:
                 )
                 await self._write_json(self._order_key(item.order_id), local)
             try:
-                await self._hub_request(
+                ack_remote = await self._hub_request(
                     "POST",
                     f"/api/v1/integration/recharge-requests/{item.order_id}/ack",
                     request_id=request_id,
@@ -896,12 +1467,28 @@ class AdminService:
                         ledger_id=ledger_id,
                     ).model_dump(),
                 )
+                ack = RechargeAckResponse.model_validate(ack_remote)
+                if ack.order_id != item.order_id or ack.request_id != request_id:
+                    raise _error(
+                        "ack_invalid_response",
+                        "Sales Hub returned an ACK for another request or order.",
+                        502,
+                    )
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {
                     "code": "ack_failed",
                     "message": str(exc.detail),
                 }
                 failures.append({"order_id": item.order_id, **detail})
+                continue
+            except ValueError:
+                failures.append(
+                    {
+                        "order_id": item.order_id,
+                        "code": "ack_invalid_response",
+                        "message": "Sales Hub returned an invalid ACK response.",
+                    },
+                )
                 continue
             local["status"] = "approved"
             local["delivery_status"] = "delivered"
@@ -932,12 +1519,13 @@ class AdminService:
     ) -> OperationResponse:
         operation_id = f"op-{uuid4().hex}"
         system = await self._system()
+        cumulative_consumed = await self._cumulative_consumed()
         report = UsageReportRequest(
             system_id=system["system_id"],
             pool_tokens=int(system["pool_tokens"]),
             total_recharged=_format_money(str(system["total_recharged"])),
             app_version=os.getenv("LONGXIN_APP_VERSION", "3.8.1"),
-            cumulative_consumed=int(system.get("cumulative_consumed", 0)),
+            cumulative_consumed=cumulative_consumed,
             cumulative_credits=int(system.get("cumulative_credits", 0)),
             client_reported_at=_now(),
         )
@@ -982,6 +1570,16 @@ class AdminService:
                     "message": "Sales Hub returned another system ID for the usage report.",
                 },
             )
+        if response.request_id != request_id:
+            return OperationResponse(
+                operation_id=operation_id,
+                request_id=request_id,
+                state="failed",
+                error={
+                    "code": "request_id_mismatch",
+                    "message": "Sales Hub did not echo the usage report request ID.",
+                },
+            )
         if not response.accepted:
             return OperationResponse(
                 operation_id=operation_id,
@@ -992,6 +1590,7 @@ class AdminService:
                     "message": "Sales Hub rejected the usage report.",
                 },
             )
+        system["cumulative_consumed"] = cumulative_consumed
         system["last_report_at"] = response.reported_at
         await self._save_system(system)
         return OperationResponse(
@@ -1006,6 +1605,8 @@ class AdminService:
                 "sales_request_id": response.request_id,
                 "cumulative_consumed": report.cumulative_consumed,
                 "cumulative_credits": report.cumulative_credits,
+                "cumulative_consumed_delta": response.cumulative_consumed_delta,
+                "cumulative_credits_delta": response.cumulative_credits_delta,
             },
         )
 
@@ -1015,54 +1616,127 @@ class AdminService:
         actor: AuthUser,
         *,
         request_id: str = "",
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         if not body.confirm:
             raise _error("confirmation_required", "Explicit confirmation is required.", 400)
+        if not idempotency_key:
+            raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+        request_fingerprint = {
+            "operation": "redeem_code",
+            "code_sha256": hashlib.sha256(body.code.encode("utf-8")).hexdigest(),
+            "confirm": body.confirm,
+        }
+        idem_key = self._idempotency_key("redeem-code", idempotency_key)
+        existing = await self._read_idempotent(idem_key, request_fingerprint)
+        if existing is not None:
+            return existing
         parts = body.code.split(".", 2)
         if len(parts) != 3 or parts[0] != "LXRC2":
             raise _error("invalid_recharge_code", "Unsupported recharge code format.", 400)
         try:
-            payload_bytes = base64.urlsafe_b64decode(parts[1] + "===")
+            payload_bytes = _decode_base64url(parts[1])
             payload = json.loads(payload_bytes)
         except (ValueError, json.JSONDecodeError) as exc:
             raise _error("invalid_recharge_code", "The recharge code payload is invalid.", 400) from exc
         if not isinstance(payload, dict):
             raise _error("invalid_recharge_code", "The recharge code payload is invalid.", 400)
-        secret = os.getenv("LONGXIN_RECHARGE_CODE_SECRET")
-        if not secret:
-            raise _error("signer_not_configured", "The recharge signer is not configured.", 503)
-        expected = hmac.new(
-            secret.encode("utf-8"),
-            payload_bytes,
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(expected, parts[2]):
-            raise _error("invalid_recharge_signature", "The recharge code signature is invalid.", 400)
+        config = await self._read_json(_SALES_HUB_KEY) or {}
+        public_key = config.get("public_key")
+        if public_key:
+            try:
+                signer = _load_ed25519_public_key(public_key)
+                signature = _decode_base64url(parts[2])
+                signer.verify(signature, payload_bytes)
+            except Exception as exc:
+                raise _error(
+                    "invalid_recharge_signature",
+                    "The recharge code signature is invalid.",
+                    400,
+                ) from exc
+        else:
+            # Legacy HMAC is retained only for explicitly marked compatibility
+            # environments. Production requires the Sales Hub Ed25519 key.
+            allow_legacy_hmac = os.getenv(
+                "LONGXIN_ALLOW_LEGACY_HMAC_CODES",
+                "false",
+            ).lower() == "true"
+            secret = os.getenv("LONGXIN_RECHARGE_CODE_SECRET")
+            if not allow_legacy_hmac or not secret:
+                raise _error("signer_not_configured", "The recharge signer is not configured.", 503)
+            expected = hmac.new(
+                secret.encode("utf-8"),
+                payload_bytes,
+                hashlib.sha256,
+            ).hexdigest()
+            if not hmac.compare_digest(expected, parts[2]):
+                raise _error("invalid_recharge_signature", "The recharge code signature is invalid.", 400)
         system = await self._system()
         if payload.get("system_id") != system["system_id"]:
             raise _error("system_id_mismatch", "The recharge code targets another system.", 409)
         tokens = payload.get("tokens")
+        version = payload.get("version")
         amount = payload.get("amount")
         nonce = payload.get("nonce")
+        order_id = payload.get("order_id")
         if (
             not isinstance(tokens, int)
             or isinstance(tokens, bool)
             or tokens <= 0
+            or version != os.getenv("LONGXIN_RECHARGE_CODE_VERSION", "1")
             or not isinstance(amount, str)
+            or not isinstance(nonce, str)
             or not nonce
+            or not isinstance(order_id, str)
+            or not order_id
         ):
             raise _error("invalid_recharge_code", "The recharge code fields are invalid.", 400)
         try:
-            amount_value = Decimal(amount)
-        except InvalidOperation as exc:
-            raise _error("invalid_recharge_code", "The recharge amount is invalid.", 400) from exc
-        if amount_value <= 0 or amount_value.as_tuple().exponent < -2:
+            canonical_amount = _format_money(amount, require_positive=True)
+            amount_value = Decimal(canonical_amount)
+        except HTTPException as exc:
             raise _error("invalid_recharge_code", "The recharge amount is invalid.", 400)
-        nonce_key = f"{_PREFIX}:recharge-nonce:{nonce}"
-        created = await self._client().set(nonce_key, "1", nx=True)
-        if not created:
-            raise _error("code_already_redeemed", "The recharge code was already redeemed.", 409)
-        async with self._lock:
+        issued_at = _parse_utc_timestamp(payload.get("issued_at"), "issued_at")
+        expires_at = _parse_utc_timestamp(payload.get("expires_at"), "expires_at")
+        now = datetime.now(timezone.utc)
+        if expires_at <= now or expires_at <= issued_at or issued_at > now + timedelta(minutes=5):
+            raise _error("invalid_recharge_code", "The recharge code validity window is invalid.", 400)
+        if canonical_amount != amount:
+            raise _error("invalid_recharge_code", "The recharge amount is invalid.", 400)
+        order = await self._read_json(self._order_key(order_id))
+        if order is None:
+            raise _error("recharge_order_not_found", "The recharge order was not found locally.", 409)
+        if order.get("system_id") != system["system_id"]:
+            raise _error("system_id_mismatch", "The recharge order targets another system.", 409)
+        if order.get("delivery_status") == "delivered":
+            raise _error("code_already_redeemed", "The recharge order was already delivered.", 409)
+        try:
+            local_amount = _format_money(str(order.get("amount")), require_positive=True)
+        except HTTPException as exc:
+            raise _error(
+                "amount_mismatch",
+                "The local recharge order amount is invalid.",
+                409,
+            ) from exc
+        if local_amount != amount:
+            raise _error("amount_mismatch", "The recharge code amount does not match the order.", 409)
+        operation_id = f"op-{uuid4().hex}"
+        async with self._mutation_lock():
+            existing = await self._read_idempotent(idem_key, request_fingerprint)
+            if existing is not None:
+                return existing
+            current_order = await self._read_json(self._order_key(order_id))
+            if current_order is None:
+                raise _error("recharge_order_not_found", "The recharge order was not found locally.", 409)
+            if current_order.get("delivery_status") == "delivered" or current_order.get(
+                "redemption_operation_id",
+            ):
+                raise _error("code_already_redeemed", "The recharge order was already redeemed.", 409)
+            order = current_order
+            nonce_key = f"{_PREFIX}:recharge-nonce:{nonce}"
+            created = await self._client().set(nonce_key, "1", nx=True)
+            if not created:
+                raise _error("code_already_redeemed", "The recharge code was already redeemed.", 409)
             system["pool_tokens"] = int(system["pool_tokens"]) + tokens
             system["total_recharged"] = str(
                 Decimal(str(system["total_recharged"])) + amount_value,
@@ -1077,33 +1751,32 @@ class AdminService:
                 order_id=payload.get("order_id"),
                 operator_id=actor.id,
                 source="sales_hub",
+                idempotency_key=idempotency_key,
             )
-            order_id = payload.get("order_id")
-            if isinstance(order_id, str):
-                order = await self._read_json(self._order_key(order_id))
-                if order is not None:
-                    order.update(
-                        {
-                            "status": "approved",
-                            "delivery_status": "not_delivered",
-                            "ledger_id": ledger.ledger_id,
-                            "redemption_operation_id": f"op-{uuid4().hex}",
-                        },
-                    )
-                    await self._write_json(self._order_key(order_id), order)
-        return {
-            "operation_id": f"op-{uuid4().hex}",
-            "state": "completed",
-            "system_id": system["system_id"],
-            "amount": amount,
-            "tokens": tokens,
-            "ledger_id": ledger.ledger_id,
-            "pool_tokens_after": int(system["pool_tokens"]),
-            "request_id": request_id,
-        }
+            order.update(
+                {
+                    "status": "approved",
+                    "delivery_status": "not_delivered",
+                    "ledger_id": ledger.ledger_id,
+                    "redemption_operation_id": operation_id,
+                },
+            )
+            await self._write_json(self._order_key(order_id), order)
+            result = {
+                "operation_id": operation_id,
+                "state": "completed",
+                "system_id": system["system_id"],
+                "amount": amount,
+                "tokens": tokens,
+                "ledger_id": ledger.ledger_id,
+                "pool_tokens_after": int(system["pool_tokens"]),
+                "request_id": request_id,
+            }
+            await self._write_idempotent(idem_key, request_fingerprint, result)
+            return result
 
     async def hub_config(self) -> dict[str, Any]:
-        value = await self._read_json(_SALES_HUB_KEY) or {}
+        value = await self._hub_connection_config()
         token = value.get("token")
         public_key = value.get("public_key")
         return {
@@ -1122,26 +1795,55 @@ class AdminService:
             "last_verified_at": value.get("last_verified_at"),
         }
 
-    async def update_hub_config(self, body: SalesHubConfigUpdate) -> dict[str, Any]:
-        value = await self._read_json(_SALES_HUB_KEY) or {}
-        if body.system_id is not None:
-            value["system_id"] = body.system_id
-            system = await self._system()
-            system["system_id"] = body.system_id
-            await self._save_system(system)
-        if body.hub_url is not None:
-            parsed = urlparse(body.hub_url)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise _error("invalid_hub_url", "hub_url must be an HTTP(S) URL.", 422)
-            value["hub_url"] = body.hub_url.rstrip("/")
-        if body.token:
-            value["token"] = body.token
-        if body.public_key is not None:
-            value["public_key"] = body.public_key
-        await self._write_json(_SALES_HUB_KEY, value)
-        return await self.hub_config()
+    async def update_hub_config(
+        self,
+        body: SalesHubConfigUpdate,
+        actor: AuthUser,
+        *,
+        request_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        request_fingerprint = {"operation": "sales_hub.update_config", **body.model_dump()}
+        idem_key = self._idempotency_key(f"sales-hub-config:{actor.id}", idempotency_key)
+        async with self._mutation_lock():
+            existing = await self._read_idempotent(idem_key, request_fingerprint)
+            if existing is not None:
+                return existing
+            value = await self._read_json(_SALES_HUB_KEY) or {}
+            if body.system_id is not None:
+                value["system_id"] = body.system_id
+                system = await self._system()
+                system["system_id"] = body.system_id
+                await self._save_system(system)
+            if body.hub_url is not None:
+                parsed = urlparse(body.hub_url)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    raise _error("invalid_hub_url", "hub_url must be an HTTP(S) URL.", 422)
+                value["hub_url"] = body.hub_url.rstrip("/")
+            if body.token:
+                value["token"] = _seal_secret(body.token)
+            if body.public_key is not None:
+                if body.public_key:
+                    _load_ed25519_public_key(body.public_key)
+                value["public_key"] = body.public_key
+            await self._write_json(_SALES_HUB_KEY, value)
+            result = await self.hub_config()
+            await self._audit(
+                actor=actor,
+                action="sales_hub.update_config",
+                target_id=None,
+                reason="Administrator updated Sales Hub configuration.",
+                request_id=request_id,
+            )
+            await self._write_idempotent(idem_key, request_fingerprint, result)
+            return result
 
-    async def verify_hub(self, request_id: str) -> OperationResponse:
+    async def verify_hub(
+        self,
+        request_id: str,
+        *,
+        idempotency_key: str,
+    ) -> OperationResponse:
         value = await self._read_json(_SALES_HUB_KEY) or {}
         operation_id = f"op-{uuid4().hex}"
         if not value.get("hub_url") or not value.get("token"):
@@ -1159,10 +1861,33 @@ class AdminService:
                 "POST",
                 "/api/v1/integration/verify-connection",
                 request_id=request_id,
-                idempotency_key=operation_id,
+                idempotency_key=idempotency_key,
                 json_body={},
             )
-            value["outbound_status"] = "ok"
+            if result.get("request_id") != request_id:
+                value["outbound_status"] = "unknown"
+                value["inbound_status"] = "unknown"
+                await self._write_json(_SALES_HUB_KEY, value)
+                return OperationResponse(
+                    operation_id=operation_id,
+                    request_id=request_id,
+                    state="failed",
+                    error={
+                        "code": "request_id_mismatch",
+                        "message": "Sales Hub did not echo the verification request ID.",
+                    },
+                )
+            outbound = result.get("outbound") if isinstance(result, dict) else None
+            if isinstance(outbound, dict):
+                outbound_ok = bool(outbound.get("ok", False))
+            else:
+                outbound_ok = outbound is True
+            ping = result.get("ping") if isinstance(result, dict) else None
+            ping_ok = (
+                isinstance(ping, dict)
+                and ping.get("ok") is True
+                and ping.get("system_id") == value.get("system_id", (await self._system())["system_id"])
+            )
             inbound = result.get("inbound") if isinstance(result, dict) else None
             if isinstance(inbound, bool):
                 # The current Sales Hub returns a compact boolean, while the
@@ -1172,9 +1897,32 @@ class AdminService:
                 inbound_ok = bool(inbound.get("ok", False))
             else:
                 inbound_ok = False
+            value["outbound_status"] = "ok" if outbound_ok and ping_ok else "failed"
             value["inbound_status"] = "ok" if inbound_ok else "failed"
             value["last_verified_at"] = _now()
             await self._write_json(_SALES_HUB_KEY, value)
+            if not outbound_ok or not ping_ok:
+                return OperationResponse(
+                    operation_id=operation_id,
+                    request_id=request_id,
+                    state="failed",
+                    result=result,
+                    error={
+                        "code": "outbound_verification_failed",
+                        "message": "Sales Hub did not confirm the configured system identity.",
+                    },
+                )
+            if not inbound_ok:
+                return OperationResponse(
+                    operation_id=operation_id,
+                    request_id=request_id,
+                    state="failed",
+                    result=result,
+                    error={
+                        "code": "inbound_verification_failed",
+                        "message": "Sales Hub could not complete the reverse connection check.",
+                    },
+                )
             return OperationResponse(
                 operation_id=operation_id,
                 request_id=request_id,
@@ -1196,6 +1944,322 @@ class AdminService:
                 error=detail,
             )
 
+    async def reset_admin_password_from_hub(
+        self,
+        body: RemotePasswordResetRequest,
+        *,
+        request_id: str,
+        idempotency_key: str,
+    ) -> RemotePasswordResetResponse:
+        expires_at = body.expires_at
+        if expires_at is not None:
+            try:
+                parsed_expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise _error(
+                    "invalid_expiry",
+                    "expires_at must be an ISO-8601 timestamp.",
+                    422,
+                ) from exc
+            if parsed_expires_at.tzinfo is None or parsed_expires_at <= datetime.now(timezone.utc):
+                raise _error(
+                    "invalid_expiry",
+                    "expires_at must be in the future and include a timezone.",
+                    422,
+                )
+            expires_at = parsed_expires_at.astimezone(timezone.utc).isoformat()
+        fingerprint_payload = {
+            "operation": "remote_admin_password_reset",
+            "operation_id": body.operation_id,
+            "username": body.username,
+            "new_password_sha256": hashlib.sha256(body.new_password.encode("utf-8")).hexdigest(),
+            "expires_at": expires_at,
+        }
+        idem_key = self._idempotency_key("remote-password-reset", idempotency_key)
+        operation_key = self._idempotency_key("remote-password-reset-operation", body.operation_id)
+        async with self._mutation_lock():
+            previous = await self._read_idempotent(idem_key, fingerprint_payload)
+            if previous is not None:
+                return RemotePasswordResetResponse.model_validate(previous)
+            if await self._read_json(operation_key) is not None:
+                raise _error(
+                    "operation_already_processed",
+                    "The remote password reset operation was already processed.",
+                    409,
+                )
+            account = await self._auth._account_by_username(body.username)
+            if account is None or account.role != "admin":
+                raise _error("admin_not_found", "The target administrator was not found.", 404)
+            await self._auth.reset_password(
+                account.user_id,
+                body.new_password,
+                temporary_password_expires_at=expires_at,
+            )
+            result = RemotePasswordResetResponse(
+                ok=True,
+                operation_id=body.operation_id,
+                username=account.username,
+                request_id=request_id,
+            )
+            await self._write_idempotent(idem_key, fingerprint_payload, result.model_dump())
+            await self._write_json(
+                operation_key,
+                {
+                    "fingerprint": self._fingerprint(fingerprint_payload),
+                    "result": result.model_dump(),
+                },
+            )
+            await self._audit(
+                actor=AuthUser(
+                    id="sales-hub",
+                    username="sales-hub",
+                    role="admin",
+                ),
+                action="sales_hub.reset_admin_password",
+                target_id=account.user_id,
+                reason="Remote Sales Hub password reset command.",
+                request_id=request_id,
+                result_summary="Administrator password reset; existing sessions revoked.",
+                actor_type="system",
+            )
+            return result
+
+    async def _audit_target(self, target_user_id: str) -> AuthUser:
+        account = await self._auth._account_by_id(target_user_id)
+        if account is None or account.status == "deleted":
+            raise _error("user_not_found", "The audit target user was not found.", 404)
+        return self._auth._public_user(account)
+
+    async def audit_overview(
+        self,
+        actor: AuthUser,
+        body: AuditOverviewRequest,
+        *,
+        request_id: str,
+    ) -> AuditResourceResponse:
+        target = await self._audit_target(body.target_user_id)
+        storage = self._storage
+        agents = await storage.list_agents(target.id)
+        agent_views: list[dict[str, Any]] = []
+        session_views: list[dict[str, Any]] = []
+        for agent in agents:
+            agent_views.append(
+                {
+                    "id": agent.id,
+                    "name": getattr(agent, "name", agent.id),
+                    "created_at": agent.created_at.isoformat(),
+                    "updated_at": agent.updated_at.isoformat(),
+                },
+            )
+            for session in await storage.list_sessions(target.id, agent.id):
+                session_views.append(
+                    {
+                        "id": session.id,
+                        "agent_id": agent.id,
+                        "name": session.config.name,
+                        "created_at": session.created_at.isoformat(),
+                        "updated_at": session.updated_at.isoformat(),
+                        "origin": session.origin.type,
+                    },
+                )
+        knowledge_bases = await storage.list_knowledge_bases(target.id)
+        knowledge_base_views: list[dict[str, Any]] = []
+        document_views: list[dict[str, Any]] = []
+        for knowledge_base in knowledge_bases:
+            knowledge_base_views.append(
+                {
+                    "id": knowledge_base.id,
+                    "name": getattr(knowledge_base, "name", knowledge_base.id),
+                    "created_at": knowledge_base.created_at.isoformat(),
+                    "updated_at": knowledge_base.updated_at.isoformat(),
+                },
+            )
+            for document in await storage.list_knowledge_documents(target.id, knowledge_base.id):
+                document_views.append(
+                    {
+                        "id": document.id,
+                        "knowledge_base_id": knowledge_base.id,
+                        "filename": document.data.filename,
+                        "size": document.data.size,
+                        "status": document.status,
+                        "chunk_count": document.data.chunk_count,
+                        "created_at": document.created_at.isoformat(),
+                        "updated_at": document.updated_at.isoformat(),
+                    },
+                )
+        await self._audit(
+            actor=actor,
+            action="audit.overview",
+            target_id=target.id,
+            reason=body.reason,
+            request_id=request_id,
+            resource_type="user",
+            resource_id=target.id,
+            result_summary="Audit overview granted; resource bodies were not returned.",
+        )
+        return AuditResourceResponse(
+            target_user_id=target.id,
+            resource_type="overview",
+            data={
+                "user": {
+                    "id": target.id,
+                    "username": target.username,
+                    "role": target.role,
+                    "status": target.status,
+                },
+                "agents": agent_views,
+                "sessions": session_views,
+                "knowledge_bases": knowledge_base_views,
+                "documents": document_views,
+            },
+            request_id=request_id,
+        )
+
+    async def _require_audit_overview(
+        self,
+        actor: AuthUser,
+        event_id: str,
+        target_user_id: str,
+        reason: str,
+        request_id: str,
+    ) -> None:
+        raw_events = await self._client().lrange(_AUDIT_KEY, 0, -1)
+        for raw in reversed(raw_events):
+            try:
+                event = AuditEventView.model_validate_json(raw)
+            except ValueError:
+                continue
+            if (
+                event.event_id == event_id
+                and event.action == "audit.overview"
+                and event.target_user_id == target_user_id
+                and event.status == "completed"
+            ):
+                await self._audit(
+                    actor=actor,
+                    action="audit.resource_access",
+                    target_id=target_user_id,
+                    reason=reason,
+                    request_id=request_id,
+                    resource_type="audit",
+                    resource_id=event_id,
+                    result_summary="Second-step audit access granted.",
+                )
+                return
+        raise _error(
+            "audit_overview_required",
+            "A completed audit overview is required before accessing a resource.",
+            403,
+        )
+
+    async def audit_session(
+        self,
+        actor: AuthUser,
+        session_id: str,
+        body: AuditSessionAccessRequest,
+        *,
+        request_id: str,
+    ) -> AuditResourceResponse:
+        target = await self._audit_target_from_event(body.overview_event_id)
+        await self._require_audit_overview(
+            actor,
+            body.overview_event_id,
+            target,
+            body.reason,
+            request_id,
+        )
+        session = await self._storage.get_session(target, body.agent_id, session_id)
+        if session is None:
+            raise _error("resource_not_found", "The requested session was not found.", 404)
+        messages, has_more = await self._storage.list_messages(
+            target,
+            session_id,
+            limit=100,
+        )
+        return AuditResourceResponse(
+            target_user_id=target,
+            resource_type="session",
+            resource_id=session_id,
+            data={
+                "session": {
+                    "id": session.id,
+                    "agent_id": session.agent_id,
+                    "name": session.config.name,
+                    "created_at": session.created_at.isoformat(),
+                    "updated_at": session.updated_at.isoformat(),
+                },
+                "messages": [
+                    message.model_dump(mode="json")
+                    if hasattr(message, "model_dump")
+                    else message
+                    for message in messages
+                ],
+                "has_more": has_more,
+            },
+            request_id=request_id,
+        )
+
+    async def _audit_target_from_event(self, event_id: str) -> str:
+        raw_events = await self._client().lrange(_AUDIT_KEY, 0, -1)
+        for raw in reversed(raw_events):
+            try:
+                event = AuditEventView.model_validate_json(raw)
+            except ValueError:
+                continue
+            if event.event_id == event_id and event.action == "audit.overview":
+                if event.target_user_id:
+                    return event.target_user_id
+                break
+        raise _error(
+            "audit_overview_required",
+            "A completed audit overview is required before accessing a resource.",
+            403,
+        )
+
+    async def audit_document(
+        self,
+        actor: AuthUser,
+        document_id: str,
+        body: AuditDocumentAccessRequest,
+        *,
+        request_id: str,
+    ) -> AuditResourceResponse:
+        target = await self._audit_target_from_event(body.overview_event_id)
+        await self._require_audit_overview(
+            actor,
+            body.overview_event_id,
+            target,
+            body.reason,
+            request_id,
+        )
+        document = await self._storage.get_knowledge_document(
+            target,
+            body.knowledge_base_id,
+            document_id,
+        )
+        if document is None:
+            raise _error("resource_not_found", "The requested document was not found.", 404)
+        return AuditResourceResponse(
+            target_user_id=target,
+            resource_type="document",
+            resource_id=document_id,
+            data={
+                "document": {
+                    "id": document.id,
+                    "knowledge_base_id": document.knowledge_base_id,
+                    "filename": document.data.filename,
+                    "size": document.data.size,
+                    "content_type": document.data.content_type,
+                    "status": document.status,
+                    "chunk_count": document.data.chunk_count,
+                    "error": document.data.error,
+                    "created_at": document.created_at.isoformat(),
+                    "updated_at": document.updated_at.isoformat(),
+                },
+            },
+            request_id=request_id,
+        )
+
     async def _audit(
         self,
         *,
@@ -1203,21 +2267,38 @@ class AdminService:
         action: str,
         target_id: str | None,
         reason: str,
+        request_id: str = "",
+        status_value: Literal["completed", "failed"] = "completed",
+        result_summary: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        actor_type: Literal["admin", "user", "system"] = "admin",
     ) -> None:
+        target_name = None
+        if target_id:
+            account = await self._auth._account_by_id(target_id)
+            target_name = account.username if account is not None else None
         event = {
             "event_id": f"evt-{uuid4().hex}",
+            "actor_type": actor_type,
             "actor_id": actor.id,
             "actor_name": actor.username,
+            "target_user_id": target_id,
+            "target_user_name": target_name,
             "action": action,
-            "target_id": target_id,
+            "resource_type": resource_type or action.split(".", 1)[0],
+            "resource_id": resource_id or target_id,
             "reason": reason,
+            "request_id": request_id,
+            "status": status_value,
+            "result_summary": result_summary,
             "created_at": _now(),
         }
         await self._client().rpush(_AUDIT_KEY, json.dumps(event, ensure_ascii=False))
 
     async def authorize_hub(self, authorization: str | None) -> None:
         scheme, _, token = (authorization or "").partition(" ")
-        value = await self._read_json(_SALES_HUB_KEY) or {}
+        value = await self._hub_connection_config()
         stored = value.get("token")
         if (
             scheme.lower() != "bearer"
@@ -1258,11 +2339,20 @@ async def get_overview(
     return await service.overview()
 
 
+@admin_router.get("/policy", response_model=AdminPolicyView)
+async def get_admin_policy(
+    _: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> AdminPolicyView:
+    return await service.policy()
+
+
 @admin_router.get("/users", response_model=UserListResponse)
 async def list_users(
     request: Request,
     keyword: str | None = Query(default=None, max_length=64),
     account_status: str | None = Query(default=None, alias="status"),
+    plan_id: str | None = Query(default=None, max_length=64),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     _: AuthUser = Depends(require_admin),
@@ -1271,10 +2361,11 @@ async def list_users(
     response = await service.list_users(
         keyword=keyword,
         account_status=account_status,
+        plan_id=plan_id,
         page=page,
         page_size=page_size,
     )
-    response.request_id = request.headers.get("X-Request-ID", "")
+    response.request_id = service._request_id(request)
     return response
 
 
@@ -1285,29 +2376,59 @@ async def list_users(
 )
 async def create_user(
     body: CreateUserRequest,
-    _: AuthUser = Depends(require_admin),
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    actor: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> AdminUserView:
-    return await service.create_user(body)
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    return await service.create_user(
+        body,
+        actor,
+        request_id=service._request_id(request),
+        idempotency_key=idempotency_key,
+    )
 
 
 @admin_router.patch("/users/{user_id}", response_model=AdminUserView)
 async def update_user(
     user_id: str,
     body: UpdateUserRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     actor: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> AdminUserView:
-    return await service.update_user(user_id, body, actor.id)
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    return await service.update_user(
+        user_id,
+        body,
+        actor,
+        request_id=service._request_id(request),
+        idempotency_key=idempotency_key,
+    )
 
 
 @admin_router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     user_id: str,
+    body: DeleteUserRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     actor: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> None:
-    await service.delete_user(user_id, actor.id)
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    await service.delete_user(
+        user_id,
+        actor,
+        body,
+        request_id=service._request_id(request),
+        idempotency_key=idempotency_key,
+    )
 
 
 @admin_router.post(
@@ -1318,29 +2439,37 @@ async def reset_password(
     user_id: str,
     body: ResetPasswordRequest,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     actor: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> ResetPasswordResponse:
-    response = await service.reset_password(user_id, actor, body)
-    response.request_id = request.headers.get("X-Request-ID", "")
+    request_id = service._request_id(request)
+    response = await service.reset_password(
+        user_id,
+        actor,
+        body,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+    )
+    response.request_id = request_id
     return response
 
 
 @admin_router.delete("/users/{user_id}/sessions", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_sessions(
     user_id: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     actor: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> None:
-    account = await service._auth._account_by_id(user_id)
-    if account is None:
-        raise _error("user_not_found", "User not found.", 404)
-    await service._auth.revoke_sessions(user_id)
-    await service._audit(
-        actor=actor,
-        action="user.revoke_sessions",
-        target_id=user_id,
-        reason="Administrator session revocation.",
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    await service.revoke_user_sessions(
+        user_id,
+        actor,
+        request_id=service._request_id(request),
+        idempotency_key=idempotency_key,
     )
 
 
@@ -1351,38 +2480,119 @@ async def get_quota(
     service: AdminService = Depends(get_admin_service),
 ) -> SystemAccountView:
     value = await service.quota()
-    return SystemAccountView(**value, request_id=request.headers.get("X-Request-ID", ""))
+    return SystemAccountView(**value, request_id=service._request_id(request))
 
 
 @admin_router.patch("/quota", response_model=SystemAccountView)
 async def update_quota(
     body: QuotaUpdateRequest,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     actor: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> SystemAccountView:
-    value = await service.update_quota(body)
-    await service._audit(
-        actor=actor,
-        action="quota.update_test_default",
-        target_id=None,
-        reason="Administrator updated the test account default.",
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    value = await service.update_quota_idempotent(
+        body,
+        actor,
+        request_id=service._request_id(request),
+        idempotency_key=idempotency_key,
     )
-    return SystemAccountView(**value, request_id=request.headers.get("X-Request-ID", ""))
+    return SystemAccountView(**value, request_id=service._request_id(request))
 
 
 @admin_router.get("/quota/ledger", response_model=LedgerListResponse)
 async def get_ledger(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
+    entry_type: str | None = Query(default=None, alias="type", max_length=64),
+    related_user_id: str | None = Query(default=None, max_length=128),
+    order_id: str | None = Query(default=None, max_length=128),
+    since: str | None = Query(default=None, max_length=64),
+    until: str | None = Query(default=None, max_length=64),
     _: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> LedgerListResponse:
-    entries = await service.ledger(limit)
+    entries = await service.ledger(
+        limit,
+        entry_type=entry_type,
+        related_user_id=related_user_id,
+        order_id=order_id,
+        since=since,
+        until=until,
+    )
     return LedgerListResponse(
         entries=entries,
         total=len(entries),
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=service._request_id(request),
+    )
+
+
+@admin_router.get("/audit/events", response_model=AuditEventListResponse)
+async def get_audit_events(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    _: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> AuditEventListResponse:
+    events = await service.audit_events(limit)
+    return AuditEventListResponse(
+        events=events,
+        total=len(events),
+        request_id=service._request_id(request),
+    )
+
+
+@admin_router.post("/audit/overview", response_model=AuditResourceResponse)
+async def audit_overview(
+    body: AuditOverviewRequest,
+    request: Request,
+    actor: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> AuditResourceResponse:
+    return await service.audit_overview(
+        actor,
+        body,
+        request_id=service._request_id(request),
+    )
+
+
+@admin_router.post(
+    "/audit/sessions/{session_id}",
+    response_model=AuditResourceResponse,
+)
+async def audit_session(
+    session_id: str,
+    body: AuditSessionAccessRequest,
+    request: Request,
+    actor: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> AuditResourceResponse:
+    return await service.audit_session(
+        actor,
+        session_id,
+        body,
+        request_id=service._request_id(request),
+    )
+
+
+@admin_router.post(
+    "/audit/documents/{document_id}",
+    response_model=AuditResourceResponse,
+)
+async def audit_document(
+    document_id: str,
+    body: AuditDocumentAccessRequest,
+    request: Request,
+    actor: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> AuditResourceResponse:
+    return await service.audit_document(
+        actor,
+        document_id,
+        body,
+        request_id=service._request_id(request),
     )
 
 
@@ -1390,13 +2600,17 @@ async def get_ledger(
 async def redeem_code(
     body: RedeemCodeRequest,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     actor: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> dict[str, Any]:
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
     return await service.redeem_code(
         body,
         actor,
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=service._request_id(request),
+        idempotency_key=idempotency_key,
     )
 
 
@@ -1408,9 +2622,11 @@ async def create_recharge_request(
     _: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> RechargeRequestView:
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
     return await service.create_recharge_request(
         body,
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=service._request_id(request),
         idempotency_key=idempotency_key,
     )
 
@@ -1425,9 +2641,11 @@ async def sync_recharge_requests(
     actor: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> OperationResponse:
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
     return await service.sync_recharge(
         actor,
-        request_id=request.headers.get("X-Request-ID", f"req-{uuid4().hex}"),
+        request_id=service._request_id(request),
         idempotency_key=idempotency_key,
     )
 
@@ -1446,7 +2664,7 @@ async def list_recharge_requests(
     return RechargeRequestListResponse(
         orders=orders,
         total=len(orders),
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=service._request_id(request),
     )
 
 
@@ -1458,7 +2676,7 @@ async def get_sales_hub_config(
 ) -> SalesHubConfigView:
     return SalesHubConfigView(
         **await service.hub_config(),
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=service._request_id(request),
     )
 
 
@@ -1466,30 +2684,35 @@ async def get_sales_hub_config(
 async def update_sales_hub_config(
     body: SalesHubConfigUpdate,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     actor: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> SalesHubConfigView:
-    value = await service.update_hub_config(body)
-    await service._audit(
-        actor=actor,
-        action="sales_hub.update_config",
-        target_id=None,
-        reason="Administrator updated Sales Hub configuration.",
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    value = await service.update_hub_config(
+        body,
+        actor,
+        request_id=service._request_id(request),
+        idempotency_key=idempotency_key,
     )
     return SalesHubConfigView(
         **value,
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=service._request_id(request),
     )
 
 
 @admin_router.post("/sales-hub/verify", response_model=OperationResponse)
 async def verify_sales_hub(
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> OperationResponse:
-    request_id = request.headers.get("X-Request-ID", f"req-{uuid4().hex}")
-    return await service.verify_hub(request_id)
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    request_id = service._request_id(request)
+    return await service.verify_hub(request_id, idempotency_key=idempotency_key)
 
 
 @admin_router.post("/sales-hub/usage-report", response_model=OperationResponse)
@@ -1499,8 +2722,10 @@ async def report_sales_hub_usage(
     _: AuthUser = Depends(require_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> OperationResponse:
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
     return await service.report_usage(
-        request_id=request.headers.get("X-Request-ID", f"req-{uuid4().hex}"),
+        request_id=service._request_id(request),
         idempotency_key=idempotency_key,
     )
 
@@ -1528,36 +2753,26 @@ async def sales_hub_ping(
         app_version=versions.get("app") or os.getenv("LONGXIN_APP_VERSION", "3.8.1"),
         core_version=versions.get("core") or os.getenv("LONGXIN_CORE_VERSION", "unknown"),
         checked_at=_now(),
-        request_id=request.headers.get("X-Request-ID", ""),
+        request_id=service._request_id(request),
     )
 
 
-@sales_hub_router.post("/admin-password-resets")
+@sales_hub_router.post(
+    "/admin-password-resets",
+    response_model=RemotePasswordResetResponse,
+)
 async def sales_hub_reset_admin_password(
     body: RemotePasswordResetRequest,
+    request: Request,
     authorization: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     service: AdminService = Depends(get_admin_service),
-) -> dict[str, Any]:
+) -> RemotePasswordResetResponse:
     await service.authorize_hub(authorization)
-    account = await service._auth._account_by_username(body.username)
-    if account is None or account.role != "admin":
-        raise _error("admin_not_found", "The target administrator was not found.", 404)
-    expires_at = body.expires_at
-    if expires_at is not None:
-        try:
-            parsed_expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise _error("invalid_expiry", "expires_at must be an ISO-8601 timestamp.", 422) from exc
-        if parsed_expires_at.tzinfo is None or parsed_expires_at <= datetime.now(timezone.utc):
-            raise _error("invalid_expiry", "expires_at must be in the future and include a timezone.", 422)
-        expires_at = parsed_expires_at.astimezone(timezone.utc).isoformat()
-    await service._auth.reset_password(
-        account.user_id,
-        body.new_password,
-        temporary_password_expires_at=expires_at,
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    return await service.reset_admin_password_from_hub(
+        body,
+        request_id=service._request_id(request),
+        idempotency_key=idempotency_key,
     )
-    return {
-        "ok": True,
-        "operation_id": body.operation_id,
-        "username": account.username,
-    }

@@ -36,6 +36,10 @@ export function UpgradeAdminCard() {
 		queryKey: ['longxin-upgrades', 'catalog'],
 		queryFn: upgradeApi.catalog,
 	});
+	const status = useQuery({
+		queryKey: ['longxin-upgrades', 'status'],
+		queryFn: upgradeApi.status,
+	});
 	const backups = useQuery({
 		queryKey: ['longxin-upgrades', 'backups'],
 		queryFn: () => upgradeApi.backups(20),
@@ -78,12 +82,23 @@ export function UpgradeAdminCard() {
 		},
 		onSuccess: refresh,
 	});
+	const deleteBackup = useMutation({
+		mutationFn: ({ backupId, reason }: { backupId: string; reason: string }) =>
+			upgradeApi.deleteBackup(backupId, reason),
+		onSuccess: refresh,
+	});
 
 	const latest: Array<{ type: ArtifactType; release: ReleaseMeta | null }> = [
 		{ type: 'app', release: catalog.data?.app ?? null },
 		{ type: 'core', release: catalog.data?.core ?? null },
 	];
-	const error = upload.error?.message ?? apply.error?.message ?? rollback.error?.message ?? catalog.error?.message;
+	const error =
+		upload.error?.message ??
+		apply.error?.message ??
+		rollback.error?.message ??
+		deleteBackup.error?.message ??
+		catalog.error?.message ??
+		status.error?.message;
 
 	const submitUpload = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
@@ -105,6 +120,10 @@ export function UpgradeAdminCard() {
 						<AlertDescription>{error}</AlertDescription>
 					</Alert>
 				)}
+				<div className="text-sm text-muted-foreground">
+					{t('upgrade.health')}: <Badge variant={status.data?.health === 'ok' ? 'default' : 'outline'}>{status.data?.health ?? t('upgrade.unknown')}</Badge>
+					 · {t('upgrade.installed')}: {status.data?.app_version ?? t('upgrade.unknown')} / {status.data?.core_version ?? t('upgrade.unknown')}
+				</div>
 				<div className="max-w-sm space-y-1.5">
 					<Label htmlFor="upgrade-admin-password">{t('upgrade.adminPassword')}</Label>
 					<Input
@@ -201,10 +220,26 @@ export function UpgradeAdminCard() {
 									<div>{t(`upgrade.types.${backup.artifact_type}`)} · {backup.version}</div>
 									<div className="truncate font-mono text-xs text-muted-foreground">{backup.backup_id}</div>
 								</div>
-								<Button size="sm" variant="outline" disabled={!adminPassword || rollback.isPending} onClick={() => rollback.mutate(backup.backup_id)}>
-									<RotateCcw />
-									{t('upgrade.rollback')}
-								</Button>
+																											<Button size="sm" variant="outline" disabled={!adminPassword || rollback.isPending} onClick={() => rollback.mutate(backup.backup_id)}>
+																												<RotateCcw />
+																												{t('upgrade.rollback')}
+																											</Button>
+																											<Button
+																												variant="destructive"
+																												size="sm"
+																												disabled={deleteBackup.isPending}
+																												onClick={() => {
+																													if (!window.confirm(t('upgrade.deleteBackupConfirm'))) return;
+																													const reason = window.prompt(t('upgrade.deleteBackupReason'));
+																													if (reason && reason.trim().length >= 4) {
+																														deleteBackup.mutate({ backupId: backup.backup_id, reason: reason.trim() });
+																													} else if (reason !== null) {
+																														window.alert(t('upgrade.reasonRequired'));
+																													}
+																													}}
+																												>
+																												{t('upgrade.deleteBackup')}
+																											</Button>
 							</div>
 						))
 					) : (
