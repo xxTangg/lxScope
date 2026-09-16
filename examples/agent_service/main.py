@@ -19,11 +19,12 @@ from agentscope.app.deps import get_current_user_id
 from agentscope.app.hub import ClawSkillHub, GitHubMCPHub
 from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
-from agentscope.app.storage import RedisStorage
+from agentscope.app.storage import RedisKnowledgeGraphStore, RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import OpenAICredential
 from agentscope.mcp import MCPClient, StdioMCPConfig
 from agentscope.middleware import AgenticMemoryMiddleware, MiddlewareBase
+from agentscope.model import OpenAIChatModel
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.rag import (
     ApproxTokenChunker,
@@ -34,10 +35,12 @@ from agentscope.rag import (
     QdrantStore,
     TextParser,
     WordParser,
+    KnowledgeGraphExtractor,
 )
 from agentscope.workspace import WorkspaceBase
 
 from auth import load_auth_from_env
+from sales_integration import create_sales_integration_router
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
 playwright_browsers_path = os.getenv(
@@ -76,6 +79,62 @@ storage = RedisStorage(
 # knowledge base because all vectors disappeared with the process.
 vector_store = QdrantStore(
     path=os.getenv("QDRANT_PATH", "/app/qdrant_data"),
+)
+
+
+def _build_knowledge_graph_extractor() -> KnowledgeGraphExtractor | None:
+    """Build the optional graph extractor from the existing LLM settings."""
+    siliconflow_key = os.getenv("SILICONFLOW_API_KEY")
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = siliconflow_key or deepseek_key
+    if not api_key:
+        return None
+    using_siliconflow = bool(siliconflow_key)
+    provider_name = "SiliconFlow" if using_siliconflow else "DeepSeek"
+    model = OpenAIChatModel(
+        credential=OpenAICredential(
+            id=(
+                os.getenv("SILICONFLOW_CREDENTIAL_ID", "siliconflow")
+                if using_siliconflow
+                else os.getenv("DEEPSEEK_CREDENTIAL_ID", "deepseek")
+            ),
+            name=f"{provider_name} graph extractor",
+            api_key=SecretStr(api_key),
+            base_url=os.getenv(
+                "SILICONFLOW_BASE_URL"
+                if using_siliconflow
+                else "DEEPSEEK_BASE_URL",
+                "https://api.siliconflow.cn/v1"
+                if using_siliconflow
+                else "https://api.deepseek.com/v1",
+            ),
+        ),
+        model=(
+            os.getenv("LXSCOPE_GRAPH_MODEL")
+            or os.getenv(
+                "SILICONFLOW_CHAT_MODEL"
+                if using_siliconflow
+                else "DEEPSEEK_CHAT_MODEL",
+                "deepseek-ai/DeepSeek-V3.2"
+                if using_siliconflow
+                else "deepseek-v4-flash",
+            )
+        ),
+        parameters=OpenAIChatModel.Parameters(
+            temperature=0.1,
+            max_tokens=1200,
+            thinking_enable=False,
+        ),
+        stream=False,
+    )
+    return KnowledgeGraphExtractor(model=model)
+
+
+knowledge_graph_extractor = _build_knowledge_graph_extractor()
+knowledge_graph_store = (
+    RedisKnowledgeGraphStore(storage)
+    if knowledge_graph_extractor is not None
+    else None
 )
 
 
@@ -158,6 +217,8 @@ app = create_app(
         storage=storage,
         vector_store=vector_store,
     ),
+    knowledge_graph_store=knowledge_graph_store,
+    knowledge_graph_extractor=knowledge_graph_extractor,
     # Chunker classes users can pick from when creating a knowledge base;
     # the chosen type and parameters are pinned on the knowledge base.
     knowledge_chunkers=[ApproxTokenChunker],
@@ -234,6 +295,7 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
     download_secret=os.getenv("AGENTSCOPE_DOWNLOAD_SECRET"),
 )
 app.include_router(auth.router)
+app.include_router(create_sales_integration_router(storage=storage, auth=auth))
 app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal

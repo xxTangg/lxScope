@@ -249,6 +249,29 @@ pnpm dev
 
 
 
+## Docker 部署与模型 / Embedding 配置
+
+除本地源码启动外，本仓库还提供 Docker Compose 部署（`docker-compose.yml`）：
+后端、Web UI、Redis 三个服务一条命令拉起，镜像内已内置 Playwright MCP（含
+headless Chromium）与文本/PDF/Word/Excel/PPT/图片解析器。
+
+```bash
+cp .env.example .env   # 填入模型与 Embedding 所需的 Key
+docker compose up -d
+```
+
+**知识库 Embedding 配置要点**：在 Web UI 新建知识库时，凭据选择 `SiliconFlow`，
+Embedding 模型选择 `BAAI/bge-m3`，维度填写 `1024`。
+
+> DeepSeek 官方 API（`https://api.deepseek.com/v1`）**不提供 Embedding 接口**，
+> 不能用于知识库向量化 —— 它只能承担聊天。若要让同一个部署实例同时支持
+> 「DeepSeek 聊天 + 云端 Embedding」，请把两者写进不同的环境变量
+> （`DEEPSEEK_*` 与 `SILICONFLOW_*`），避免互相覆盖。宿主有 Ollama 时，
+> 也可改用本地 `bge-m3` 作为 Embedding 提供方。
+
+完整的部署步骤（端口分配、密钥生成、Embedding 连通性验证、离线内网部署、
+安全要求）见 [OPS_DEPLOYMENT.md](./OPS_DEPLOYMENT.md)。
+
 ## 贡献
 
 我们欢迎社区的贡献！请参阅我们的 [贡献指南](./CONTRIBUTING_zh.md) 了解如何贡献。

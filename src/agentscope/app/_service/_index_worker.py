@@ -35,8 +35,17 @@ from ...rag import ApproxTokenChunker
 if TYPE_CHECKING:
     from ..rag.blob_store import BlobStoreBase
     from ..rag.knowledge_base_manager import KnowledgeBaseManagerBase
-    from ..storage import KnowledgeBaseRecord, StorageBase
-    from ...rag import ChunkerBase, ParserBase, Section
+    from ..storage import (
+        KnowledgeBaseRecord,
+        KnowledgeGraphStoreBase,
+        StorageBase,
+    )
+    from ...rag import (
+        ChunkerBase,
+        KnowledgeGraphExtractor,
+        ParserBase,
+        Section,
+    )
 
 # Read blob bytes in chunks bounded so the worker never holds the whole
 # file in memory at once even when the parser is byte-oriented.
@@ -123,6 +132,9 @@ class IndexWorker:
         max_concurrency: int = 4,
         lease_ttl: timedelta = timedelta(seconds=90),
         parser_executor: ProcessPoolExecutor | None = None,
+        knowledge_graph_store: "KnowledgeGraphStoreBase | None" = None,
+        knowledge_graph_extractor: "KnowledgeGraphExtractor | None" = None,
+        knowledge_graph_timeout: float = 300.0,
         **kwargs: Any,
     ) -> None:
         """Initialize the worker.
@@ -175,6 +187,14 @@ class IndexWorker:
                 third-party byte-oriented parsers.  Injected so a
                 single pool can be shared across the app (built in
                 lifespan).
+            knowledge_graph_store (`KnowledgeGraphStoreBase | None`, optional):
+                Optional store for the merged knowledge-base graph.
+            knowledge_graph_extractor (`KnowledgeGraphExtractor | None`,
+                optional):
+                Optional structured-output extractor invoked after chunking
+                in a detached task, after the vector index is ready.
+            knowledge_graph_timeout (`float`, defaults to `300.0`):
+                Maximum time in seconds for one document graph extraction.
             **kwargs (`Any`):
                 Deprecated. ``chunker`` (a shared chunker instance) is
                 still accepted for backward compatibility; only its
@@ -206,6 +226,10 @@ class IndexWorker:
         self._lease_ttl = lease_ttl
         self._sem = asyncio.Semaphore(max_concurrency)
         self._parser_executor = parser_executor
+        self._knowledge_graph_store = knowledge_graph_store
+        self._knowledge_graph_extractor = knowledge_graph_extractor
+        self._knowledge_graph_timeout = max(1.0, knowledge_graph_timeout)
+        self._graph_tasks: set[asyncio.Task[None]] = set()
         # Renewal cadence: refresh while there is still half the lease
         # left so a one-cycle missed renewal doesn't drop the lease.
         self._renew_interval = max(lease_ttl / 2, timedelta(seconds=5))
@@ -442,7 +466,11 @@ class IndexWorker:
             },
         )
 
-        # ---- ready ----
+        # Vector indexing is complete at this point.  Graph extraction is
+        # deliberately detached so a slow or unavailable LLM cannot leave
+        # the document in "indexing".  The graph store keeps a per-document
+        # contribution and rebuilds the merged knowledge-base graph, so the
+        # detached task is idempotent and can be retried independently.
         await self._storage.update_knowledge_document_status(
             user_id,
             knowledge_base_id,
@@ -450,6 +478,125 @@ class IndexWorker:
             "ready",
             chunk_count=len(chunks),
         )
+        if (
+            self._knowledge_graph_store is not None
+            and self._knowledge_graph_extractor is not None
+        ):
+            graph_task = asyncio.create_task(
+                self._run_graph_pipeline(
+                    user_id,
+                    knowledge_base_id,
+                    document_id,
+                    chunks,
+                    data.filename,
+                ),
+                name=f"graph:{document_id}",
+            )
+            self._graph_tasks.add(graph_task)
+            graph_task.add_done_callback(self._graph_tasks.discard)
+
+    async def _run_graph_pipeline(
+        self,
+        user_id: str,
+        knowledge_base_id: str,
+        document_id: str,
+        chunks: "list[Any]",
+        filename: str,
+    ) -> None:
+        """Extract and persist one document graph after indexing succeeds."""
+        # The caller only schedules this task when both dependencies exist;
+        # the guards keep this method safe if it is called directly in tests.
+        if (
+            self._knowledge_graph_store is None
+            or self._knowledge_graph_extractor is None
+        ):
+            return
+
+        await self._set_graph_status(user_id, knowledge_base_id, "building")
+        try:
+            document_graph = await asyncio.wait_for(
+                self._knowledge_graph_extractor.extract(
+                    chunks,
+                    document_id=document_id,
+                    filename=filename,
+                ),
+                timeout=self._knowledge_graph_timeout,
+            )
+            # A user may delete the document while extraction is in flight.
+            # Avoid resurrecting a graph contribution for a deleted record.
+            record = await self._storage.get_knowledge_document(
+                user_id,
+                knowledge_base_id,
+                document_id,
+            )
+            if record is None:
+                return
+            await self._knowledge_graph_store.replace_document_graph(
+                user_id,
+                knowledge_base_id,
+                document_graph,
+            )
+        except asyncio.CancelledError:
+            await self._set_graph_status(
+                user_id,
+                knowledge_base_id,
+                "error",
+                error="Graph extraction was cancelled.",
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 — graph is optional
+            logger.exception(
+                "Knowledge graph extraction failed for %s/%s",
+                knowledge_base_id,
+                document_id,
+            )
+            try:
+                await self._knowledge_graph_store.delete_document_graph(
+                    user_id,
+                    knowledge_base_id,
+                    document_id,
+                )
+            except Exception:  # noqa: BLE001 — cleanup is best effort
+                logger.exception(
+                    "Failed to remove stale graph for %s/%s",
+                    knowledge_base_id,
+                    document_id,
+                )
+            timeout = self._knowledge_graph_timeout
+            error = (
+                f"Graph extraction timed out after {timeout:g}s."
+                if isinstance(exc, TimeoutError)
+                else _sanitise_error(exc)
+            )
+            await self._set_graph_status(
+                user_id,
+                knowledge_base_id,
+                "error",
+                error=error,
+            )
+
+    async def _set_graph_status(
+        self,
+        user_id: str,
+        knowledge_base_id: str,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        """Best-effort graph status update that cannot fail indexing."""
+        if self._knowledge_graph_store is None:
+            return
+        try:
+            await self._knowledge_graph_store.set_status(
+                user_id,
+                knowledge_base_id,
+                status,
+                error=error,
+            )
+        except Exception:  # noqa: BLE001 — optional graph sidecar
+            logger.exception(
+                "Failed to update graph status for %s",
+                knowledge_base_id,
+            )
 
     async def _parse(
         self,

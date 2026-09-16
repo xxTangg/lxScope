@@ -245,6 +245,33 @@ pnpm dev
 ```
 
 
+## Docker Deployment & Model / Embedding Configuration
+
+Besides starting from source, this repository also ships a Docker Compose setup
+(`docker-compose.yml`): the backend, Web UI, and Redis come up with a single
+command, and the image already bundles the Playwright MCP (with headless
+Chromium) plus text/PDF/Word/Excel/PPT/image parsers.
+
+```bash
+cp .env.example .env   # fill in the keys used for chat and embedding
+docker compose up -d
+```
+
+**Knowledge-base embedding checklist**: when creating a knowledge base in the
+Web UI, pick the `SiliconFlow` credential, choose `BAAI/bge-m3` as the embedding
+model, and set the dimension to `1024`.
+
+> The DeepSeek official API (`https://api.deepseek.com/v1`) **does not expose an
+> embeddings endpoint**, so it cannot be used for knowledge-base vectorization —
+> it only serves chat. To run DeepSeek chat and cloud embedding in the same
+> deployment, keep them in separate environment variables (`DEEPSEEK_*` vs
+> `SILICONFLOW_*`) so they do not overwrite each other. If Ollama is available on
+> the host, local `bge-m3` can serve as the embedding provider instead.
+
+See [OPS_DEPLOYMENT.md](./OPS_DEPLOYMENT.md) for the full procedure (port
+allocation, secret generation, embedding connectivity checks, offline intranet
+deployment, and security notes).
+
 ## Contributing
 
 We welcome contributions from the community! Please refer to our [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines

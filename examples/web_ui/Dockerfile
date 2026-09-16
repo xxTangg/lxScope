@@ -1,4 +1,4 @@
-FROM node:22-alpine AS build
+FROM docker.m.daocloud.io/library/node:22-alpine AS build
 
 WORKDIR /app
 RUN corepack enable
@@ -15,7 +15,7 @@ ENV VITE_AGENTSCOPE_API_PORT=${VITE_AGENTSCOPE_API_PORT}
 
 RUN pnpm --filter frontend build
 
-FROM nginx:alpine
+FROM docker.m.daocloud.io/library/nginx:alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 EXPOSE 80

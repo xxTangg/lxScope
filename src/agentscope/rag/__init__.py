@@ -26,6 +26,14 @@ from ._vdb import (
     MongoDBStore,
 )
 from ._knowledge import KnowledgeBase
+from ._knowledge_graph import (
+    DocumentGraph,
+    GraphEdge,
+    GraphNode,
+    GraphSourceRef,
+    KnowledgeGraph,
+    KnowledgeGraphExtractor,
+)
 
 __all__ = [
     "ApproxTokenChunker",
@@ -48,4 +56,10 @@ __all__ = [
     "QdrantStore",
     "KnowledgeBase",
     "MongoDBStore",
+    "DocumentGraph",
+    "GraphEdge",
+    "GraphNode",
+    "GraphSourceRef",
+    "KnowledgeGraph",
+    "KnowledgeGraphExtractor",
 ]

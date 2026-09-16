@@ -42,6 +42,8 @@ from ._schema import (
     KbEmbeddingProvider,
     KbMiddlewareParametersSchemaResponse,
     KnowledgeDocumentView,
+    KnowledgeGraphResponse,
+    RebuildKnowledgeGraphResponse,
     ListChunkersResponse,
     ListKbEmbeddingModelsResponse,
     ListKnowledgeBasesResponse,
@@ -721,6 +723,61 @@ async def search_knowledge_base(
         top_k=body.top_k,
     )
     return SearchKnowledgeBaseResponse(results=results, total=len(results))
+
+
+@knowledge_base_router.get(
+    "/{knowledge_base_id}/graph",
+    response_model=KnowledgeGraphResponse,
+    summary="Get the merged knowledge graph for a knowledge base",
+)
+async def get_knowledge_graph(
+    knowledge_base_id: str = Path(description="The knowledge base id."),
+    query: str | None = Query(
+        default=None,
+        description="Optional node label, alias, or type filter.",
+    ),
+    document_ids: str | None = Query(
+        default=None,
+        description="Optional comma-separated document ids to include.",
+    ),
+    node_limit: int = Query(default=300, ge=1, le=2000),
+    edge_limit: int = Query(default=600, ge=1, le=5000),
+    user_id: str = Depends(get_current_user_id),
+    service: "KnowledgeBaseService" = Depends(get_knowledge_base_service),
+) -> KnowledgeGraphResponse:
+    """Return a bounded graph spanning the knowledge base's documents."""
+    ids = (
+        [item.strip() for item in document_ids.split(",") if item.strip()]
+        if document_ids
+        else None
+    )
+    graph = await service.get_knowledge_graph(
+        user_id=user_id,
+        knowledge_base_id=knowledge_base_id,
+        query=query,
+        document_ids=ids,
+        node_limit=node_limit,
+        edge_limit=edge_limit,
+    )
+    return KnowledgeGraphResponse.model_validate(graph)
+
+
+@knowledge_base_router.post(
+    "/{knowledge_base_id}/graph/rebuild",
+    response_model=RebuildKnowledgeGraphResponse,
+    summary="Rebuild a knowledge-base graph from existing chunks",
+)
+async def rebuild_knowledge_graph(
+    knowledge_base_id: str = Path(description="The knowledge base id."),
+    user_id: str = Depends(get_current_user_id),
+    service: "KnowledgeBaseService" = Depends(get_knowledge_base_service),
+) -> RebuildKnowledgeGraphResponse:
+    """Extract graph facts for documents already in the vector store."""
+    result = await service.rebuild_knowledge_graph(
+        user_id=user_id,
+        knowledge_base_id=knowledge_base_id,
+    )
+    return RebuildKnowledgeGraphResponse.model_validate(result)
 
 
 # The media types a browser may render inline. Anything else (notably

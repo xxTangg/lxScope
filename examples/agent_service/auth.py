@@ -73,6 +73,7 @@ class _StoredAccount(BaseModel):
     salt: str
     password_digest: str
     created_at: str
+    password_expires_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,7 @@ class _Account:
     user_id: str
     salt: bytes
     password_digest: bytes
+    password_expires_at: datetime | None = None
 
 
 def _derive_password(password: str, salt: bytes) -> bytes:
@@ -206,6 +208,11 @@ class JWTAuthService:
             user_id=stored.user_id,
             salt=base64.b64decode(stored.salt),
             password_digest=base64.b64decode(stored.password_digest),
+            password_expires_at=(
+                datetime.fromisoformat(stored.password_expires_at.replace("Z", "+00:00"))
+                if stored.password_expires_at
+                else None
+            ),
         )
 
     async def _registered_by_id(self, user_id: str) -> _Account | None:
@@ -222,9 +229,15 @@ class JWTAuthService:
             normalized = self._normalize_username(username)
         except ValueError as exc:
             raise _unauthorized("Invalid username or password.") from exc
-        account = self._accounts.get(normalized)
+        # A password reset is persisted in Redis even for the environment
+        # configured administrator. Prefer that override after restart while
+        # keeping the environment account as the fallback.
+        account = await self._registered_by_username(normalized)
+        if account is not None and account.password_expires_at is not None:
+            if account.password_expires_at <= datetime.now(timezone.utc):
+                account = None
         if account is None:
-            account = await self._registered_by_username(normalized)
+            account = self._accounts.get(normalized)
         if account is None:
             await asyncio.to_thread(_derive_password, password, b"longxin-login--")
             raise _unauthorized("Invalid username or password.")
@@ -232,6 +245,54 @@ class JWTAuthService:
         candidate = await asyncio.to_thread(_derive_password, password, account.salt)
         if not hmac.compare_digest(candidate, account.password_digest):
             raise _unauthorized("Invalid username or password.")
+        return AuthUser(id=account.user_id, username=account.username)
+
+    async def reset_password(
+        self,
+        username: str,
+        password: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> AuthUser:
+        """Persist a password replacement for a configured or registered user.
+
+        The sales integration calls this method only after authenticating the
+        customer-side Bearer token.  The original account id is retained so
+        existing data and the user's JWT identity remain stable.
+        """
+        try:
+            normalized = self._normalize_username(username)
+        except ValueError as exc:
+            raise ValueError("Invalid username.") from exc
+        if not password:
+            raise ValueError("A new password is required.")
+
+        account = await self._registered_by_username(normalized)
+        if account is not None and account.password_expires_at is not None:
+            if account.password_expires_at <= datetime.now(timezone.utc):
+                account = None
+        if account is None:
+            account = self._accounts.get(normalized)
+        if account is None:
+            raise ValueError("The requested account does not exist.")
+
+        salt = secrets.token_bytes(16)
+        digest = await asyncio.to_thread(_derive_password, password, salt)
+        stored = _StoredAccount(
+            username=account.username,
+            user_id=account.user_id,
+            salt=base64.b64encode(salt).decode("ascii"),
+            password_digest=base64.b64encode(digest).decode("ascii"),
+            created_at=datetime.now(timezone.utc).isoformat(),
+            password_expires_at=(
+                expires_at.astimezone(timezone.utc).isoformat()
+                if expires_at is not None
+                else None
+            ),
+        )
+        client = self._redis()
+        await client.set(self._username_key(normalized), stored.model_dump_json())
+        await client.set(self._user_key(account.user_id), normalized)
         return AuthUser(id=account.user_id, username=account.username)
 
     async def register(self, username: str, password: str) -> AuthUser:

@@ -11,6 +11,7 @@ import { DeleteDialog } from '@/components/dialog/DeleteDialog.tsx';
 import { EditKnowledgeBaseDialog } from '@/components/dialog/EditKnowledgeBaseDialog.tsx';
 import { KnowledgeSearchDrawer } from '@/components/drawer/KnowledgeSearchDrawer.tsx';
 import { KnowledgeDocumentsPanel } from '@/components/knowledge/KnowledgeDocumentsPanel.tsx';
+import { KnowledgeGraphPanel } from '@/components/knowledge/KnowledgeGraphPanel.tsx';
 import { Badge } from '@/components/ui/badge.tsx';
 import { Button } from '@/components/ui/button.tsx';
 import {
@@ -97,6 +98,10 @@ function DetailPanel({ knowledgeBase, onTest }: DetailPanelProps) {
 			<div className="min-h-0 flex-1 overflow-y-auto p-[20px_18px_24px]">
 				<div className="flex flex-col gap-y-6">
 					<ConfigCard knowledgeBase={knowledgeBase} />
+					<KnowledgeGraphPanel
+						knowledgeBaseId={knowledgeBase.id}
+						editable={knowledgeBase.editable}
+					/>
 					<KnowledgeDocumentsPanel knowledgeBaseId={knowledgeBase.id} />
 				</div>
 			</div>

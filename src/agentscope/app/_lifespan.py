@@ -49,6 +49,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     workspace_manager = app.state.workspace_manager
     knowledge_base_manager = app.state.knowledge_base_manager
     blob_store = app.state.blob_store
+    knowledge_graph_store = getattr(app.state, "knowledge_graph_store", None)
+    knowledge_graph_extractor = getattr(
+        app.state,
+        "knowledge_graph_extractor",
+        None,
+    )
     enable_index_worker = app.state.enable_index_worker
     enable_channel_worker = app.state.enable_channel_worker
     enable_scheduler = app.state.enable_scheduler
@@ -223,6 +229,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     parsers=app.state.knowledge_parsers,
                     chunkers=app.state.knowledge_chunkers,
                     node_id=node_id,
+                    knowledge_graph_store=knowledge_graph_store,
+                    knowledge_graph_extractor=knowledge_graph_extractor,
                 )
                 await stack.enter_async_context(
                     IndexTaskConsumer(
@@ -245,6 +253,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 message_bus=message_bus,
                 resource_access_service=resource_access_service,
                 chunkers=app.state.knowledge_chunkers,
+                knowledge_graph_store=knowledge_graph_store,
+                knowledge_graph_extractor=knowledge_graph_extractor,
             )
 
         app.state.knowledge_base_service = knowledge_base_service

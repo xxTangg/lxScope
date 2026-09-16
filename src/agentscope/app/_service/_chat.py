@@ -84,6 +84,13 @@ if TYPE_CHECKING:
     from ..channel import ChannelClients
 
 
+_DEFAULT_CHAT_LANGUAGE_INSTRUCTION = (
+    "智能体生成的所有用户可见自然语言，包括执行过程、进度和状态说明、"
+    "工具调用前后的说明及最终答复，默认使用简体中文；除非用户明确要求其他语言。"
+    "代码、命令、文件路径、标识符、MCP/工具/API 名称及原始工具输出或引用保持原样。"
+)
+
+
 @dataclass(frozen=True)
 class _LeaderContext:
     """This session leads its team."""
@@ -1102,7 +1109,11 @@ class ChatService:
                     f"<system-notification>{attachment}</system-notification>"
                 )
                 system_prompt = (
-                    agent_record.data.system_prompt + "\n\n" + attachment
+                    agent_record.data.system_prompt
+                    + "\n\n"
+                    + attachment
+                    + "\n\n"
+                    + _DEFAULT_CHAT_LANGUAGE_INSTRUCTION
                 )
 
                 agent_state = session_record.state

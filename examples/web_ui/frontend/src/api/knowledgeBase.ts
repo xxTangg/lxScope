@@ -5,6 +5,8 @@ import type {
 	DocumentDownloadTokenResponse,
 	KbMiddlewareParametersSchemaResponse,
 	KnowledgeBaseView,
+	KnowledgeGraphResponse,
+	RebuildKnowledgeGraphResponse,
 	ListChunkersResponse,
 	ListDocumentChunksResponse,
 	ListKbEmbeddingModelsResponse,
@@ -303,5 +305,29 @@ export const knowledgeBaseApi = {
 		client.post<SearchKnowledgeBaseResponse>(
 			`/knowledge_bases/${knowledgeBaseId}/search`,
 			body,
+		),
+
+	getGraph: (
+		knowledgeBaseId: string,
+		params?: {
+			query?: string;
+			documentIds?: string[];
+			nodeLimit?: number;
+			edgeLimit?: number;
+		},
+	) =>
+		client.get<KnowledgeGraphResponse>(
+			`/knowledge_bases/${knowledgeBaseId}/graph`,
+			toQuery({
+				query: params?.query,
+				document_ids: params?.documentIds?.join(','),
+				node_limit: params?.nodeLimit,
+				edge_limit: params?.edgeLimit,
+			}),
+		),
+
+	rebuildGraph: (knowledgeBaseId: string) =>
+		client.post<RebuildKnowledgeGraphResponse>(
+			`/knowledge_bases/${knowledgeBaseId}/graph/rebuild`,
 		),
 };

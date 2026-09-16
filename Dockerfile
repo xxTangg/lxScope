@@ -1,10 +1,11 @@
-FROM node:20-bookworm-slim
+FROM docker.m.daocloud.io/library/node:20-bookworm-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app/src \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 
 WORKDIR /app
 

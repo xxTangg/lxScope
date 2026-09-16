@@ -41,6 +41,8 @@ from .._version import __version__
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from fastapi.middleware import Middleware as FastAPIMiddleware
+    from .storage import KnowledgeGraphStoreBase
+    from ..rag import KnowledgeGraphExtractor
 else:
     FastAPI = Any
     FastAPIMiddleware = Any
@@ -98,6 +100,8 @@ def create_app(
     resource_access_policy: ResourceAccessPolicyBase | None = None,
     channels: list[Type[ChannelBase]] | None = None,
     download_secret: str | None = None,
+    knowledge_graph_store: "KnowledgeGraphStoreBase | None" = None,
+    knowledge_graph_extractor: "KnowledgeGraphExtractor | None" = None,
     chat_attachment_max_bytes: int = 20 * 1024 * 1024,
     chat_attachment_max_chars: int = 200_000,
     title: str = "AgentScope",
@@ -180,6 +184,12 @@ def create_app(
             :class:`~agentscope.app.rag.blob_store.LocalBlobStore`
             rooted at ``./blobs``.  Its lifecycle (``__aenter__`` /
             ``__aexit__``) is managed by the app lifespan.
+        knowledge_graph_store (`KnowledgeGraphStoreBase | None`, optional):
+            Optional persistence for knowledge-base graphs. ``None`` keeps
+            the existing vector-only indexing behaviour.
+        knowledge_graph_extractor (`KnowledgeGraphExtractor | None`, optional):
+            Optional structured-output extractor used after document
+            chunking. It is independent from the vector index.
         enable_index_worker (`bool`, defaults to ``True``):
             When ``True`` (embedded deployment) the API process starts
             an :class:`~agentscope.app._service.IndexWorker` and an
@@ -306,6 +316,8 @@ def create_app(
     workspace_manager.bind_storage(storage)
     app.state.workspace_manager = workspace_manager
     app.state.knowledge_base_manager = knowledge_base_manager
+    app.state.knowledge_graph_store = knowledge_graph_store
+    app.state.knowledge_graph_extractor = knowledge_graph_extractor
     app.state.extra_agent_middlewares = extra_agent_middlewares
     app.state.extra_agent_tools = extra_agent_tools
     app.state.custom_agent_cls = custom_agent_cls

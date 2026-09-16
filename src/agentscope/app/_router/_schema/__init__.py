@@ -77,6 +77,11 @@ from ._knowledge_base import (
     ListSupportedContentTypesResponse,
     SearchKnowledgeBaseRequest,
     SearchKnowledgeBaseResponse,
+    KnowledgeGraphSourceRefView,
+    KnowledgeGraphNodeView,
+    KnowledgeGraphEdgeView,
+    KnowledgeGraphResponse,
+    RebuildKnowledgeGraphResponse,
     UpdateKnowledgeBaseRequest,
     UploadKnowledgeDocumentResponse,
 )
@@ -159,6 +164,11 @@ __all__ = [
     "ListSupportedContentTypesResponse",
     "SearchKnowledgeBaseRequest",
     "SearchKnowledgeBaseResponse",
+    "KnowledgeGraphSourceRefView",
+    "KnowledgeGraphNodeView",
+    "KnowledgeGraphEdgeView",
+    "KnowledgeGraphResponse",
+    "RebuildKnowledgeGraphResponse",
     "UpdateKnowledgeBaseRequest",
     "UploadKnowledgeDocumentResponse",
     # Model

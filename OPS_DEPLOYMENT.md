@@ -331,3 +331,27 @@ docker compose down
 - 定期备份 Docker 数据卷：`redis-data`、`agentscope-workspaces`、
   `agentscope-blobs` 和 `qdrant-data`。
 - 模型 API Key 只放在服务器 `.env` 中，不要提交到 Git，也不要写入前端代码。
+
+## 9. 本工作区部署取值（2026-09-11 更新）
+
+本机 8000 / 8080 端口已被另一套 AgentScope 部署占用，lxScope 使用以下端口：
+
+```text
+Web UI：http://localhost:8002   （WEB_UI_PORT=8002）
+API：   http://localhost:8003   （AGENTSCOPE_API_PORT=8003）
+```
+
+登录账号由 `.env` 中的 `AGENTSCOPE_USERNAME` / `AGENTSCOPE_PASSWORD` 决定，
+默认管理员账号的 `AGENTSCOPE_USER_ID=local-user`，用于保留开启 JWT 登录前创建的数据。
+
+### 9.1 DeepSeek 官方 API
+
+DeepSeek 官方 API（`https://api.deepseek.com/v1`）不提供 Embedding 接口，只能用于聊天。
+知识库向量化请继续使用 `SILICONFLOW_*` 配置；需要同时使用 DeepSeek 官方 API 时，
+把 Key 放在独立的 `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_CHAT_MODEL`
+变量中，`docker-compose.yml` 已透传给后端容器。
+
+### 9.2 基础镜像源
+
+`docker.1panel.live` 镜像源已返回 403，两个 Dockerfile 的基础镜像改用
+`docker.m.daocloud.io/library/`；如该源也不可用，需替换为其他可用镜像源后再构建。

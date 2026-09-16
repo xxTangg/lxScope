@@ -435,6 +435,23 @@
 			"previewTooLargeTitle": "文件过大,无法预览",
 			"previewTooLargeDescription": "该文件超出在线预览大小限制,请下载后查看源文件。",
 			"downloadButton": "下载源文件"
+		},
+		"graph": {
+			"title": "知识图谱",
+			"ready": "已就绪",
+			"building": "构建中",
+			"error": "构建失败",
+			"disabled": "未启用",
+			"emptyStatus": "暂无图谱",
+			"loading": "正在加载知识图谱…",
+			"empty": "暂无跨文档知识图谱。请先上传并完成文档解析。",
+			"stats": "{{nodes}} 个节点 · {{edges}} 条关系",
+			"search": "搜索",
+			"rebuild": "重建图谱",
+			"searchPlaceholder": "搜索实体、类型或别名",
+			"sources": "来源文档",
+			"chunk": "第 {{index}} 段",
+			"selectNode": "点击节点查看来源文档和分块。"
 		}
 	},
 	"llm-select": {
