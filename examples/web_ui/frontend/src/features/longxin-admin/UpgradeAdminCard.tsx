@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useTranslation } from '@/i18n/useI18n';
+import { useAuth } from '@/hooks/useAuth';
 
 import { upgradeApi, type ArtifactType, type ReleaseMeta, type UpgradeOperation } from './upgrade-api';
 
@@ -27,26 +28,31 @@ function operationVariant(state: UpgradeOperation['state']) {
 
 export function UpgradeAdminCard() {
 	const { t } = useTranslation();
+	const { user } = useAuth();
 	const queryClient = useQueryClient();
 	const [artifactType, setArtifactType] = useState<ArtifactType>('app');
 	const [version, setVersion] = useState('');
 	const [file, setFile] = useState<File | null>(null);
 	const [adminPassword, setAdminPassword] = useState('');
 	const catalog = useQuery({
-		queryKey: ['longxin-upgrades', 'catalog'],
+		queryKey: ['longxin-upgrades', user?.id, 'catalog'],
 		queryFn: upgradeApi.catalog,
+		enabled: user?.role === 'admin',
 	});
 	const status = useQuery({
-		queryKey: ['longxin-upgrades', 'status'],
+		queryKey: ['longxin-upgrades', user?.id, 'status'],
 		queryFn: upgradeApi.status,
+		enabled: user?.role === 'admin',
 	});
 	const backups = useQuery({
-		queryKey: ['longxin-upgrades', 'backups'],
+		queryKey: ['longxin-upgrades', user?.id, 'backups'],
 		queryFn: () => upgradeApi.backups(20),
+		enabled: user?.role === 'admin',
 	});
 	const operations = useQuery({
-		queryKey: ['longxin-upgrades', 'operations'],
+		queryKey: ['longxin-upgrades', user?.id, 'operations'],
 		queryFn: () => upgradeApi.operations(20),
+		enabled: user?.role === 'admin',
 		refetchInterval: (query) =>
 			query.state.data?.operations.some((item) =>
 				['pending', 'downloading', 'backing_up', 'applying', 'health_check'].includes(item.state),

@@ -26,6 +26,7 @@ services:
       - "80"
     environment:
       VITE_AGENTSCOPE_API_PORT: ${AGENTSCOPE_API_PORT:-8001}
+      DOCKER_DEV: "true"
     volumes:
       - ./examples/web_ui:/app
       # Keep installed dependencies outside the bind mount.

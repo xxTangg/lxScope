@@ -42,7 +42,7 @@ export function ModelConfigCard() {
 					<p className="text-sm text-muted-foreground">
 						{t('admin.modelConfigCredentialHint')}
 					</p>
-					<Button type="button" variant="outline" onClick={() => navigate('/credential')}>
+					<Button type="button" variant="outline" onClick={() => navigate('/admin/models/config')}>
 						<KeyRound />
 						{t('admin.openCredentialConfig')}
 						<ArrowRight />

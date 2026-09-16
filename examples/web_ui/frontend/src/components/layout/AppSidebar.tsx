@@ -100,7 +100,7 @@ export function AppSidebar() {
 									<SidebarMenuButton
 										tooltip={{ children: t('admin.title'), hidden: false }}
 										isActive={location.pathname.startsWith('/admin')}
-										onClick={() => navigate('/admin')}
+										onClick={() => navigate('/admin/overview')}
 										className="justify-center"
 									>
 										<ShieldCheck />
@@ -137,8 +137,8 @@ export function AppSidebar() {
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('common.credential'), hidden: false }}
-										isActive={location.pathname === '/credential'}
-										onClick={() => navigate('/credential')}
+										isActive={location.pathname === '/credential' || location.pathname.startsWith('/admin/models')}
+										onClick={() => navigate('/admin/models')}
 										className="justify-center"
 									>
 										<KeyRound />

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -147,15 +148,32 @@ def _load_ed25519_public_key(value: Any) -> Any:
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-        if isinstance(value, str) and "BEGIN PUBLIC KEY" in value:
-            signer = serialization.load_pem_public_key(value.encode("utf-8"))
+        if not isinstance(value, str):
+            raise TypeError("The configured public key must be text.")
+
+        encoded_key = value.strip()
+        if "BEGIN PUBLIC KEY" in encoded_key:
+            signer = serialization.load_pem_public_key(encoded_key.encode("utf-8"))
         else:
-            encoded_key = str(value)
             try:
                 key_bytes = _decode_base64url(encoded_key)
             except HTTPException:
-                key_bytes = bytes.fromhex(encoded_key)
-            signer = Ed25519PublicKey.from_public_bytes(key_bytes)
+                try:
+                    # Sales Hub returns the SubjectPublicKeyInfo DER value as
+                    # standard Base64 (including '+'/'/' and optional '=');
+                    # accept that representation in addition to raw base64url.
+                    key_bytes = base64.b64decode(
+                        encoded_key.encode("ascii"),
+                        validate=True,
+                    )
+                except (binascii.Error, UnicodeEncodeError, ValueError):
+                    key_bytes = bytes.fromhex(encoded_key)
+            try:
+                signer = Ed25519PublicKey.from_public_bytes(key_bytes)
+            except ValueError:
+                # A standard Base64 public key may contain the DER/SPKI
+                # wrapper rather than only the 32-byte Ed25519 key.
+                signer = serialization.load_der_public_key(key_bytes)
         if not isinstance(signer, Ed25519PublicKey):
             raise TypeError("The configured key is not an Ed25519 public key.")
         return signer

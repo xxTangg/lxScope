@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BadgeDollarSign, Database, Loader2, RefreshCw, TicketCheck } from 'lucide-react';
+import { BadgeDollarSign, ChevronLeft, ChevronRight, Database, Loader2, RefreshCw, TicketCheck } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 
 import { adminApi } from '@/api';
@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useTranslation } from '@/i18n/useI18n';
+import { useAuth } from '@/hooks/useAuth';
 
 /**
  * Keeps the two system-quota recharge paths visible and independent:
@@ -18,12 +19,15 @@ import { useTranslation } from '@/i18n/useI18n';
  */
 export function RechargeMethodsCard() {
 	const { t } = useTranslation();
+	const { user } = useAuth();
 	const queryClient = useQueryClient();
 	const [rechargeAmount, setRechargeAmount] = useState('');
 	const [rechargeCode, setRechargeCode] = useState('');
+	const [rechargePage, setRechargePage] = useState(1);
 	const recharges = useQuery({
-		queryKey: ['admin', 'recharges'],
+		queryKey: ['admin', user?.id, 'recharges'],
 		queryFn: () => adminApi.rechargeRequests(20),
+		enabled: user?.role === 'admin',
 		refetchInterval: 10_000,
 	});
 	const createRecharge = useMutation({
@@ -76,6 +80,9 @@ export function RechargeMethodsCard() {
 	const operation = reportUsage.data ?? syncRecharge.data;
 	const operationError = operation?.error;
 	const rechargeItems = recharges.data?.orders ?? [];
+	const rechargePageSize = 5;
+	const rechargePages = Math.max(1, Math.ceil(rechargeItems.length / rechargePageSize));
+	const visibleRechargeItems = rechargeItems.slice((rechargePage - 1) * rechargePageSize, rechargePage * rechargePageSize);
 
 	return (
 		<Card>
@@ -182,10 +189,13 @@ export function RechargeMethodsCard() {
 					</section>
 				</div>
 
-				<div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-					<Database className="size-3.5" />
-					{t('admin.recentRecharge')}
-				</div>
+				<div className="flex items-center justify-between gap-2">
+					<div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+						<Database className="size-3.5" />
+						{t('admin.recentRecharge')}
+					</div>
+					{rechargeItems.length > 0 && <span className="text-xs text-muted-foreground">{rechargeItems.length} · {rechargePage}/{rechargePages}</span>}
+					</div>
 				{recharges.isLoading ? (
 					<div className="flex h-12 items-center justify-center">
 						<Loader2 className="size-4 animate-spin text-muted-foreground" />
@@ -194,7 +204,7 @@ export function RechargeMethodsCard() {
 					<div className="text-xs text-muted-foreground">{t('admin.noRecharge')}</div>
 				) : (
 					<div className="space-y-2">
-		{rechargeItems.slice(0, 5).map((item) => {
+						{visibleRechargeItems.map((item) => {
 			const isDelivered = item.delivery_status === 'delivered';
 			const approvalLabel =
 				item.status === 'pending'
@@ -233,6 +243,10 @@ export function RechargeMethodsCard() {
 								</div>
 							);
 						})}
+						<div className="flex justify-end gap-1">
+							<Button variant="outline" size="sm" disabled={rechargePage <= 1 || recharges.isFetching} onClick={() => setRechargePage((value) => value - 1)}><ChevronLeft /></Button>
+							<Button variant="outline" size="sm" disabled={rechargePage >= rechargePages || recharges.isFetching} onClick={() => setRechargePage((value) => value + 1)}><ChevronRight /></Button>
+						</div>
 					</div>
 				)}
 			</CardContent>

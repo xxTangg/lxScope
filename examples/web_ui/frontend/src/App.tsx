@@ -23,7 +23,17 @@ import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { queryClient } from '@/lib/query-client';
 import { AccountPage } from '@/pages/account';
-import { AdminPage } from '@/pages/admin';
+import { AdminAuditPage } from '@/pages/admin/audit';
+import { AdminLayout } from '@/pages/admin/layout';
+import { AdminMcpPage } from '@/pages/admin/mcp';
+import { AdminMembersPage } from '@/pages/admin/members';
+import { AdminModelsPage } from '@/pages/admin/models';
+import { AdminOverviewPage } from '@/pages/admin/overview';
+import { AdminPolicyPage } from '@/pages/admin/policy';
+import { AdminQuotaPage } from '@/pages/admin/quota';
+import { AdminSalesHubPage } from '@/pages/admin/sales-hub';
+import { AdminSkillsPage } from '@/pages/admin/skills';
+import { AdminUpgradesPage } from '@/pages/admin/upgrades';
 import { ChannelPage } from '@/pages/channel';
 import { ChatPage } from '@/pages/chat';
 import { CredentialPage } from '@/pages/credential';
@@ -107,7 +117,28 @@ const router = createBrowserRouter([
 					{ path: '/knowledge', element: <KnowledgePage /> },
 					{ path: '/knowledge/:kbId', element: <KnowledgePage /> },
 					{ path: '/account', element: <AccountPage /> },
-					{ path: '/admin', element: <AdminPage /> },
+					{
+						path: '/admin',
+						element: (
+							<AdminOnlyRoute>
+								<AdminLayout />
+							</AdminOnlyRoute>
+						),
+						children: [
+							{ index: true, element: <Navigate to="overview" replace /> },
+							{ path: 'overview', element: <AdminOverviewPage /> },
+							{ path: 'members', element: <AdminMembersPage /> },
+							{ path: 'quota', element: <AdminQuotaPage /> },
+							{ path: 'models', element: <AdminModelsPage /> },
+							{ path: 'models/config', element: <CredentialPage /> },
+							{ path: 'skills', element: <AdminSkillsPage /> },
+							{ path: 'mcp', element: <AdminMcpPage /> },
+							{ path: 'policy', element: <AdminPolicyPage /> },
+							{ path: 'audit', element: <AdminAuditPage /> },
+							{ path: 'upgrades', element: <AdminUpgradesPage /> },
+							{ path: 'sales-hub', element: <AdminSalesHubPage /> },
+						],
+					},
 				],
 			},
 		],
