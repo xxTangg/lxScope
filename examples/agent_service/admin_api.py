@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -15,6 +16,9 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
@@ -152,7 +156,7 @@ class OperationResponse(BaseModel):
 
 
 class RechargeRequest(BaseModel):
-    amount: str = Field(pattern=r"^[0-9]+(?:\.[0-9]{1,2})?$")
+    amount: str = Field(pattern=r"^[0-9]+\.[0-9]{2}$")
     note: str | None = Field(default=None, max_length=300)
 
 
@@ -197,7 +201,7 @@ class RechargeAckRequest(BaseModel):
 class UsageReportRequest(BaseModel):
     system_id: str = Field(min_length=1, max_length=128)
     pool_tokens: int = Field(ge=0)
-    total_recharged: str = Field(pattern=r"^[0-9]+(?:\.[0-9]{1,2})?$")
+    total_recharged: str = Field(pattern=r"^[0-9]+\.[0-9]{2}$")
     app_version: str = Field(min_length=1, max_length=128)
     cumulative_consumed: int = Field(ge=0)
     cumulative_credits: int = Field(ge=0)
@@ -920,30 +924,56 @@ class AdminService:
             raise _error("invalid_recharge_code", "The recharge code payload is invalid.", 400) from exc
         if not isinstance(payload, dict):
             raise _error("invalid_recharge_code", "The recharge code payload is invalid.", 400)
-        secret = os.getenv("LONGXIN_RECHARGE_CODE_SECRET")
-        if not secret:
-            raise _error("signer_not_configured", "The recharge signer is not configured.", 503)
-        expected = hmac.new(
-            secret.encode("utf-8"),
-            payload_bytes,
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(expected, parts[2]):
+        hub_config = await self._read_json(_SALES_HUB_KEY) or {}
+        public_key_pem = hub_config.get("public_key") or hub_config.get("publicKey")
+        if not isinstance(public_key_pem, str) or not public_key_pem.strip():
+            raise _error(
+                "signer_not_configured",
+                "The Ed25519 recharge public key is not configured.",
+                503,
+            )
+        try:
+            public_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
+            if not isinstance(public_key, Ed25519PublicKey):
+                raise ValueError("the configured key is not Ed25519")
+            signature = base64.urlsafe_b64decode(parts[2] + "===")
+            public_key.verify(signature, parts[1].encode("ascii"))
+        except (InvalidSignature, TypeError, ValueError, UnicodeEncodeError):
             raise _error("invalid_recharge_signature", "The recharge code signature is invalid.", 400)
         system = await self._system()
         if payload.get("system_id") != system["system_id"]:
             raise _error("system_id_mismatch", "The recharge code targets another system.", 409)
+        version = payload.get("version")
+        order_id = payload.get("order_id")
+        issued_at = payload.get("issued_at")
+        expires_at = payload.get("expires_at")
         tokens = payload.get("tokens")
         amount = payload.get("amount")
         nonce = payload.get("nonce")
         if (
-            not isinstance(tokens, int)
+            version != "1"
+            or not isinstance(order_id, str)
+            or not order_id
+            or not isinstance(issued_at, str)
+            or not isinstance(expires_at, str)
+            or not isinstance(tokens, int)
             or isinstance(tokens, bool)
             or tokens <= 0
             or not isinstance(amount, str)
+            or not re.fullmatch(r"\d+\.\d{2}", amount)
+            or not isinstance(nonce, str)
             or not nonce
         ):
             raise _error("invalid_recharge_code", "The recharge code fields are invalid.", 400)
+        try:
+            issued_time = datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+            expires_time = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise _error("invalid_recharge_code", "The recharge code timestamps are invalid.", 400) from exc
+        if issued_time.tzinfo is None or expires_time.tzinfo is None:
+            raise _error("invalid_recharge_code", "The recharge code timestamps are invalid.", 400)
+        if expires_time <= datetime.now(timezone.utc):
+            raise _error("recharge_code_expired", "The recharge code has expired.", 409)
         try:
             amount_value = Decimal(amount)
         except InvalidOperation as exc:
@@ -966,23 +996,21 @@ class AdminService:
                 delta=tokens,
                 balance_after=int(system["pool_tokens"]),
                 amount=amount,
-                order_id=payload.get("order_id"),
+                order_id=order_id,
                 operator_id=actor.id,
                 source="sales_hub",
             )
-            order_id = payload.get("order_id")
-            if isinstance(order_id, str):
-                order = await self._read_json(self._order_key(order_id))
-                if order is not None:
-                    order.update(
-                        {
-                            "status": "approved",
-                            "delivery_status": "not_delivered",
-                            "ledger_id": ledger.ledger_id,
-                            "redemption_operation_id": f"op-{uuid4().hex}",
-                        },
-                    )
-                    await self._write_json(self._order_key(order_id), order)
+            order = await self._read_json(self._order_key(order_id))
+            if order is not None:
+                order.update(
+                    {
+                        "status": "approved",
+                        "delivery_status": "not_delivered",
+                        "ledger_id": ledger.ledger_id,
+                        "redemption_operation_id": f"op-{uuid4().hex}",
+                    },
+                )
+                await self._write_json(self._order_key(order_id), order)
         return {
             "operation_id": f"op-{uuid4().hex}",
             "state": "completed",

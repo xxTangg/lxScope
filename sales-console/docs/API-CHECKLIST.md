@@ -59,7 +59,7 @@
 
 - `app` = 龙信业务应用升级包；
 - `core` = AgentScope 平台整体升级包；
-- 内部历史字段 `opencode` 只在兼容层使用，canonical 响应统一输出 `core`；
+- `core` 表示 AgentScope 平台整体升级；新的接口、响应和校验标准统一使用 `core` 与 AgentScope 包路径；
 - 升级包必须有 `manifest.json`，检查类型、版本、路径穿越、必要文件和 SHA-256；
 - 下发给客户系统的地址使用 `/integration/sales/v1/upgrades/{artifact_type}`，Ping 使用 `/integration/sales/v1/ping`。
 

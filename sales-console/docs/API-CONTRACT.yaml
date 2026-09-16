@@ -108,8 +108,9 @@ paths:
       parameters:
         - { $ref: '#/components/parameters/CustomerId' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/RequestID' }
       responses:
-        '200': { description: outbound、inbound、ping 和 request_id }
+        '200': { description: outbound、inbound、ping 和原样回显的 request_id }
   /api/v1/customers/{customer_id}/usage-reports:
     get:
       summary: 查看客户用量快照
@@ -180,14 +181,17 @@ paths:
           in: path
           required: true
           schema: { type: string, enum: [approve, reject] }
+        - { $ref: '#/components/parameters/RequestID' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
         content:
           application/json:
             schema:
               type: object
+              required: [amount, request_id]
               properties:
-                amount: { type: string }
+                amount: { type: string, pattern: '^\d+\.\d{2}$' }
+                request_id: { type: string, maxLength: 128 }
                 reason: { type: string }
       responses:
         '200': { description: 订单和送达状态 }
@@ -195,19 +199,63 @@ paths:
     post:
       summary: 客户系统提交线上充值申请
       security: [{ customerBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      parameters:
+        - { $ref: '#/components/parameters/RequestID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
         required: true
         content:
           application/json: { schema: { $ref: '#/components/schemas/RechargeRequest' } }
       responses:
-        '201': { description: order_id、pending、not_delivered、request_id }
+        '201':
+          description: order_id、system_id、pending、not_delivered、request_id
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [order_id, system_id, status, delivery_status, request_id]
+                properties:
+                  order_id: { type: string }
+                  system_id: { type: string }
+                  status: { type: string, enum: [pending] }
+                  delivery_status: { type: string, enum: [not_delivered] }
+                  request_id: { type: string, maxLength: 128 }
   /api/v1/integration/recharge-requests/poll:
     get:
       summary: 客户轮询已审批充值码
       security: [{ customerBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SystemIdQuery' }
+        - { $ref: '#/components/parameters/RequestID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
-        '200': { description: order_id、code 或空结果 }
+        '200':
+          description: '{orders, request_id}；每个订单只返回对接方规定字段'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [orders, request_id]
+                properties:
+                  orders:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        [order_id, system_id, amount, tokens, status, delivery_status, recharge_code, expires_at]
+                      properties:
+                        order_id: { type: string }
+                        system_id: { type: string }
+                        amount: { type: string, pattern: '^\d+\.\d{2}$' }
+                        tokens: { type: integer, minimum: 1 }
+                        status: { type: string, enum: [approved] }
+                        delivery_status: { type: string, enum: [not_delivered] }
+                        recharge_code: { type: string, pattern: '^LXRC2\.[^.]+\.[^.]+$' }
+                        expires_at: { type: string, format: date-time }
+                  request_id: { type: string, maxLength: 128 }
   /api/v1/integration/recharge-codes/legacy:
     get:
       summary: 客户同步历史离线充值码 nonce
@@ -220,25 +268,69 @@ paths:
       security: [{ customerBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrderId' }
+        - { $ref: '#/components/parameters/RequestID' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/RechargeAckRequest' } }
       responses:
-        '200': { description: 已确认 }
+        '200':
+          description: 已确认并将 delivery_status 更新为 delivered
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [order_id, status, delivery_status, request_id]
+                properties:
+                  order_id: { type: string }
+                  status: { type: string, enum: [approved] }
+                  delivery_status: { type: string, enum: [delivered] }
+                  request_id: { type: string, maxLength: 128 }
   /api/v1/integration/usage-reports:
     post:
       summary: 客户上报额度和用量快照
       security: [{ customerBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      parameters:
+        - { $ref: '#/components/parameters/RequestID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
         required: true
         content:
           application/json: { schema: { $ref: '#/components/schemas/UsageReport' } }
       responses:
-        '200': { description: 已接收 }
+        '200':
+          description: 已接收
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  [report_id, system_id, accepted, reported_at, cumulative_consumed_delta, cumulative_credits_delta, request_id]
+                properties:
+                  report_id: { type: string }
+                  system_id: { type: string }
+                  accepted: { type: boolean }
+                  reported_at: { type: string, format: date-time }
+                  cumulative_consumed_delta: { type: integer }
+                  cumulative_credits_delta: { type: integer }
+                  request_id: { type: string, maxLength: 128 }
   /api/v1/integration/verify-connection:
     post:
       summary: 客户系统请求双向连接验证
       security: [{ customerBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      parameters:
+        - { $ref: '#/components/parameters/RequestID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
       responses:
         '200': { description: outbound、inbound、system_name、request_id }
   /api/v1/integration/releases/{artifact_type}/latest:
@@ -252,6 +344,7 @@ paths:
     get:
       summary: 客户获取总部充值码验签公钥
       security: [{ customerBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestID' }]
       responses:
         '200': { description: public_key_pem、system_id、request_id }
   /api/v1/releases:
@@ -373,6 +466,16 @@ components:
       in: header
       required: true
       schema: { type: string, maxLength: 128 }
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: true
+      schema: { type: string, maxLength: 128 }
+    SystemIdQuery:
+      name: system_id
+      in: query
+      required: true
+      schema: { type: string, maxLength: 128 }
   responses:
     Unauthorized:
       description: 缺少或无效认证
@@ -409,20 +512,28 @@ components:
         status: { type: string, enum: [active, disabled] }
     RechargeRequest:
       type: object
-      required: [system_id, amount]
+      required: [system_id, amount, note, requested_at]
       properties:
-        system_id: { type: string }
-        amount: { type: string, pattern: '^\\d+(\\.\\d{1,2})?$' }
+        system_id: { type: string, minLength: 1, maxLength: 128 }
+        amount: { type: string, pattern: '^\\d+\\.\\d{2}$' }
         note: { type: string, maxLength: 500 }
         requested_at: { type: string, format: date-time }
+    RechargeAckRequest:
+      type: object
+      required: [operation_id, system_id, redemption_operation_id, ledger_id]
+      properties:
+        operation_id: { type: string, minLength: 1, maxLength: 128 }
+        system_id: { type: string, minLength: 1, maxLength: 128 }
+        redemption_operation_id: { type: string, minLength: 1, maxLength: 128 }
+        ledger_id: { type: string, minLength: 1, maxLength: 128 }
     UsageReport:
       type: object
       required: [system_id, pool_tokens, total_recharged, app_version, client_reported_at]
       properties:
-        system_id: { type: string }
+        system_id: { type: string, minLength: 1, maxLength: 128 }
         pool_tokens: { type: integer, minimum: 0 }
-        total_recharged: { type: string }
-        app_version: { type: string }
+        total_recharged: { type: string, pattern: '^\d+\.\d{2}$' }
+        app_version: { type: string, minLength: 1 }
         cumulative_consumed: { type: integer, minimum: 0, nullable: true }
         cumulative_credits: { type: integer, minimum: 0, nullable: true }
         client_reported_at: { type: string, format: date-time }

@@ -242,17 +242,27 @@ class SalesHubClient:
             },
         )
 
-    async def poll_recharge_requests(self, *, request_id: str | None = None) -> Any:
+    async def poll_recharge_requests(
+        self,
+        *,
+        idempotency_key: str,
+        request_id: str | None = None,
+    ) -> Any:
         return await self.request(
             "GET",
             "/api/v1/integration/recharge-requests/poll",
             request_id=request_id,
+            idempotency_key=idempotency_key,
         )
 
     async def acknowledge_recharge(
         self,
         order_id: str,
         *,
+        operation_id: str,
+        system_id: str,
+        redemption_operation_id: str,
+        ledger_id: str,
         idempotency_key: str,
         request_id: str | None = None,
     ) -> Any:
@@ -261,7 +271,12 @@ class SalesHubClient:
             f"/api/v1/integration/recharge-requests/{order_id}/ack",
             request_id=request_id,
             idempotency_key=idempotency_key,
-            body={"system_id": self.settings.system_id},
+            body={
+                "operation_id": operation_id,
+                "system_id": system_id,
+                "redemption_operation_id": redemption_operation_id,
+                "ledger_id": ledger_id,
+            },
         )
 
     async def report_usage(
@@ -290,7 +305,7 @@ class SalesHubClient:
             "/api/v1/integration/verify-connection",
             request_id=request_id,
             idempotency_key=idempotency_key,
-            body={"system_id": self.settings.system_id},
+            body={},
         )
 
     async def latest_release(
@@ -387,12 +402,16 @@ class UpgradeCommand(BaseModel):
 
 
 class RechargeRequestInput(BaseModel):
-    amount: str = Field(pattern=r"^\d+(\.\d{1,2})?$")
+    amount: str = Field(pattern=r"^\d+\.\d{2}$")
     note: str = Field(default="Token 池不足，申请补充系统额度", max_length=500)
 
 
 class AcknowledgeInput(BaseModel):
     order_id: str = Field(min_length=1, max_length=128)
+    operation_id: str = Field(min_length=1, max_length=128)
+    system_id: str = Field(min_length=1, max_length=128)
+    redemption_operation_id: str = Field(min_length=1, max_length=128)
+    ledger_id: str = Field(min_length=1, max_length=128)
 
 
 def _error(
@@ -829,9 +848,11 @@ def create_sales_integration_router(*, storage: Any, auth: Any) -> APIRouter:
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     ) -> JSONResponse:
         request_id = _request_id(request)
+        if not idempotency_key:
+            return _error(400, "idempotency_key_required", "Idempotency-Key is required for this operation.", request_id)
         try:
             result = await client.verify_connection(
-                idempotency_key=idempotency_key or f"verify-{uuid4().hex}",
+                idempotency_key=idempotency_key,
                 request_id=request_id,
             )
             return _success({"ok": True, "sales_center": result}, request_id)
@@ -894,10 +915,18 @@ def create_sales_integration_router(*, storage: Any, auth: Any) -> APIRouter:
             return await handle_hub_error(exc, request_id)
 
     @router.get("/admin/integration/sales/recharge-requests/poll", dependencies=[Depends(require_admin)])
-    async def poll_recharge_requests(request: Request) -> JSONResponse:
+    async def poll_recharge_requests(
+        request: Request,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> JSONResponse:
         request_id = _request_id(request)
+        if not idempotency_key:
+            return _error(400, "idempotency_key_required", "Idempotency-Key is required for this operation.", request_id)
         try:
-            result = await client.poll_recharge_requests(request_id=request_id)
+            result = await client.poll_recharge_requests(
+                idempotency_key=idempotency_key,
+                request_id=request_id,
+            )
             return _success({"ok": True, "sales_center": result}, request_id)
         except SalesHubError as exc:
             return await handle_hub_error(exc, request_id)
@@ -914,6 +943,10 @@ def create_sales_integration_router(*, storage: Any, auth: Any) -> APIRouter:
         try:
             result = await client.acknowledge_recharge(
                 body.order_id,
+                operation_id=body.operation_id,
+                system_id=body.system_id,
+                redemption_operation_id=body.redemption_operation_id,
+                ledger_id=body.ledger_id,
                 idempotency_key=idempotency_key,
                 request_id=request_id,
             )

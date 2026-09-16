@@ -38,6 +38,7 @@ export interface RechargeOrder {
   id: string;
   requestID?: string;
   customerID: string;
+  requestedAt?: number;
   method: 'code' | 'online';
   status: RechargeOrderStatus;
   requestedAmount?: number | null;
@@ -45,16 +46,22 @@ export interface RechargeOrder {
   tokens?: number;
   note?: string;
   code?: string;
+  expiresAt?: number;
+  decisionReason?: string;
   delivered?: boolean;
   deliveredAt?: number;
   deliveryAttempts?: number;
   lastDeliveryAt?: number;
+  ackOperationID?: string;
+  redemptionOperationID?: string;
+  ledgerID?: string;
   createdAt: number;
   processedAt?: number;
   processedBy?: string;
 }
 
 export interface UsageReport {
+  id?: string;
   customerID: string;
   systemId: string;
   poolTokens: number;
@@ -62,12 +69,13 @@ export interface UsageReport {
   cumulativeConsumed: number | null;
   cumulativeCredits: number | null;
   appVersion: string;
+  clientReportedAt?: number;
   reportedAt: number;
   observedIP?: string;
 }
 
 export interface ReleaseMeta {
-  type: 'app' | 'opencode';
+  type: 'app' | 'core';
   version: string;
   file: string;
   sha256: string;

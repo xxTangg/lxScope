@@ -545,9 +545,11 @@ textarea {
   font-size: 10px;
 }
 .bar-column i {
+  display: block;
   width: 100%;
   max-width: 28px;
-  min-height: 3px;
+  min-height: 0;
+  flex: 0 0 auto;
   border-radius: 5px 5px 0 0;
   background: var(--accent);
 }
@@ -555,7 +557,10 @@ textarea {
   background: #a1a1aa;
 }
 .empty-bar {
-  flex: 1;
+  height: 3px !important;
+  flex: 0 0 3px !important;
+  border: 1px solid var(--line);
+  background: transparent !important;
 }
 .chart-foot {
   display: flex;

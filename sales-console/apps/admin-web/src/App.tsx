@@ -81,13 +81,13 @@ type ReleaseMeta = {
   uploadedAt: number;
   uploadedBy: string;
 } | null;
-type ReleaseType = 'app' | 'opencode';
+type ReleaseType = 'app' | 'core';
 
 const releaseLabels: Record<ReleaseType, string> = {
   app: '龙信业务应用升级包',
-  opencode: 'AgentScope 平台升级包',
+  core: 'AgentScope 平台升级包',
 };
-const releaseTypes: ReleaseType[] = ['opencode', 'app'];
+const releaseTypes: ReleaseType[] = ['core', 'app'];
 
 function fromCanonical(value: unknown, key?: string): unknown {
   if (Array.isArray(value)) return value.map((item) => fromCanonical(item));
@@ -138,7 +138,7 @@ function fromCanonicalCustomer(value: unknown): Customer {
 }
 
 function canonicalReleaseType(type: ReleaseType): string {
-  return type === 'opencode' ? 'core' : 'app';
+  return type;
 }
 
 function normalizeCanonicalResponse<T>(path: string, value: unknown): T {
@@ -172,12 +172,6 @@ function normalizeCanonicalResponse<T>(path: string, value: unknown): T {
   if (path === '/api/v1/reconciliation' && Array.isArray(converted?.items)) return converted.items as T;
   if (path === '/api/v1/alerts' && Array.isArray(converted?.alerts)) return converted.alerts as T;
   if (path === '/api/v1/audit/events' && Array.isArray(converted?.events)) return converted.events as T;
-  if (path === '/api/v1/releases' && converted && 'core' in converted) {
-    return { ...converted, opencode: converted.core } as T;
-  }
-  if (/^\/api\/v1\/releases\/(?:app|core)$/.test(path) && converted?.type === 'core') {
-    return { ...converted, type: 'opencode' } as T;
-  }
   if (/^\/api\/v1\/upgrade-all\/(?:app|core)$/.test(path) && Array.isArray(converted?.results)) {
     return {
       ...converted,
@@ -211,7 +205,12 @@ async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
     }
   }
   headers.set('X-Request-ID', headers.get('X-Request-ID') ?? crypto.randomUUID());
-  const response = await fetch(url, { ...options, headers, credentials: 'include' });
+  const response = await fetch(url, {
+    ...options,
+    headers,
+    credentials: 'include',
+    cache: 'no-store',
+  });
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as {
       error?: string;
@@ -328,13 +327,18 @@ function Metric({
 function Overview({ onNavigate }: { onNavigate: (view: View) => void }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState('');
-  const load = () =>
-    api<Dashboard>('/api/v1/dashboard')
-      .then(setData)
-      .catch((reason) => setError(reason instanceof Error ? reason.message : '读取失败'));
+  const load = useCallback(
+    () =>
+      api<Dashboard>('/api/v1/dashboard')
+        .then(setData)
+        .catch((reason) => setError(reason instanceof Error ? reason.message : '读取失败')),
+    [],
+  );
   useEffect(() => {
     void load();
-  }, []);
+    const timer = window.setInterval(() => void load(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
   if (error)
     return (
       <Panel title="经营总览">
@@ -343,6 +347,7 @@ function Overview({ onNavigate }: { onNavigate: (view: View) => void }) {
     );
   if (!data) return <Loading />;
   const max = Math.max(...data.days.map((day) => day.amount), 1);
+  const todayAmount = data.days.at(-1)?.amount ?? 0;
   return (
     <div className="page-content">
       <PageHeading
@@ -393,14 +398,14 @@ function Overview({ onNavigate }: { onNavigate: (view: View) => void }) {
               >
                 <i
                   style={{ height: `${Math.max(4, (day.amount / max) * 100)}%` }}
-                  className={day.amount ? '' : 'empty-bar'}
+                  className={day.amount > 0 ? '' : 'empty-bar'}
                 />
               </div>
             ))}
           </div>
           <div className="chart-foot">
             <span>30 天前</span>
-            <span>今天</span>
+            <span>今天 · {money(todayAmount)}</span>
           </div>
         </Panel>
         <Panel title="需要关注" subtitle="优先处理今天的待办">
@@ -1136,6 +1141,7 @@ function Requests() {
       note?: string;
       createdAt: number;
       status: string;
+      requestId?: string;
     }>
   >([]);
   const [error, setError] = useState('');
@@ -1153,6 +1159,7 @@ function Requests() {
     id: string,
     action: 'approve' | 'reject',
     requestedAmount?: number | null,
+    requestId?: string,
   ) {
     const amount =
       action === 'approve'
@@ -1162,7 +1169,10 @@ function Requests() {
     try {
       await api(`/api/v1/recharge-requests/${id}/${action}`, {
         method: 'POST',
-        body: JSON.stringify(action === 'approve' ? { amount: Number(amount).toFixed(2) } : {}),
+        body: JSON.stringify({
+          ...(action === 'approve' ? { amount: Number(amount).toFixed(2) } : {}),
+          ...(requestId ? { request_id: requestId } : {}),
+        }),
       });
       load();
     } catch (reason) {
@@ -1207,12 +1217,17 @@ function Requests() {
                     <td className="actions">
                       <button
                         className="primary small"
-                        onClick={() => process(order.id, 'approve', order.requestedAmount)}
+                        onClick={() =>
+                          process(order.id, 'approve', order.requestedAmount, order.requestId)
+                        }
                       >
                         <Check size={14} />
                         批准
                       </button>
-                      <button className="danger small" onClick={() => process(order.id, 'reject')}>
+                      <button
+                        className="danger small"
+                        onClick={() => process(order.id, 'reject', undefined, order.requestId)}
+                      >
                         <X size={14} />
                         拒绝
                       </button>
@@ -1331,13 +1346,13 @@ function Alerts() {
 }
 
 function Upgrades() {
-  const [releases, setReleases] = useState<{ app: ReleaseMeta; opencode: ReleaseMeta }>({
+  const [releases, setReleases] = useState<{ app: ReleaseMeta; core: ReleaseMeta }>({
     app: null,
-    opencode: null,
+    core: null,
   });
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [files, setFiles] = useState<Record<string, File | null>>({ app: null, opencode: null });
-  const [versions, setVersions] = useState<Record<string, string>>({ app: '', opencode: '' });
+  const [files, setFiles] = useState<Record<string, File | null>>({ app: null, core: null });
+  const [versions, setVersions] = useState<Record<string, string>>({ app: '', core: '' });
   const [selected, setSelected] = useState<string[]>([]);
   const [message, setMessage] = useState('');
   const [upgradeVersion, setUpgradeVersion] = useState('');

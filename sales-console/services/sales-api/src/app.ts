@@ -36,6 +36,8 @@ import type { Customer, RechargeOrder, ReleaseMeta, Staff, UsageReport } from '.
 
 const APP_VERSION = '2.0.0';
 const RELEASE_MAX_BYTES = 300 * 1024 * 1024;
+const RECHARGE_CODE_TTL_MS = 60 * 60 * 1000;
+type ReleaseType = 'app' | 'core';
 const sessionStore = new Map<string, { staffID: string; expiresAt: number }>();
 const loginAttempts = new Map<string, { at: number; count: number }>();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: RELEASE_MAX_BYTES } });
@@ -43,6 +45,72 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: REL
 function requestID(req: Request): string {
   const header = String(req.headers['x-request-id'] ?? '').trim();
   return header && header.length <= 128 ? header : crypto.randomUUID();
+}
+
+function optionalRequestID(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const id = value.trim();
+  return id && id.length <= 128 ? id : undefined;
+}
+
+function requiredRequestID(req: Request): string {
+  const id = String(req.headers['x-request-id'] ?? '').trim();
+  if (!id || id.length > 128) {
+    throw Object.assign(new Error('必须提供有效的 X-Request-ID'), { status: 400 });
+  }
+  return id;
+}
+
+function requiredText(value: unknown, field: string, maxLength = 128): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || text.length > maxLength) {
+    throw Object.assign(new Error(`${field} 参数不合法`), { status: 400 });
+  }
+  return text;
+}
+
+function requiredContractMoney(value: unknown, field: string, allowZero = false): number {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!/^\d+\.\d{2}$/.test(text)) {
+    throw Object.assign(new Error(`${field} 必须是两位小数字符串`), { status: 400 });
+  }
+  const amount = Number(text);
+  if (
+    !Number.isFinite(amount) ||
+    amount < (allowZero ? 0 : Number.EPSILON) ||
+    amount > 10_000_000 ||
+    Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001
+  ) {
+    throw Object.assign(new Error(`${field} 参数不合法`), { status: 400 });
+  }
+  return amount;
+}
+
+function requiredContractAmount(value: unknown): number {
+  return requiredContractMoney(value, 'amount');
+}
+
+function requiredISOTime(value: unknown, field: string): number {
+  const text = typeof value === 'string' ? value.trim() : '';
+  const time = text ? Date.parse(text) : Number.NaN;
+  // Date.parse also accepts timezone-less strings; the integration contract
+  // requires an explicit UTC offset or `Z` so both sides agree on the instant.
+  if (!Number.isFinite(time) || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
+    throw Object.assign(new Error(`${field} 必须是有效的 ISO 8601 时间`), { status: 400 });
+  }
+  return time;
+}
+
+function requiredSystemQuery(req: Request, customer: Customer): string {
+  const value = req.query.system_id;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw Object.assign(new Error('必须提供 system_id 查询参数'), { status: 400 });
+  }
+  const systemID = value.trim();
+  if (!customer.systemId || systemID !== customer.systemId) {
+    throw Object.assign(new Error('system_id 与客户令牌不匹配'), { status: 400 });
+  }
+  return systemID;
 }
 
 function maskToken(value: string): string {
@@ -138,14 +206,14 @@ function canonicalTarget(url: string, method: string): string | null {
 
   if (/^\/api\/v1\/customers\/[^/]+\/api-token$/.test(pathname)) return null;
 
-  const releaseMatch = /^\/api\/v1\/releases\/(app|core|opencode)$/.exec(pathname);
+  const releaseMatch = /^\/api\/v1\/releases\/(app|core)$/.exec(pathname);
   if (releaseMatch) {
     const type = releaseTypeFromCanonical(releaseMatch[1]);
     return type ? `/api/releases/${type}${search}` : null;
   }
 
   const integrationReleaseMatch =
-    /^\/api\/v1\/integration\/releases\/(app|core|opencode)\/latest$/.exec(pathname);
+    /^\/api\/v1\/integration\/releases\/(app|core)\/latest$/.exec(pathname);
   if (integrationReleaseMatch) {
     const type = releaseTypeFromCanonical(integrationReleaseMatch[1]);
     return type ? `/api/customers/releases/${type}/latest${search}` : null;
@@ -247,27 +315,58 @@ function canonicalResponseFor(
     const converted = (toCanonical(body) ?? {}) as Record<string, unknown>;
     return {
       order_id: converted.id ?? converted.order_id,
+      system_id: converted.system_id ?? converted.systemId,
       status: 'pending',
       delivery_status: 'not_delivered',
       request_id: id,
     };
   }
+  if (errorBody?.detail) {
+    return { ...(toCanonical(body) as Record<string, unknown>), request_id: id };
+  }
   if (canonicalPath === '/api/v1/integration/recharge-requests/poll') {
-    const converted = (toCanonical(body) ?? {}) as Record<string, unknown>;
+    const raw = asRecord(body) ?? {};
+    const rawOrders = Array.isArray(raw.orders) ? raw.orders : [];
     return {
-      order_id: converted.id ?? converted.order_id ?? null,
-      code: converted.code ?? null,
+      orders: rawOrders.map((item) => {
+        const order = canonicalOrder(item);
+        return {
+          order_id: order.order_id,
+          system_id: order.system_id,
+          amount: order.amount,
+          tokens: order.tokens,
+          status: order.status,
+          delivery_status: order.delivery_status,
+          recharge_code: order.code,
+          expires_at: order.expires_at,
+        };
+      }),
       request_id: id,
     };
   }
   if (canonicalPath === '/api/v1/integration/recharge-codes/legacy') {
     return { ...(toCanonical(body) as Record<string, unknown>), request_id: id };
   }
-  if (
-    canonicalPath === '/api/v1/integration/usage-reports' ||
-    /^\/api\/v1\/integration\/recharge-requests\/[^/]+\/ack$/.test(canonicalPath)
-  ) {
-    return { ...(toCanonical(body) as Record<string, unknown>), request_id: id };
+  if (/^\/api\/v1\/integration\/recharge-requests\/[^/]+\/ack$/.test(canonicalPath)) {
+    const match = /^\/api\/v1\/integration\/recharge-requests\/([^/]+)\/ack$/.exec(canonicalPath);
+    return {
+      order_id: match?.[1],
+      status: 'approved',
+      delivery_status: 'delivered',
+      request_id: id,
+    };
+  }
+  if (canonicalPath === '/api/v1/integration/usage-reports') {
+    const converted = (toCanonical(body) ?? {}) as Record<string, unknown>;
+    return {
+      report_id: converted.report_id ?? converted.id,
+      system_id: converted.system_id,
+      accepted: converted.accepted ?? true,
+      reported_at: converted.reported_at,
+      cumulative_consumed_delta: converted.cumulative_consumed_delta ?? 0,
+      cumulative_credits_delta: converted.cumulative_credits_delta ?? 0,
+      request_id: id,
+    };
   }
   if (/^\/api\/v1\/customers\/[^/]+\/usage-reports$/.test(canonicalPath) && Array.isArray(body)) {
     return {
@@ -315,7 +414,7 @@ function canonicalResponseFor(
   }
   if (canonicalPath === '/api/v1/releases') {
     const converted = (toCanonical(body) ?? {}) as Record<string, unknown>;
-    const rawCore = asRecord(converted.opencode);
+    const rawCore = asRecord(converted.core);
     const core = rawCore ? { ...rawCore, type: 'core' } : null;
     return {
       app: converted.app ?? null,
@@ -323,15 +422,15 @@ function canonicalResponseFor(
       request_id: id,
     };
   }
-  if (/^\/api\/v1\/releases\/(app|core|opencode)$/.test(canonicalPath)) {
+  if (/^\/api\/v1\/releases\/(app|core)$/.test(canonicalPath)) {
     const converted = (toCanonical(body) ?? {}) as Record<string, unknown>;
     return {
       ...converted,
-      type: converted.type === 'opencode' ? 'core' : converted.type,
+      type: converted.type,
       request_id: id,
     };
   }
-  if (/^\/api\/v1\/upgrade-all\/(app|core|opencode)$/.test(canonicalPath)) {
+  if (/^\/api\/v1\/upgrade-all\/(app|core)$/.test(canonicalPath)) {
     const converted = (toCanonical(body) ?? {}) as Record<string, unknown>;
     return {
       ...converted,
@@ -360,7 +459,8 @@ function canonicalResponseFor(
 }
 
 function requiresCanonicalIdempotency(method: string, pathName: string): boolean {
-  if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return false;
+  if (method === 'GET') return pathName === '/api/v1/integration/recharge-requests/poll';
+  if (['HEAD', 'OPTIONS'].includes(method)) return false;
   return !['/api/v1/auth/login', '/api/v1/auth/logout'].includes(pathName);
 }
 
@@ -496,34 +596,60 @@ function validateAmount(value: unknown): number {
   return amount;
 }
 
+type CustomerCallOptions = {
+  requestID?: string;
+  idempotencyKey?: string;
+};
+
+function customerErrorMessage(payload: Record<string, unknown>, status: number): string {
+  const detail = payload.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        const record = asRecord(item);
+        return typeof record?.msg === 'string' ? record.msg : null;
+      })
+      .filter((item): item is string => Boolean(item));
+    if (messages.length) return messages.join('; ');
+  }
+  const detailRecord = asRecord(detail);
+  if (typeof detailRecord?.message === 'string' && detailRecord.message.trim()) {
+    return detailRecord.message;
+  }
+  return String(payload.error ?? `客户系统返回 HTTP ${status}`);
+}
+
 async function callCustomer(
   customer: Customer,
   endpoint: string,
   body: unknown,
+  options: CustomerCallOptions = {},
 ): Promise<Record<string, unknown>> {
   const base = customerUrl(customer);
   if (!base) throw new Error('客户未配置可连接地址');
+  const requestIDValue = options.requestID ?? crypto.randomUUID();
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${customer.apiToken}`,
+    'Content-Type': 'application/json',
+    'X-Request-ID': requestIDValue,
+  };
+  if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
   const response = await fetch(`${base}${endpoint}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${customer.apiToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    headers,
+    body: JSON.stringify(toCanonical(body)),
     signal: AbortSignal.timeout(120_000),
   });
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok)
-    throw new Error(
-      String(
-        (asRecord(payload.detail)?.message as string | undefined) ??
-          payload.error ??
-          `客户系统返回 HTTP ${response.status}`,
-      ),
-    );
+    throw new Error(customerErrorMessage(payload, response.status));
   return fromCanonical(payload) as Record<string, unknown>;
 }
 
 async function validateReleaseArchive(
   file: string,
-  type: 'app' | 'opencode',
+  type: ReleaseType,
   version: string,
   manifestType: string = type,
 ): Promise<void> {
@@ -554,12 +680,12 @@ async function validateReleaseArchive(
     if (manifest.type !== manifestType || manifest.version !== version)
       throw new Error('manifest 类型或版本与上传信息不一致');
     const required =
-      type === 'app' ? ['server.js', 'public/index.html'] : ['opencode-ai/bin/opencode.exe'];
+      type === 'app' ? ['server.js', 'public/index.html'] : ['agentscope/__init__.py'];
     for (const item of required) {
       try {
         await fs.access(path.join(staging, item));
       } catch {
-        throw new Error(`升级包缺少必要文件：${item}`);
+        throw new Error(`AgentScope 升级包缺少必要文件：${item}`);
       }
     }
   } finally {
@@ -724,7 +850,10 @@ export async function createApp(): Promise<express.Express> {
             return;
           }
           res.status(previous.statusCode);
-          originalJson(previous.responseBody);
+          const replayBody = asRecord(previous.responseBody);
+          originalJson(
+            replayBody ? { ...replayBody, request_id: id } : previous.responseBody,
+          );
           return;
         }
         res.once('finish', () => {
@@ -740,10 +869,9 @@ export async function createApp(): Promise<express.Express> {
       }
       req.body = fromCanonical(req.body);
       req.headers['x-canonical-api'] = '1';
-      const canonicalRelease = /^\/api\/v1\/releases\/(app|core|opencode)$/.exec(canonicalPath);
+      const canonicalRelease = /^\/api\/v1\/releases\/(app|core)$/.exec(canonicalPath);
       if (canonicalRelease) {
-        req.headers['x-contract-artifact-type'] =
-          canonicalRelease[1] === 'opencode' ? 'core' : canonicalRelease[1];
+        req.headers['x-contract-artifact-type'] = canonicalRelease[1];
       }
       if (!isDirectCanonicalPath(canonicalPath, req.method)) {
         if (req.method === 'PATCH' && canonicalPath === '/api/v1/settings') req.method = 'PUT';
@@ -774,10 +902,12 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const { publicKey } = await getSigningKeyPair();
+      const publicKeyRequestID =
+        req.headers['x-canonical-api'] === '1' ? requiredRequestID(req) : requestID(req);
       res.json({
         publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         systemId: customer.systemId,
-        requestId: crypto.randomUUID(),
+        requestId: publicKeyRequestID,
       });
     } catch (error) {
       next(error);
@@ -831,6 +961,9 @@ export async function createApp(): Promise<express.Express> {
 
   app.post('/api/v1/customers/:id/verify-connection', requireStaff, async (req, res, next) => {
     try {
+      // The canonical contract requires one request ID to be propagated through
+      // the hub -> customer ping and echoed by the hub response.
+      const verifyRequestID = requiredRequestID(req);
       const customer = (await db.customers()).find((item) => item.id === req.params.id);
       if (!customer) {
         res.status(404).json({ detail: { code: 'customer_not_found', message: '客户不存在' } });
@@ -844,12 +977,14 @@ export async function createApp(): Promise<express.Express> {
           inbound: false,
           inboundError: '客户尚未配置可连接地址',
           checkedAt: Date.now(),
-          requestId: crypto.randomUUID(),
+          requestId: verifyRequestID,
         });
         return;
       }
       try {
-        const ping = await callCustomer(customer, '/integration/sales/v1/ping', {});
+        const ping = await callCustomer(customer, '/integration/sales/v1/ping', {}, {
+          requestID: verifyRequestID,
+        });
         res.json({
           customerId: customer.id,
           systemId: customer.systemId,
@@ -858,7 +993,7 @@ export async function createApp(): Promise<express.Express> {
           systemName: customer.name,
           ping,
           checkedAt: Date.now(),
-          requestId: crypto.randomUUID(),
+          requestId: verifyRequestID,
         });
       } catch (error) {
         res.json({
@@ -868,7 +1003,7 @@ export async function createApp(): Promise<express.Express> {
           inbound: false,
           inboundError: error instanceof Error ? error.message : '连接失败',
           checkedAt: Date.now(),
-          requestId: crypto.randomUUID(),
+          requestId: verifyRequestID,
         });
       }
     } catch (error) {
@@ -940,23 +1075,46 @@ export async function createApp(): Promise<express.Express> {
         res.status(401).json({ error: '无效的客户访问令牌' });
         return;
       }
-      const requestedSystemId = String(req.body.systemId ?? '').trim();
-      if (requestedSystemId && customer.systemId && requestedSystemId !== customer.systemId) {
+      const strictContract = req.headers['x-canonical-api'] === '1';
+      const requestIDValue = strictContract ? requiredRequestID(req) : requestID(req);
+      const requestedSystemId = strictContract
+        ? requiredText(req.body.systemId, 'system_id')
+        : String(req.body.systemId ?? '').trim();
+      if (
+        (strictContract && (!customer.systemId || requestedSystemId !== customer.systemId)) ||
+        (!strictContract &&
+          requestedSystemId &&
+          customer.systemId &&
+          requestedSystemId !== customer.systemId)
+      ) {
         res.status(400).json({ error: '系统 ID 与客户令牌不匹配' });
         return;
       }
-      const amount = Number(req.body.amount);
+      const amount = strictContract ? requiredContractAmount(req.body.amount) : validateAmount(req.body.amount);
+      const note = strictContract
+        ? requiredText(req.body.note, 'note', 500)
+        : String(req.body.note ?? '').slice(0, 500);
+      const requestedAt =
+        strictContract || req.body.requestedAt !== undefined
+          ? requiredISOTime(req.body.requestedAt, 'requested_at')
+          : undefined;
+      if (req.body.requestID !== undefined && req.body.requestID !== requestIDValue) {
+        res.status(400).json({ error: 'request_id 必须与 X-Request-ID 一致' });
+        return;
+      }
       const order: RechargeOrder = {
         id: crypto.randomUUID(),
+        requestID: requestIDValue,
         customerID: customer.id,
         method: 'online',
         status: 'pending',
-        requestedAmount: Number.isFinite(amount) && amount > 0 ? amount : null,
-        note: String(req.body.note ?? '').slice(0, 500),
+        requestedAt,
+        requestedAmount: amount,
+        note,
         createdAt: Date.now(),
       };
       await updateJson(db.files.orders, [], (items: RechargeOrder[]) => [order, ...items]);
-      res.status(201).json({ ok: true, id: order.id });
+      res.status(201).json({ ok: true, id: order.id, systemId: customer.systemId });
     } catch (error) {
       next(error);
     }
@@ -969,21 +1127,59 @@ export async function createApp(): Promise<express.Express> {
         res.status(401).json({ error: '无效的客户访问令牌' });
         return;
       }
+      const strictContract = req.headers['x-canonical-api'] === '1';
+      if (strictContract) {
+        requiredRequestID(req);
+        requiredSystemQuery(req, customer);
+      }
       const ready = await serial(async () => {
         const items = await db.orders();
-        const found =
-          items.find(
-            (item) =>
-              item.customerID === customer.id && item.status === 'approved' && !item.delivered,
-          ) ?? null;
-        if (found) {
-          found.deliveryAttempts = (found.deliveryAttempts ?? 0) + 1;
-          found.lastDeliveryAt = Date.now();
+        const now = Date.now();
+        const found = strictContract
+          ? items.filter(
+              (item) =>
+                item.customerID === customer.id &&
+                item.status === 'approved' &&
+                !item.delivered &&
+                Boolean(
+                  item.code &&
+                    item.amount &&
+                    item.tokens &&
+                    item.expiresAt &&
+                    item.expiresAt > now,
+                ),
+            )
+          : items.filter(
+              (item) =>
+                item.customerID === customer.id && item.status === 'approved' && !item.delivered,
+            ).slice(0, 1);
+        if (found.length) {
+          const now = Date.now();
+          for (const item of found) {
+            item.deliveryAttempts = (item.deliveryAttempts ?? 0) + 1;
+            item.lastDeliveryAt = now;
+          }
           await writeJson(db.files.orders, items);
         }
         return found;
       });
-      res.json(ready ? { code: ready.code, id: ready.id } : {});
+      if (!strictContract) {
+        const first = ready[0];
+        res.json(first ? { code: first.code, id: first.id } : {});
+        return;
+      }
+      res.json({
+        orders: ready.map((order) => ({
+          id: order.id,
+          systemId: customer.systemId,
+          amount: order.amount,
+          tokens: order.tokens,
+          status: order.status,
+          deliveryStatus: order.delivered ? 'delivered' : 'not_delivered',
+          code: order.code,
+          expiresAt: order.expiresAt,
+        })),
+      });
     } catch (error) {
       next(error);
     }
@@ -1006,10 +1202,13 @@ export async function createApp(): Promise<express.Express> {
           item.code,
       )) {
         try {
+          const codeParts = String(order.code).split('.');
+          const payloadPart = codeParts[0] === 'LXRC2' ? codeParts[1] : codeParts[0];
           const payload = JSON.parse(
-            Buffer.from(String(order.code).split('.')[0], 'base64url').toString(),
-          ) as { systemId?: string; nonce?: string };
-          if (!payload.systemId && typeof payload.nonce === 'string') nonces.push(payload.nonce);
+            Buffer.from(String(payloadPart), 'base64url').toString(),
+          ) as { systemId?: string; system_id?: string; nonce?: string };
+          if (!payload.systemId && !payload.system_id && typeof payload.nonce === 'string')
+            nonces.push(payload.nonce);
         } catch {
           /* 忽略不符合历史格式的充值码 */
         }
@@ -1027,6 +1226,27 @@ export async function createApp(): Promise<express.Express> {
         res.status(401).json({ error: '无效的客户访问令牌' });
         return;
       }
+      const strictContract = req.headers['x-canonical-api'] === '1';
+      if (strictContract) requiredRequestID(req);
+      const operationID = strictContract
+        ? requiredText(req.body.operationID, 'operation_id')
+        : String(req.body.operationID ?? '').trim();
+      const systemID = strictContract
+        ? requiredText(req.body.systemId, 'system_id')
+        : String(req.body.systemId ?? '').trim();
+      const redemptionOperationID = strictContract
+        ? requiredText(req.body.redemptionOperationID, 'redemption_operation_id')
+        : String(req.body.redemptionOperationID ?? '').trim();
+      const ledgerID = strictContract
+        ? requiredText(req.body.ledgerID, 'ledger_id')
+        : String(req.body.ledgerID ?? '').trim();
+      if (
+        (strictContract && (!customer.systemId || systemID !== customer.systemId)) ||
+        (!strictContract && systemID && customer.systemId && systemID !== customer.systemId)
+      ) {
+        res.status(400).json({ error: 'system_id 与客户令牌不匹配' });
+        return;
+      }
       let found = false;
       await updateJson(db.files.orders, [], (items: RechargeOrder[]) =>
         items.map((item) => {
@@ -1036,7 +1256,14 @@ export async function createApp(): Promise<express.Express> {
             item.status === 'approved'
           ) {
             found = true;
-            return { ...item, delivered: true, deliveredAt: item.deliveredAt ?? Date.now() };
+            return {
+              ...item,
+              delivered: true,
+              deliveredAt: item.deliveredAt ?? Date.now(),
+              ackOperationID: (item.ackOperationID ?? operationID) || undefined,
+              redemptionOperationID: (item.redemptionOperationID ?? redemptionOperationID) || undefined,
+              ledgerID: (item.ledgerID ?? ledgerID) || undefined,
+            };
           }
           return item;
         }),
@@ -1058,21 +1285,37 @@ export async function createApp(): Promise<express.Express> {
         res.status(401).json({ error: '无效的客户访问令牌' });
         return;
       }
+      const strictContract = req.headers['x-canonical-api'] === '1';
+      const reportRequestID = strictContract ? requiredRequestID(req) : requestID(req);
+      const systemID = strictContract
+        ? requiredText(req.body.systemId, 'system_id')
+        : String(req.body.systemId ?? '').trim();
       const poolTokens = Number(req.body.poolTokens);
-      const totalRecharged = Number(req.body.totalRecharged);
+      const totalRecharged = strictContract
+        ? requiredContractMoney(req.body.totalRecharged, 'total_recharged', true)
+        : Number(req.body.totalRecharged);
+      const appVersion = strictContract
+        ? requiredText(req.body.appVersion, 'app_version')
+        : String(req.body.appVersion ?? '');
+      const clientReportedAt =
+        strictContract || req.body.clientReportedAt !== undefined
+          ? requiredISOTime(req.body.clientReportedAt, 'client_reported_at')
+          : undefined;
       if (
         !Number.isSafeInteger(poolTokens) ||
         poolTokens < 0 ||
         !Number.isFinite(totalRecharged) ||
         totalRecharged < 0 ||
-        (customer.systemId && req.body.systemId && customer.systemId !== req.body.systemId)
+        (strictContract && (!customer.systemId || systemID !== customer.systemId)) ||
+        (!strictContract && systemID && customer.systemId && customer.systemId !== systemID)
       ) {
         res.status(400).json({ error: '参数不合法' });
         return;
       }
       const report: UsageReport = {
+        id: strictContract ? crypto.randomUUID() : undefined,
         customerID: customer.id,
-        systemId: String(req.body.systemId ?? ''),
+        systemId: strictContract ? customer.systemId : systemID,
         poolTokens,
         totalRecharged,
         cumulativeConsumed:
@@ -1083,12 +1326,14 @@ export async function createApp(): Promise<express.Express> {
           Number.isSafeInteger(req.body.cumulativeCredits) && req.body.cumulativeCredits >= 0
             ? Number(req.body.cumulativeCredits)
             : null,
-        appVersion: String(req.body.appVersion ?? ''),
+        appVersion,
+        clientReportedAt,
         reportedAt: Date.now(),
         observedIP: req.socket.remoteAddress ?? undefined,
       };
-      await serial(async () => {
+      const result = await serial(async () => {
         const reports = await db.reports();
+        const previous = reports.find((item) => item.customerID === customer.id);
         const customers = await db.customers();
         const target = customers.find((item) => item.id === customer.id);
         if (target) {
@@ -1100,8 +1345,28 @@ export async function createApp(): Promise<express.Express> {
         }
         await writeJson(db.files.reports, [report, ...reports].slice(0, 20_000));
         await writeJson(db.files.customers, customers);
+        const previousConsumed = previous?.cumulativeConsumed ?? null;
+        const previousCredits = previous?.cumulativeCredits ?? null;
+        return {
+          reportId: report.id,
+          systemId: report.systemId,
+          accepted: true,
+          reportedAt: report.reportedAt,
+          cumulativeConsumedDelta:
+            report.cumulativeConsumed !== null && previousConsumed !== null
+              ? report.cumulativeConsumed - previousConsumed
+              : 0,
+          cumulativeCreditsDelta:
+            report.cumulativeCredits !== null && previousCredits !== null
+              ? report.cumulativeCredits - previousCredits
+              : 0,
+        };
       });
-      res.json({ ok: true });
+      if (strictContract) {
+        res.json({ ...result, requestId: reportRequestID });
+      } else {
+        res.json({ ok: true });
+      }
     } catch (error) {
       next(error);
     }
@@ -1114,8 +1379,8 @@ export async function createApp(): Promise<express.Express> {
         res.status(401).json({ error: '无效的客户访问令牌' });
         return;
       }
-      const type = req.params.type as 'app' | 'opencode';
-      if (!['app', 'opencode'].includes(type)) {
+      const type = releaseTypeFromCanonical(req.params.type);
+      if (!type) {
         res.status(404).json({ error: '升级包类型不存在' });
         return;
       }
@@ -1137,12 +1402,19 @@ export async function createApp(): Promise<express.Express> {
         res.status(401).json({ error: '无效的客户访问令牌' });
         return;
       }
+      const outboundRequestID =
+        req.headers['x-canonical-api'] === '1' ? requiredRequestID(req) : requestID(req);
       if (!customerUrl(customer)) {
         res.json({ outbound: true, inbound: false, inboundError: '客户尚未配置 IP' });
         return;
       }
       try {
-        const ping = await callCustomer(customer, '/integration/sales/v1/ping', {});
+        const ping = await callCustomer(
+          customer,
+          '/integration/sales/v1/ping',
+          {},
+          { requestID: outboundRequestID },
+        );
         res.json({ outbound: true, inbound: true, systemName: customer.name, ping });
       } catch (error) {
         res.json({
@@ -1418,12 +1690,18 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const newPassword = `${crypto.randomBytes(9).toString('base64').replace(/[+/=]/g, '').slice(0, 12)}aA1`;
-      await callCustomer(customer, '/integration/sales/v1/admin-password-resets', {
-        operationId: crypto.randomUUID(),
-        username,
-        newPassword,
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-      });
+      const operationID = crypto.randomUUID();
+      await callCustomer(
+        customer,
+        '/integration/sales/v1/admin-password-resets',
+        {
+          operationId: operationID,
+          username,
+          newPassword,
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        },
+        { idempotencyKey: operationID },
+      );
       await audit(req.staff!, req);
       res.json({ ok: true, username, newPassword });
     } catch (error) {
@@ -1459,7 +1737,8 @@ export async function createApp(): Promise<express.Express> {
         const { tokenExchangeRate } = await db.settings();
         const tokens = Math.round(amount * tokenExchangeRate);
         const id = crypto.randomUUID();
-        const code = await signRechargeCode(amount, tokens, customer.systemId, id);
+        const expiresAt = Date.now() + RECHARGE_CODE_TTL_MS;
+        const code = await signRechargeCode(amount, tokens, customer.systemId, id, expiresAt);
         customer.totalRecharged += amount;
         customer.updatedAt = Date.now();
         const order: RechargeOrder = {
@@ -1471,6 +1750,7 @@ export async function createApp(): Promise<express.Express> {
           method: 'code',
           status: 'issued',
           code,
+          expiresAt,
           createdAt: Date.now(),
           processedBy: req.staff!.username,
         };
@@ -1521,6 +1801,18 @@ export async function createApp(): Promise<express.Express> {
           throw Object.assign(new Error('申请不存在'), { status: 404 });
         if (order.status !== 'pending')
           throw Object.assign(new Error('申请已处理'), { status: 409 });
+        const strictContract = req.headers['x-canonical-api'] === '1';
+        if (strictContract) requiredRequestID(req);
+        const providedRequestID = strictContract
+          ? requiredText(req.body.requestID, 'request_id')
+          : optionalRequestID(req.body.requestID);
+        if (providedRequestID && order.requestID && providedRequestID !== order.requestID)
+          throw Object.assign(new Error('request_id 与充值申请不匹配'), { status: 409 });
+        if (strictContract && !order.requestID)
+          throw Object.assign(new Error('原始充值申请缺少 request_id'), { status: 409 });
+        order.requestID = providedRequestID ?? order.requestID ?? requestID(req);
+        const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+        if (reason) order.decisionReason = reason.slice(0, 500);
         if (action === 'reject') {
           order.status = 'rejected';
           order.processedAt = Date.now();
@@ -1528,16 +1820,26 @@ export async function createApp(): Promise<express.Express> {
           await writeJson(db.files.orders, orders);
           return order;
         }
-        const amount = validateAmount(req.body.amount);
+        const amount = strictContract
+          ? requiredContractAmount(req.body.amount)
+          : validateAmount(req.body.amount);
         const customers = await db.customers();
         const customer = customers.find((item) => item.id === order.customerID);
         if (!customer || customer.status === 'disabled' || !customer.systemId)
           throw Object.assign(new Error('客户不可用或缺少系统 ID'), { status: 400 });
         const { tokenExchangeRate } = await db.settings();
+        const expiresAt = Date.now() + RECHARGE_CODE_TTL_MS;
         order.status = 'approved';
         order.amount = amount;
         order.tokens = Math.round(amount * tokenExchangeRate);
-        order.code = await signRechargeCode(amount, order.tokens, customer.systemId, order.id);
+        order.expiresAt = expiresAt;
+        order.code = await signRechargeCode(
+          amount,
+          order.tokens,
+          customer.systemId,
+          order.id,
+          expiresAt,
+        );
         order.processedAt = Date.now();
         order.processedBy = req.staff!.username;
         customer.totalRecharged += amount;
@@ -1645,15 +1947,15 @@ export async function createApp(): Promise<express.Express> {
 
   app.get('/api/releases', async (_req, res, next) => {
     try {
-      res.json({ app: await dbRelease('app'), opencode: await dbRelease('opencode') });
+      res.json({ app: await dbRelease('app'), core: await dbRelease('core') });
     } catch (error) {
       next(error);
     }
   });
   app.post('/api/releases/:type', upload.single('file'), async (req, res, next) => {
     try {
-      const type = req.params.type as 'app' | 'opencode';
-      if (!['app', 'opencode'].includes(type) || !req.file) {
+      const type = releaseTypeFromCanonical(req.params.type);
+      if (!type || !req.file) {
         res.status(400).json({ error: '请上传有效升级包和类型' });
         return;
       }
@@ -1697,7 +1999,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.post('/api/upgrade-all/:type', async (req, res, next) => {
     try {
-      const type = req.params.type as 'app' | 'opencode';
+      const type = releaseTypeFromCanonical(req.params.type);
       const meta = await dbRelease(type);
       if (!meta) {
         res.status(400).json({ error: '还没有上传过这个类型的升级包' });
@@ -1723,17 +2025,23 @@ export async function createApp(): Promise<express.Express> {
         `${req.protocol}://${req.get('host')}`;
       for (const customer of customers) {
         try {
-        const artifactType = type === 'opencode' ? 'core' : 'app';
-        await callCustomer(customer, `/integration/sales/v1/upgrades/${artifactType}`, {
-          operationId: crypto.randomUUID(),
-          artifactType,
-          version: meta.version,
-          sha256: `sha256:${meta.sha256}`,
-          sizeBytes: meta.size,
-          downloadUrl: `${publicBase}/api/v1/integration/releases/${artifactType}/latest`,
-          issuedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-        });
+          const artifactType = type;
+          const operationID = crypto.randomUUID();
+          await callCustomer(
+            customer,
+            `/integration/sales/v1/upgrades/${artifactType}`,
+            {
+              operationId: operationID,
+              artifactType,
+              version: meta.version,
+              sha256: `sha256:${meta.sha256}`,
+              sizeBytes: meta.size,
+              downloadUrl: `${publicBase}/api/v1/integration/releases/${artifactType}/latest`,
+              issuedAt: new Date().toISOString(),
+              expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+            },
+            { idempotencyKey: operationID },
+          );
           let confirmed = false;
           for (let attempt = 0; attempt < 30; attempt += 1) {
             await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -1775,7 +2083,7 @@ export async function createApp(): Promise<express.Express> {
         ? Number((error as { status?: number }).status)
         : 500;
     const actualStatus = status || 500;
-    if (req.url.startsWith('/api/v1')) {
+    if (req.url.startsWith('/api/v1') || req.headers['x-canonical-api'] === '1') {
       res.status(actualStatus).json({
         detail: {
           code:
@@ -1795,6 +2103,8 @@ export async function createApp(): Promise<express.Express> {
   return app;
 }
 
-async function dbRelease(type: 'app' | 'opencode') {
-  return readJson<ReleaseMeta | null>(path.join(RELEASE_DIR, `${type}.json`), null);
+async function dbRelease(type: ReleaseType | null) {
+  if (!type) return null;
+  const current = await readJson<ReleaseMeta | null>(path.join(RELEASE_DIR, `${type}.json`), null);
+  return current ? { ...current, type } : null;
 }

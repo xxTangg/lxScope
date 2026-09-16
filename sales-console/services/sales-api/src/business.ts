@@ -28,20 +28,22 @@ export async function signRechargeCode(
   tokens: number,
   systemId: string,
   orderId: string,
+  expiresAt: number,
 ): Promise<string> {
   const payload = {
-    amount,
+    system_id: systemId,
+    amount: amount.toFixed(2),
     tokens,
-    systemId,
-    version: 2,
-    orderId,
+    version: '1',
+    order_id: orderId,
     nonce: crypto.randomUUID(),
-    issuedAt: Date.now(),
+    issued_at: new Date().toISOString(),
+    expires_at: new Date(expiresAt).toISOString(),
   };
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const { privateKey } = await getSigningKeyPair();
   const signature = crypto.sign(null, Buffer.from(body), privateKey).toString('base64url');
-  return `${body}.${signature}`;
+  return `LXRC2.${body}.${signature}`;
 }
 
 export function measuredConsumption(points: UsageReport[]): number | null {

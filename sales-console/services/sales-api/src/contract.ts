@@ -80,12 +80,12 @@ export function toCanonical(value: unknown, key?: string): unknown {
   return value;
 }
 
-export function releaseTypeFromCanonical(value: string): 'app' | 'opencode' | null {
+export function releaseTypeFromCanonical(value: string): 'app' | 'core' | null {
   if (value === 'app') return 'app';
-  if (value === 'core' || value === 'opencode') return 'opencode';
+  if (value === 'core') return 'core';
   return null;
 }
 
-export function releaseTypeToCanonical(value: 'app' | 'opencode'): 'app' | 'core' {
-  return value === 'app' ? 'app' : 'core';
+export function releaseTypeToCanonical(value: 'app' | 'core'): 'app' | 'core' {
+  return value;
 }
