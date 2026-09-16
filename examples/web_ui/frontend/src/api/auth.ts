@@ -3,6 +3,9 @@ import { clearAccessToken, client, setAccessToken } from './client';
 export interface AuthUser {
 	id: string;
 	username: string;
+	role: 'user' | 'admin';
+	status: 'active' | 'locked' | 'banned' | 'deleted';
+	capabilities: string[];
 }
 
 export interface LoginResponse {

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Credential router — CRUD endpoints for API key credentials."""
-from fastapi import APIRouter, Depends, status
+from collections.abc import Awaitable, Callable
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..access import ResourceKind
 from ..deps import (
@@ -26,12 +28,38 @@ credential_router = APIRouter(
 )
 
 
+async def _require_credential_manager(
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+) -> str:
+    """Apply an optional application-level credential-management policy.
+
+    AgentScope remains reusable without any role system. Deployments that
+    centrally manage provider credentials can install an async checker on
+    ``app.state.credential_access_check``; standalone deployments keep the
+    legacy behavior by leaving it unset.
+    """
+    checker: Callable[[str], Awaitable[bool]] | None = getattr(
+        request.app.state,
+        "credential_access_check",
+        None,
+    )
+    if checker is not None and not await checker(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can manage credentials.",
+        )
+    return user_id
+
+
 @credential_router.get(
     "/schemas",
     response_model=ListCredentialSchemasResponse,
     summary="List JSON schemas for all credential types",
 )
-async def list_credential_schemas() -> ListCredentialSchemasResponse:
+async def list_credential_schemas(
+    _: str = Depends(_require_credential_manager),
+) -> ListCredentialSchemasResponse:
     """Return JSON schemas for all registered credential types.
 
     Used by the frontend to render credential creation forms dynamically.
@@ -85,7 +113,7 @@ async def list_credentials(
 )
 async def create_credential(
     body: CreateCredentialRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(_require_credential_manager),
     storage: StorageBase = Depends(get_storage),
 ) -> CreateCredentialResponse:
     """Store a new credential.
@@ -113,7 +141,7 @@ async def create_credential(
 async def update_credential(
     credential_id: str,
     body: UpdateCredentialRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(_require_credential_manager),
     storage: StorageBase = Depends(get_storage),
     access: ResourceAccessService = Depends(get_resource_access_service),
 ) -> CredentialView:
@@ -169,7 +197,7 @@ async def update_credential(
 )
 async def delete_credential(
     credential_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(_require_credential_manager),
     storage: StorageBase = Depends(get_storage),
     access: ResourceAccessService = Depends(get_resource_access_service),
 ) -> None:

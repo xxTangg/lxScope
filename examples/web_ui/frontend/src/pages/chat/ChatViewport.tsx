@@ -57,6 +57,7 @@ import { useMessages } from '@/hooks/useMessages';
 import { useSessions } from '@/hooks/useSessions';
 import { useWorkspace } from '@/hooks/useWorkspace.ts';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
+import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { formatApiErrorForAlert } from '@/lib/api-error';
 
@@ -200,6 +201,7 @@ function closePanelInLayout(layout: PanelKey[][], key: PanelKey): PanelKey[][] {
  */
 export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatViewportProps) {
 	const { t } = useTranslation();
+	const { user } = useAuth();
 	const { sessions, refetch: refetchSessions } = useSessions(agentId);
 	const { groups } = useAvailableModels();
 	const { mediaTypes: parserAttachmentMediaTypes, extensions: parserAttachmentExtensions } =
@@ -859,7 +861,11 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 										className="font-mono text-muted-foreground hover:text-foreground"
 										value={selectedModel}
 										onChange={handleLlmChange}
-										onAddCredential={() => setCredentialOpen(true)}
+										onAddCredential={
+										user?.role === 'admin'
+											? () => setCredentialOpen(true)
+											: undefined
+									}
 										refetchTrigger={credentialRefetchTrigger}
 										disabled={configPending}
 									/>
@@ -996,11 +1002,13 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 					<PanelDock layout={panelLayout} panels={panels} onClosePanel={closePanel} />
 				</ResizablePanelGroup>
 			</main>
-			<CreateCredentialDialog
-				open={credentialOpen}
-				onOpenChange={setCredentialOpen}
-				onCreated={() => setCredentialRefetchTrigger((n) => n + 1)}
-			/>
+			{user?.role === 'admin' && (
+				<CreateCredentialDialog
+					open={credentialOpen}
+					onOpenChange={setCredentialOpen}
+					onCreated={() => setCredentialRefetchTrigger((n) => n + 1)}
+				/>
+			)}
 		</>
 	);
 }

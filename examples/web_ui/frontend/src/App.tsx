@@ -23,6 +23,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { queryClient } from '@/lib/query-client';
 import { AccountPage } from '@/pages/account';
+import { AdminPage } from '@/pages/admin';
 import { ChannelPage } from '@/pages/channel';
 import { ChatPage } from '@/pages/chat';
 import { CredentialPage } from '@/pages/credential';
@@ -63,6 +64,11 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 	return children;
 }
 
+function AdminOnlyRoute({ children }: { children: React.ReactNode }) {
+	const { user } = useAuth();
+	return user?.role === 'admin' ? children : <Navigate to="/chat" replace />;
+}
+
 const router = createBrowserRouter([
 	{
 		element: (
@@ -86,7 +92,14 @@ const router = createBrowserRouter([
 					},
 					{ path: '/schedule', element: <SchedulePage /> },
 					{ path: '/channel', element: <ChannelPage /> },
-					{ path: '/credential', element: <CredentialPage /> },
+					{
+						path: '/credential',
+						element: (
+							<AdminOnlyRoute>
+								<CredentialPage />
+							</AdminOnlyRoute>
+						),
+					},
 					{ path: '/mcp', element: <MCPHubPage /> },
 					{ path: '/mcp/:hubId', element: <MCPHubPage /> },
 					{ path: '/skill', element: <SkillHubPage /> },
@@ -94,6 +107,7 @@ const router = createBrowserRouter([
 					{ path: '/knowledge', element: <KnowledgePage /> },
 					{ path: '/knowledge/:kbId', element: <KnowledgePage /> },
 					{ path: '/account', element: <AccountPage /> },
+					{ path: '/admin', element: <AdminPage /> },
 				],
 			},
 		],

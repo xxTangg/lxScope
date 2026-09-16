@@ -10,6 +10,7 @@ import { Separator } from '@/components/ui/separator';
 import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { formatNumber } from '@/utils/common';
+import { PlanAccountCard } from '@/features/longxin-admin';
 
 export function AccountPage() {
 	const { t } = useTranslation();
@@ -83,6 +84,8 @@ export function AccountPage() {
 						</div>
 					</CardContent>
 				</Card>
+
+				<PlanAccountCard />
 
 				<Card>
 					<CardHeader>

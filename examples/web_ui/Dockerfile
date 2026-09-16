@@ -1,4 +1,4 @@
-FROM docker.m.daocloud.io/library/node:22-alpine AS build
+FROM node:20-bookworm-slim AS build
 
 WORKDIR /app
 RUN corepack enable

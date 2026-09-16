@@ -43,6 +43,7 @@ import {
 	SidebarMenuItem,
 } from '@/components/ui/sidebar.tsx';
 import { useKnowledgeBases } from '@/hooks/useKnowledgeBases.ts';
+import { useAuth } from '@/hooks/useAuth';
 
 interface DetailPanelProps {
 	knowledgeBase?: KnowledgeBaseView;
@@ -190,6 +191,7 @@ export const KnowledgePage = () => {
 	const navigate = useNavigate();
 	const { kbId: urlKbId } = useParams<{ kbId?: string }>();
 	const { t } = useTranslation();
+	const { user } = useAuth();
 
 	const { knowledgeBases, remove, refetch } = useKnowledgeBases();
 	const [selectedKbId, setSelectedKbId] = useState<string | undefined>(urlKbId);
@@ -348,14 +350,18 @@ export const KnowledgePage = () => {
 				open={createDialogOpen}
 				onOpenChange={setCreateDialogOpen}
 				onCreated={handleCreated}
-				onAddCredential={() => setCredentialOpen(true)}
+				onAddCredential={
+					user?.role === 'admin' ? () => setCredentialOpen(true) : undefined
+				}
 				credentialRefetchTrigger={credentialRefetchTrigger}
 			/>
-			<CreateCredentialDialog
-				open={credentialOpen}
-				onOpenChange={setCredentialOpen}
-				onCreated={() => setCredentialRefetchTrigger((n) => n + 1)}
-			/>
+			{user?.role === 'admin' && (
+				<CreateCredentialDialog
+					open={credentialOpen}
+					onOpenChange={setCredentialOpen}
+					onCreated={() => setCredentialRefetchTrigger((n) => n + 1)}
+				/>
+			)}
 			<EditKnowledgeBaseDialog
 				open={editTarget !== null}
 				onOpenChange={(open) => {

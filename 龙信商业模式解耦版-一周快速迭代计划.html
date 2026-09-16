@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>龙信商业模式解耦版｜一周快速迭代计划</title>
+  <style>
+    :root {
+      --ink: #172235;
+      --muted: #65748b;
+      --line: #e1e7ef;
+      --bg: #f4f7fb;
+      --paper: #fff;
+      --blue: #246bfe;
+      --blue-dark: #163b73;
+      --blue-soft: #eaf1ff;
+      --orange: #ed7b24;
+      --orange-soft: #fff2e7;
+      --green: #159667;
+      --green-soft: #e8f8f0;
+      --red: #c9455a;
+      --shadow: 0 18px 50px rgba(22, 46, 83, .08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--bg); font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; line-height: 1.65; }
+    .page { max-width: 1220px; margin: 0 auto; padding: 26px 20px 64px; }
+    .hero { position: relative; overflow: hidden; padding: 46px 48px 42px; border-radius: 26px; color: #fff; background: linear-gradient(125deg, #132844, #1b4d8e 65%, #2b7bf0); box-shadow: var(--shadow); }
+    .hero::after { content: ""; position: absolute; width: 430px; height: 430px; right: -130px; top: -205px; border: 1px solid rgba(255,255,255,.2); border-radius: 50%; box-shadow: 0 0 0 42px rgba(255,255,255,.05), 0 0 0 84px rgba(255,255,255,.04); }
+    .hero-content { position: relative; z-index: 1; max-width: 850px; }
+    .eyebrow { color: var(--blue); font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .hero .eyebrow { color: #b3d0ff; }
+    h1 { max-width: 830px; margin: 12px 0 15px; font-size: clamp(31px, 5vw, 57px); line-height: 1.13; letter-spacing: -.045em; }
+    h2 { margin: 8px 0 15px; font-size: 28px; line-height: 1.25; letter-spacing: -.025em; }
+    h3 { margin: 0 0 8px; font-size: 17px; }
+    p { margin: 0 0 12px; }
+    .hero-sub { max-width: 760px; color: #d9e7ff; font-size: 17px; }
+    .hero-line { display: inline-block; margin-top: 13px; padding: 11px 15px; border-left: 4px solid #ffb168; border-radius: 0 10px 10px 0; background: rgba(255,255,255,.12); color: #fff; }
+    .hero-line strong { color: #ffd39f; }
+    .tag-row { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 23px; }
+    .tag { padding: 6px 11px; border-radius: 999px; color: #dceaff; background: rgba(255,255,255,.13); font-size: 13px; }
+    .section { margin-top: 34px; }
+    .intro { max-width: 850px; color: var(--muted); }
+    .grid-4, .grid-3, .grid-2 { display: grid; gap: 16px; }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card { padding: 21px; border: 1px solid var(--line); border-radius: 17px; background: var(--paper); box-shadow: 0 7px 24px rgba(22,46,83,.04); }
+    .metric { min-height: 145px; }
+    .metric .icon { width: 38px; height: 38px; display: grid; place-items: center; margin-bottom: 14px; border-radius: 12px; color: #fff; background: var(--blue); font-weight: 800; }
+    .metric:nth-child(2) .icon { background: var(--orange); }
+    .metric:nth-child(3) .icon { background: var(--green); }
+    .metric:nth-child(4) .icon { background: var(--blue-dark); }
+    .metric strong { display: block; margin-bottom: 5px; font-size: 18px; }
+    .muted { color: var(--muted); font-size: 14px; }
+    .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 20px; }
+    .flow-item { padding: 13px 15px; border: 1px solid #d8e3f5; border-radius: 12px; background: var(--blue-soft); color: #245098; font-weight: 700; }
+    .flow-arrow { color: var(--blue); font-size: 22px; font-weight: 800; }
+    .callout { margin-top: 17px; padding: 14px 17px; border: 1px solid #cfe0ff; border-radius: 13px; color: #214887; background: var(--blue-soft); }
+    .callout.orange { border-color: #ffd5b6; color: #854919; background: var(--orange-soft); }
+    .callout.green { border-color: #c8eedc; color: #176b49; background: var(--green-soft); }
+    .architecture { display: grid; grid-template-columns: 1fr 1.15fr 1.15fr 1fr; gap: 0; margin-top: 20px; align-items: stretch; }
+    .layer { position: relative; min-height: 180px; padding: 20px; border: 1px solid var(--line); background: var(--paper); }
+    .layer:first-child { border-radius: 16px 0 0 16px; }
+    .layer:last-child { border-radius: 0 16px 16px 0; }
+    .layer + .layer { border-left: 0; }
+    .layer:not(:last-child)::after { content: "→"; position: absolute; right: -17px; top: 70px; z-index: 2; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: var(--blue); color: #fff; font-size: 20px; }
+    .layer-no { color: var(--blue); font-size: 12px; font-weight: 800; letter-spacing: .08em; }
+    .layer strong { display: block; margin: 8px 0; font-size: 19px; }
+    .layer span { color: var(--muted); font-size: 13px; }
+    .layer.business { background: #fffaf5; border-color: #f1d3bb; }
+    .layer.business .layer-no { color: var(--orange); }
+    .layer.adapter { background: #f2fbf7; border-color: #c8ead9; }
+    .layer.adapter .layer-no { color: var(--green); }
+    .rule-list, .task-list { margin: 10px 0 0; padding: 0; list-style: none; }
+    .rule-list li { position: relative; margin: 7px 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+    .rule-list li::before { content: "•"; position: absolute; left: 2px; color: var(--blue); font-weight: 900; }
+    .task-group h3 { display: flex; align-items: center; gap: 9px; }
+    .task-group h3::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--blue); }
+    .task-group:nth-child(2) h3::before { background: var(--orange); }
+    .task-group:nth-child(3) h3::before { background: var(--green); }
+    .task-group:nth-child(4) h3::before { background: var(--blue-dark); }
+    .task-group:nth-child(5) h3::before { background: var(--red); }
+    .task-list li { display: flex; gap: 9px; align-items: flex-start; margin: 9px 0; color: #3d4c60; font-size: 14px; }
+    .task-list input { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 3px; accent-color: var(--blue); }
+    .task-list input:checked + span { color: #8b98a9; text-decoration: line-through; }
+    .progress-wrap { margin: 18px 0 0; padding: 14px 17px; border-radius: 13px; background: var(--blue-soft); color: #214887; }
+    .progress-head { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+    .progress { height: 9px; margin-top: 8px; overflow: hidden; border-radius: 999px; background: #d5e2fa; }
+    .progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--blue); transition: width .2s ease; }
+    .day-card { min-height: 190px; }
+    .day { display: inline-block; margin-bottom: 12px; padding: 4px 9px; border-radius: 8px; color: #fff; background: var(--blue); font-size: 12px; font-weight: 800; }
+    .day-card:nth-child(2) .day { background: var(--orange); }
+    .day-card:nth-child(3) .day { background: var(--green); }
+    .day-card:nth-child(4) .day { background: var(--blue-dark); }
+    .day-card ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+    .day-card li { margin: 6px 0; }
+    .calculator { border-color: #f0d1b7; background: linear-gradient(135deg, #fffaf6, #fff); }
+    .calc-layout { display: grid; grid-template-columns: 1.1fr .9fr; gap: 24px; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; margin-top: 13px; }
+    label { display: block; color: var(--muted); font-size: 13px; font-weight: 700; }
+    input[type="number"] { display: block; width: 100%; margin-top: 5px; padding: 10px 11px; border: 1px solid #d5dce7; border-radius: 9px; color: var(--ink); background: #fff; font: inherit; font-size: 16px; outline: none; }
+    input[type="number"]:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(36,107,254,.14); }
+    .results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+    .result { padding: 14px; border: 1px solid #f0dfd0; border-radius: 12px; background: #fff; }
+    .result-label { color: var(--muted); font-size: 12px; }
+    .result-value { margin-top: 3px; color: #9b4d13; font-size: 24px; font-weight: 800; line-height: 1.2; }
+    .result-unit { color: var(--muted); font-size: 12px; }
+    .mini-note { margin-top: 12px; color: var(--muted); font-size: 12px; }
+    .acceptance { display: grid; gap: 10px; margin-top: 14px; }
+    .acceptance-row { display: grid; grid-template-columns: 150px 1fr; gap: 15px; padding: 13px 15px; border-bottom: 1px solid var(--line); }
+    .acceptance-row:last-child { border-bottom: 0; }
+    .acceptance-row strong { color: var(--ink); }
+    .acceptance-row span { color: var(--muted); font-size: 14px; }
+    .footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    code { padding: 2px 5px; border-radius: 5px; background: #eef2f7; color: #31445d; }
+    @media (max-width: 930px) {
+      .grid-4, .grid-3, .architecture { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .layer:first-child, .layer:last-child { border-radius: 16px; }
+      .layer + .layer { border-left: 1px solid var(--line); }
+      .layer:not(:last-child)::after { display: none; }
+      .calc-layout { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 650px) {
+      .page { padding: 14px 11px 44px; }
+      .hero { padding: 33px 24px; border-radius: 20px; }
+      .grid-4, .grid-3, .grid-2, .architecture, .form-grid, .results { grid-template-columns: 1fr; }
+      .acceptance-row { grid-template-columns: 1fr; gap: 3px; }
+      h2 { font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-content">
+        <div class="eyebrow">龙信 AI · 商业模式解耦版</div>
+        <h1>第 3 天让老板看见商业闭环，第 7 天用真实数据验证。</h1>
+        <p class="hero-sub">以当前 lxScope 作为 AI 能力底座，把 Token、套餐、账户、订单、管理和测算独立成业务层。商业模式先跑起来，技术底座通过适配器接入，不互相绑死。</p>
+        <div class="hero-line"><strong>本周目标：</strong>老板能看懂、用户能使用、团队能开发、公司能算账。</div>
+        <div class="tag-row"><span class="tag">商业层独立</span><span class="tag">3 天可演示</span><span class="tag">7 天可验证</span><span class="tag">不侵入 Agent 核心</span></div>
+      </div>
+    </header>
+
+    <section class="section" aria-labelledby="visible-title">
+      <div class="eyebrow">先让老板看见</div>
+      <h2 id="visible-title">第一版要展示的不是技术，而是一套能经营的产品</h2>
+      <div class="grid-4">
+        <article class="card metric"><div class="icon">¥</div><strong>套餐和购买</strong><p class="muted">用户买什么、得到多少 Token、预计能完成多少任务。</p></article>
+        <article class="card metric"><div class="icon">T</div><strong>Token 账户</strong><p class="muted">用户剩余多少、用了多少、还能做多少任务。</p></article>
+        <article class="card metric"><div class="icon">↯</div><strong>任务消费</strong><p class="muted">每个任务消耗多少 Token、产生多少模型成本。</p></article>
+        <article class="card metric"><div class="icon">▦</div><strong>管理和算账</strong><p class="muted">管理员看用户、套餐、流水、并发、成本和收入。</p></article>
+      </div>
+      <div class="flow" aria-label="商业闭环">
+        <div class="flow-item">套餐配置</div><div class="flow-arrow">→</div><div class="flow-item">用户购买/充值</div><div class="flow-arrow">→</div><div class="flow-item">Token 到账</div><div class="flow-arrow">→</div><div class="flow-item">创建任务</div><div class="flow-arrow">→</div><div class="flow-item">扣减 Token</div><div class="flow-arrow">→</div><div class="flow-item">管理后台算账</div>
+      </div>
+      <div class="callout"><strong>老板第一眼应该看到：</strong>这套方案不是停留在“以后可以做”，而是已经把购买、使用、扣费、管理和成本测算串成了一条可演示链路。</div>
+    </section>
+
+    <section class="section" aria-labelledby="decouple-title">
+      <div class="eyebrow">解耦原则</div>
+      <h2 id="decouple-title">商业模式独立开发，AI 引擎只提供能力和用量事件</h2>
+      <p class="intro">商业规则不写进 Agent、Session 或模型代码里。商业层通过标准接口获取任务状态和 Token 用量，未来可以替换模型、支付渠道或 AI 引擎，而不重写套餐和账户系统。</p>
+      <div class="architecture" aria-label="解耦架构">
+        <div class="layer"><div class="layer-no">01 · CURRENT</div><strong>lxScope AI 核心</strong><span>Agent、Session、知识库、模型、文件、任务执行。</span></div>
+        <div class="layer adapter"><div class="layer-no">02 · ADAPTER</div><strong>任务/用量适配器</strong><span>把 user_id、task_id、状态、Token、耗时和结果文件转换成统一事件。</span></div>
+        <div class="layer business"><div class="layer-no">03 · NEW</div><strong>商业模式服务</strong><span>账户、套餐、订单、Token 余额、扣费、流水、额度、并发和审计。</span></div>
+        <div class="layer"><div class="layer-no">04 · UI</div><strong>用户与管理端</strong><span>购买、账户、任务消费、管理后台、成本和经营看板。</span></div>
+      </div>
+      <div class="grid-3" style="margin-top:16px">
+        <div class="card"><h3>第一版允许模拟</h3><p class="muted">支付可先用模拟购买，套餐价格可先用占位参数，重点是让商业闭环可见。</p></div>
+        <div class="card"><h3>第一版必须真实</h3><p class="muted">用户身份、任务关联、Token 使用记录和 Token 流水不能只停留在前端假数据。</p></div>
+        <div class="card"><h3>后续可替换</h3><p class="muted">支付渠道、模型供应商、计费策略和存储方式都通过接口替换，不绑定 Agent 核心。</p></div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="checklist-title">
+      <div class="eyebrow">完整任务清单</div>
+      <h2 id="checklist-title">商业模式 MVP 要做什么</h2>
+      <div class="grid-3">
+        <article class="card task-group">
+          <h3>业务规则</h3>
+          <ul class="task-list">
+            <li><input class="task-check" type="checkbox"><span>确定 Token 单位和套餐层级</span></li>
+            <li><input class="task-check" type="checkbox"><span>确定套餐价格、Token、有效期和任务量</span></li>
+            <li><input class="task-check" type="checkbox"><span>确定任务开始、成功、失败、重试的扣费规则</span></li>
+            <li><input class="task-check" type="checkbox"><span>确定余额不足、过期和人工调账规则</span></li>
+            <li><input class="task-check" type="checkbox"><span>确定普通会员的并发和任务限制</span></li>
+          </ul>
+        </article>
+        <article class="card task-group">
+          <h3>商业数据</h3>
+          <ul class="task-list">
+            <li><input class="task-check" type="checkbox"><span>建立用户 Token 账户</span></li>
+            <li><input class="task-check" type="checkbox"><span>建立套餐和订单记录</span></li>
+            <li><input class="task-check" type="checkbox"><span>建立 Token 流水和调账记录</span></li>
+            <li><input class="task-check" type="checkbox"><span>建立任务用量和成本记录</span></li>
+            <li><input class="task-check" type="checkbox"><span>所有记录绑定 user_id 和 task_id</span></li>
+          </ul>
+        </article>
+        <article class="card task-group">
+          <h3>用户端</h3>
+          <ul class="task-list">
+            <li><input class="task-check" type="checkbox"><span>Token 账户首页</span></li>
+            <li><input class="task-check" type="checkbox"><span>套餐展示和模拟购买</span></li>
+            <li><input class="task-check" type="checkbox"><span>任务剩余额度提示</span></li>
+            <li><input class="task-check" type="checkbox"><span>任务完成后的 Token 消耗展示</span></li>
+            <li><input class="task-check" type="checkbox"><span>充值、扣费和退款流水页面</span></li>
+          </ul>
+        </article>
+        <article class="card task-group">
+          <h3>管理端</h3>
+          <ul class="task-list">
+            <li><input class="task-check" type="checkbox"><span>用户、套餐和 Token 管理</span></li>
+            <li><input class="task-check" type="checkbox"><span>管理员手工赠送或扣减 Token</span></li>
+            <li><input class="task-check" type="checkbox"><span>订单和 Token 流水查询</span></li>
+            <li><input class="task-check" type="checkbox"><span>用户任务量、并发和成本统计</span></li>
+            <li><input class="task-check" type="checkbox"><span>基础操作审计</span></li>
+          </ul>
+        </article>
+        <article class="card task-group">
+          <h3>系统适配</h3>
+          <ul class="task-list">
+            <li><input class="task-check" type="checkbox"><span>接入 lxScope 当前用户身份</span></li>
+            <li><input class="task-check" type="checkbox"><span>接入当前任务创建和任务状态</span></li>
+            <li><input class="task-check" type="checkbox"><span>按 task_id 记录真实 Token 消耗</span></li>
+            <li><input class="task-check" type="checkbox"><span>创建任务前检查额度</span></li>
+            <li><input class="task-check" type="checkbox"><span>防止重复扣费并验证跨用户隔离</span></li>
+          </ul>
+        </article>
+        <article class="card task-group">
+          <h3>测算和验收</h3>
+          <ul class="task-list">
+            <li><input class="task-check" type="checkbox"><span>采集真实任务 Token、耗时和失败率</span></li>
+            <li><input class="task-check" type="checkbox"><span>测算单任务模型成本</span></li>
+            <li><input class="task-check" type="checkbox"><span>测算稳定并发和每日任务量</span></li>
+            <li><input class="task-check" type="checkbox"><span>测算普通会员可完成任务数</span></li>
+            <li><input class="task-check" type="checkbox"><span>形成老板演示和第一版经营结论</span></li>
+          </ul>
+        </article>
+      </div>
+      <div class="progress-wrap" aria-live="polite"><div class="progress-head"><span>任务清单完成度</span><strong id="taskProgress">0 / 30</strong></div><div class="progress"><i id="taskProgressBar"></i></div></div>
+    </section>
+
+    <section class="section" aria-labelledby="three-days-title">
+      <div class="eyebrow">前 3 天必须交付</div>
+      <h2 id="three-days-title">先让商业模式跑起来，再谈完整产品化</h2>
+      <div class="grid-3">
+        <article class="card day-card"><div class="day">DAY 1 · 规则和界面</div><h3>老板看得见</h3><ul><li>确认套餐、Token 和扣费规则</li><li>完成商业总览、套餐、用户账户和管理首页</li><li>用模拟数据演示购买、到账和余额</li><li>形成商业模式第一版页面</li></ul></article>
+        <article class="card day-card"><div class="day">DAY 2 · 接入真实能力</div><h3>系统接得上</h3><ul><li>接入当前 JWT 用户和任务</li><li>建立账户、订单、流水和任务用量数据</li><li>任务完成后记录真实 Token 使用</li><li>实现余额展示和基础额度检查</li></ul></article>
+        <article class="card day-card"><div class="day">DAY 3 · 完成演示</div><h3>老板能对齐</h3><ul><li>模拟购买套餐并完成一次真实任务</li><li>展示 Token 扣减、任务成本和流水</li><li>展示并发、每日任务量和会员任务量</li><li>收集反馈，确认后续一周增强项</li></ul></article>
+      </div>
+      <div class="callout orange"><strong>第 3 天的验收不是“代码写完了”，而是现场能跑通：</strong>管理员配套餐 → 用户获得 Token → 用户做任务 → 系统扣费 → 用户看余额 → 管理员看流水 → 页面给出成本和任务量测算。</div>
+    </section>
+
+    <section class="section" aria-labelledby="week-title">
+      <div class="eyebrow">第 4～7 天</div>
+      <h2 id="week-title">用真实数据验证，不把商业模式拖到一周后才出现</h2>
+      <div class="grid-2">
+        <div class="card"><h3>数据验证</h3><ul class="rule-list"><li>采集不同类型任务的输入、输出 Token 和耗时</li><li>区分简单问答、资料分析和文件生成任务</li><li>测量稳定并发、失败率和重试成本</li><li>校准套餐 Token 额度和预计任务量</li><li>输出单任务成本、会员成本和毛利测算</li></ul></div>
+        <div class="card"><h3>产品增强</h3><ul class="rule-list"><li>完善管理员角色和基础操作审计</li><li>补充余额不足、失败、重试和退款处理</li><li>增加真实任务结果与用量关联</li><li>完善统计看板和导出能力</li><li>确定支付、正式订单和企业套餐的后续接口</li></ul></div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="calculator-title">
+      <div class="eyebrow">先把账算起来</div>
+      <h2 id="calculator-title">Token、成本、并发和会员任务量测算器</h2>
+      <p class="intro">默认值仅用于演示，最终价格和额度必须使用真实任务数据校准。</p>
+      <div class="card calculator">
+        <div class="calc-layout">
+          <div><h3>输入测算参数</h3><div class="form-grid">
+            <label>单任务输入 Token<input id="inputTokens" type="number" min="0" step="1000" value="35000"></label>
+            <label>单任务输出 Token<input id="outputTokens" type="number" min="0" step="1000" value="8000"></label>
+            <label>输入价格（元/百万）<input id="inputPrice" type="number" min="0" step="0.1" value="2"></label>
+            <label>输出价格（元/百万）<input id="outputPrice" type="number" min="0" step="0.1" value="8"></label>
+            <label>稳定并发槽位<input id="concurrency" type="number" min="1" step="1" value="20"></label>
+            <label>平均任务耗时（分钟）<input id="duration" type="number" min="0.1" step="0.5" value="8"></label>
+            <label>每日运行小时<input id="hours" type="number" min="0.1" step="0.5" value="8"></label>
+            <label>普通会员月 Token<input id="memberQuota" type="number" min="0" step="10000" value="500000"></label>
+            <label>普通会员价格（元/月）<input id="memberPrice" type="number" min="0" step="1" value="99"></label>
+          </div><p class="mini-note">后续由任务/用量适配器把真实 Token 和耗时写入同一套测算数据。</p></div>
+          <div><h3>实时结果</h3><div class="results" aria-live="polite">
+            <div class="result"><div class="result-label">单任务总 Token</div><div id="taskTokens" class="result-value">43,000</div><div class="result-unit">Token / 任务</div></div>
+            <div class="result"><div class="result-label">单任务模型成本</div><div id="taskCost" class="result-value">¥0.13</div><div class="result-unit">示例值</div></div>
+            <div class="result"><div class="result-label">每日理论任务量</div><div id="dailyCapacity" class="result-value">1,200</div><div class="result-unit">任务 / 天</div></div>
+            <div class="result"><div class="result-label">普通会员任务量</div><div id="memberTasks" class="result-value">11</div><div class="result-unit">任务 / 月</div></div>
+            <div class="result"><div class="result-label">会员预计模型成本</div><div id="memberCost" class="result-value">¥1.47</div><div class="result-unit">按额度用满估算</div></div>
+            <div class="result"><div class="result-label">会员毛利空间</div><div id="memberMargin" class="result-value">¥97.53</div><div class="result-unit">未计基础设施与运营</div></div>
+          </div><div class="callout orange"><strong>要建立的不是一个漂亮数字，而是一套能持续更新的账：</strong>每个任务多少 Token、多少成本、占用多少算力、对应什么套餐。</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="acceptance-title">
+      <div class="eyebrow">一周验收</div>
+      <h2 id="acceptance-title">完成标准</h2>
+      <div class="card acceptance">
+        <div class="acceptance-row"><strong>老板能看懂</strong><span>打开页面即可看到 Token 购买、套餐、用户使用、管理和成本测算。</span></div>
+        <div class="acceptance-row"><strong>用户能使用</strong><span>用户可以获得 Token、创建任务、看到扣费、查看余额和使用流水。</span></div>
+        <div class="acceptance-row"><strong>团队能开发</strong><span>商业层通过适配器接入 lxScope，套餐和扣费规则不侵入 Agent 核心。</span></div>
+        <div class="acceptance-row"><strong>公司能算账</strong><span>能够用真实任务数据测算单任务成本、并发、会员任务量和套餐毛利空间。</span></div>
+        <div class="acceptance-row"><strong>边界要明确</strong><span>真实支付、财务结算、发票、复杂总部管理和正式计费风控作为后续阶段，不影响前三天演示。</span></div>
+      </div>
+      <div class="callout green"><strong>最终方案：</strong>商业模式在 2～3 天内独立形成可演示 MVP；第 4～7 天接入真实数据、校准模型并补齐产品细节。AI 核心继续演进，但不被套餐、支付和管理逻辑绑死。</div>
+    </section>
+
+    <footer class="footer">
+      <p>业务参考：D:\龙信系统-3.8.1；技术底座：D:\agentscope_lx\lxScope。</p>
+      <p>当前文档为一周快速迭代初版计划。价格、Token、并发和任务量均需通过真实运行数据校准。</p>
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      const taskChecks = Array.from(document.querySelectorAll(".task-check"));
+      const progressText = document.getElementById("taskProgress");
+      const progressBar = document.getElementById("taskProgressBar");
+      function updateProgress() {
+        const done = taskChecks.filter((item) => item.checked).length;
+        const total = taskChecks.length;
+        progressText.textContent = done + " / " + total;
+        progressBar.style.width = (total ? done / total * 100 : 0) + "%";
+      }
+      taskChecks.forEach((item) => item.addEventListener("change", updateProgress));
+      updateProgress();
+
+      const inputIds = ["inputTokens", "outputTokens", "inputPrice", "outputPrice", "concurrency", "duration", "hours", "memberQuota", "memberPrice"];
+      const fields = Object.fromEntries(inputIds.map((id) => [id, document.getElementById(id)]));
+      const resultIds = ["taskTokens", "taskCost", "dailyCapacity", "memberTasks", "memberCost", "memberMargin"];
+      const results = Object.fromEntries(resultIds.map((id) => [id, document.getElementById(id)]));
+      const num = (value) => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+      const fmt = (value, digits = 0) => new Intl.NumberFormat("zh-CN", { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value);
+      function calculate() {
+        const input = num(fields.inputTokens.value);
+        const output = num(fields.outputTokens.value);
+        const inputPrice = num(fields.inputPrice.value);
+        const outputPrice = num(fields.outputPrice.value);
+        const concurrency = Math.max(1, num(fields.concurrency.value));
+        const duration = Math.max(.1, num(fields.duration.value));
+        const hours = num(fields.hours.value);
+        const quota = num(fields.memberQuota.value);
+        const memberPrice = num(fields.memberPrice.value);
+        const tokens = input + output;
+        const cost = input / 1000000 * inputPrice + output / 1000000 * outputPrice;
+        const capacity = concurrency * hours * 60 / duration;
+        const memberTasks = tokens > 0 ? Math.floor(quota / tokens) : 0;
+        const memberCost = memberTasks * cost;
+        results.taskTokens.textContent = fmt(tokens);
+        results.taskCost.textContent = "¥" + fmt(cost, 2);
+        results.dailyCapacity.textContent = fmt(capacity);
+        results.memberTasks.textContent = fmt(memberTasks);
+        results.memberCost.textContent = "¥" + fmt(memberCost, 2);
+        results.memberMargin.textContent = "¥" + fmt(memberPrice - memberCost, 2);
+      }
+      inputIds.forEach((id) => fields[id].addEventListener("input", calculate));
+      calculate();
+    }());
+  </script>
+</body>
+</html>
