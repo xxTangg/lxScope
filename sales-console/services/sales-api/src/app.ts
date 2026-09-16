@@ -69,6 +69,14 @@ function requiredText(value: unknown, field: string, maxLength = 128): string {
   return text;
 }
 
+function optionalContractText(value: unknown, field: string, maxLength: number): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string' || value.length > maxLength) {
+    throw Object.assign(new Error(`${field} 参数不合法`), { status: 400 });
+  }
+  return value;
+}
+
 function requiredContractMoney(value: unknown, field: string, allowZero = false): number {
   const text = typeof value === 'string' ? value.trim() : '';
   if (!/^\d+\.\d{2}$/.test(text)) {
@@ -140,7 +148,7 @@ function canonicalCustomer(value: unknown): Record<string, unknown> {
     notes: converted.notes ?? '',
     environment: converted.environment,
     status: converted.status,
-    api_token_masked: apiToken ? maskToken(apiToken) : converted.api_token_masked ?? null,
+    api_token_masked: apiToken ? maskToken(apiToken) : (converted.api_token_masked ?? null),
     last_report_at:
       (lastReport && toCanonical(lastReport.reportedAt, 'reported_at')) ??
       converted.last_report_at ??
@@ -173,8 +181,7 @@ function canonicalOrder(value: unknown): Record<string, unknown> {
     ...rest,
     order_id: converted.order_id ?? id,
     delivery_status:
-      converted.delivery_status ??
-      (converted.delivered === true ? 'delivered' : 'not_delivered'),
+      converted.delivery_status ?? (converted.delivered === true ? 'delivered' : 'not_delivered'),
   };
 }
 
@@ -185,7 +192,7 @@ function isDirectCanonicalPath(pathname: string, method: string): boolean {
         pathname === '/api/v1/integration/public-key' ||
         /^\/api\/v1\/customers\/[^/]+$/.test(pathname))) ||
     (method === 'POST' &&
-      (/^\/api\/v1\/customers\/[^/]+\/(api-token\/rotate|verify-connection)$/.test(pathname)))
+      /^\/api\/v1\/customers\/[^/]+\/(api-token\/rotate|verify-connection)$/.test(pathname))
   );
 }
 
@@ -212,8 +219,9 @@ function canonicalTarget(url: string, method: string): string | null {
     return type ? `/api/releases/${type}${search}` : null;
   }
 
-  const integrationReleaseMatch =
-    /^\/api\/v1\/integration\/releases\/(app|core)\/latest$/.exec(pathname);
+  const integrationReleaseMatch = /^\/api\/v1\/integration\/releases\/(app|core)\/latest$/.exec(
+    pathname,
+  );
   if (integrationReleaseMatch) {
     const type = releaseTypeFromCanonical(integrationReleaseMatch[1]);
     return type ? `/api/customers/releases/${type}/latest${search}` : null;
@@ -308,10 +316,7 @@ function canonicalResponseFor(
       request_id: id,
     };
   }
-  if (
-    canonicalPath === '/api/v1/integration/recharge-requests' &&
-    req.method === 'POST'
-  ) {
+  if (canonicalPath === '/api/v1/integration/recharge-requests' && req.method === 'POST') {
     const converted = (toCanonical(body) ?? {}) as Record<string, unknown>;
     return {
       order_id: converted.id ?? converted.order_id,
@@ -480,6 +485,27 @@ function requestHash(req: Request): string {
     .digest('hex');
 }
 
+function isMalformedRechargeReplay(
+  canonicalPath: string,
+  method: string,
+  record: IdempotencyRecord,
+): boolean {
+  if (
+    method !== 'POST' ||
+    canonicalPath !== '/api/v1/integration/recharge-requests' ||
+    record.statusCode < 400 ||
+    record.statusCode >= 500
+  ) {
+    return false;
+  }
+  const body = asRecord(record.responseBody);
+  return (
+    body?.status === 'pending' &&
+    body?.delivery_status === 'not_delivered' &&
+    typeof body?.order_id !== 'string'
+  );
+}
+
 function hashPassword(value: string, salt: string): string {
   return crypto.scryptSync(value, salt, 32).toString('hex');
 }
@@ -642,8 +668,7 @@ async function callCustomer(
     signal: AbortSignal.timeout(120_000),
   });
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!response.ok)
-    throw new Error(customerErrorMessage(payload, response.status));
+  if (!response.ok) throw new Error(customerErrorMessage(payload, response.status));
   return fromCanonical(payload) as Record<string, unknown>;
 }
 
@@ -815,8 +840,22 @@ export async function createApp(): Promise<express.Express> {
         let previous: IdempotencyRecord | undefined;
         await updateJson(db.files.idempotency, [], (items: IdempotencyRecord[]) => {
           previous = items.find((item) => item.scope === scope && item.key === idempotencyKey);
-          if (previous && previous.expiresAt > Date.now()) return items;
           const now = Date.now();
+          if (previous && previous.expiresAt > now) {
+            if (!isMalformedRechargeReplay(canonicalPath, req.method, previous)) return items;
+            return [
+              {
+                scope,
+                key: idempotencyKey,
+                requestHash: hash,
+                statusCode: 0,
+                responseBody: null,
+                createdAt: now,
+                expiresAt: now + 24 * 60 * 60 * 1000,
+              },
+              ...items.filter((item) => item.scope !== scope || item.key !== idempotencyKey),
+            ].slice(0, 10_000);
+          }
           return [
             {
               scope,
@@ -831,7 +870,9 @@ export async function createApp(): Promise<express.Express> {
           ].slice(0, 10_000);
         });
         if (previous && previous.expiresAt > Date.now()) {
-          if (previous.requestHash !== hash) {
+          if (isMalformedRechargeReplay(canonicalPath, req.method, previous)) {
+            previous = undefined;
+          } else if (previous.requestHash !== hash) {
             res.status(409).json({
               detail: {
                 code: 'idempotency_key_reused',
@@ -840,6 +881,8 @@ export async function createApp(): Promise<express.Express> {
             });
             return;
           }
+        }
+        if (previous && previous.expiresAt > Date.now()) {
           if (previous.statusCode === 0) {
             res.status(409).json({
               detail: {
@@ -851,9 +894,7 @@ export async function createApp(): Promise<express.Express> {
           }
           res.status(previous.statusCode);
           const replayBody = asRecord(previous.responseBody);
-          originalJson(
-            replayBody ? { ...replayBody, request_id: id } : previous.responseBody,
-          );
+          originalJson(replayBody ? { ...replayBody, request_id: id } : previous.responseBody);
           return;
         }
         res.once('finish', () => {
@@ -898,7 +939,9 @@ export async function createApp(): Promise<express.Express> {
     try {
       const customer = await customerFromBearer(req);
       if (!customer) {
-        res.status(401).json({ detail: { code: 'invalid_customer_token', message: '客户 Token 无效' } });
+        res
+          .status(401)
+          .json({ detail: { code: 'invalid_customer_token', message: '客户 Token 无效' } });
         return;
       }
       const { publicKey } = await getSigningKeyPair();
@@ -982,9 +1025,14 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       try {
-        const ping = await callCustomer(customer, '/integration/sales/v1/ping', {}, {
-          requestID: verifyRequestID,
-        });
+        const ping = await callCustomer(
+          customer,
+          '/integration/sales/v1/ping',
+          {},
+          {
+            requestID: verifyRequestID,
+          },
+        );
         res.json({
           customerId: customer.id,
           systemId: customer.systemId,
@@ -1090,9 +1138,11 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ error: '系统 ID 与客户令牌不匹配' });
         return;
       }
-      const amount = strictContract ? requiredContractAmount(req.body.amount) : validateAmount(req.body.amount);
+      const amount = strictContract
+        ? requiredContractAmount(req.body.amount)
+        : validateAmount(req.body.amount);
       const note = strictContract
-        ? requiredText(req.body.note, 'note', 500)
+        ? optionalContractText(req.body.note, 'note', 300)
         : String(req.body.note ?? '').slice(0, 500);
       const requestedAt =
         strictContract || req.body.requestedAt !== undefined
@@ -1142,17 +1192,15 @@ export async function createApp(): Promise<express.Express> {
                 item.status === 'approved' &&
                 !item.delivered &&
                 Boolean(
-                  item.code &&
-                    item.amount &&
-                    item.tokens &&
-                    item.expiresAt &&
-                    item.expiresAt > now,
+                  item.code && item.amount && item.tokens && item.expiresAt && item.expiresAt > now,
                 ),
             )
-          : items.filter(
-              (item) =>
-                item.customerID === customer.id && item.status === 'approved' && !item.delivered,
-            ).slice(0, 1);
+          : items
+              .filter(
+                (item) =>
+                  item.customerID === customer.id && item.status === 'approved' && !item.delivered,
+              )
+              .slice(0, 1);
         if (found.length) {
           const now = Date.now();
           for (const item of found) {
@@ -1204,9 +1252,11 @@ export async function createApp(): Promise<express.Express> {
         try {
           const codeParts = String(order.code).split('.');
           const payloadPart = codeParts[0] === 'LXRC2' ? codeParts[1] : codeParts[0];
-          const payload = JSON.parse(
-            Buffer.from(String(payloadPart), 'base64url').toString(),
-          ) as { systemId?: string; system_id?: string; nonce?: string };
+          const payload = JSON.parse(Buffer.from(String(payloadPart), 'base64url').toString()) as {
+            systemId?: string;
+            system_id?: string;
+            nonce?: string;
+          };
           if (!payload.systemId && !payload.system_id && typeof payload.nonce === 'string')
             nonces.push(payload.nonce);
         } catch {
@@ -1261,7 +1311,8 @@ export async function createApp(): Promise<express.Express> {
               delivered: true,
               deliveredAt: item.deliveredAt ?? Date.now(),
               ackOperationID: (item.ackOperationID ?? operationID) || undefined,
-              redemptionOperationID: (item.redemptionOperationID ?? redemptionOperationID) || undefined,
+              redemptionOperationID:
+                (item.redemptionOperationID ?? redemptionOperationID) || undefined,
               ledgerID: (item.ledgerID ?? ledgerID) || undefined,
             };
           }
@@ -1503,11 +1554,18 @@ export async function createApp(): Promise<express.Express> {
   app.get('/api/customers', async (_req, res, next) => {
     try {
       const query = _req.query;
-      const keyword = String(query.keyword ?? '').trim().toLowerCase();
+      const keyword = String(query.keyword ?? '')
+        .trim()
+        .toLowerCase();
       const status = String(query.status ?? '').trim();
       const environment = String(query.environment ?? '').trim();
       const filtered = (await db.customers()).filter((customer) => {
-        if (keyword && !`${customer.name} ${customer.systemId} ${customer.contact}`.toLowerCase().includes(keyword)) {
+        if (
+          keyword &&
+          !`${customer.name} ${customer.systemId} ${customer.contact}`
+            .toLowerCase()
+            .includes(keyword)
+        ) {
           return false;
         }
         if (status && customer.status !== status) return false;
@@ -2021,8 +2079,7 @@ export async function createApp(): Promise<express.Express> {
       }
       const results = [];
       const publicBase =
-        process.env.SALES_PUBLIC_URL?.replace(/\/$/, '') ??
-        `${req.protocol}://${req.get('host')}`;
+        process.env.SALES_PUBLIC_URL?.replace(/\/$/, '') ?? `${req.protocol}://${req.get('host')}`;
       for (const customer of customers) {
         try {
           const artifactType = type;

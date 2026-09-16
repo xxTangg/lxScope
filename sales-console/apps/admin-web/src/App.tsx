@@ -115,7 +115,9 @@ function fromCanonical(value: unknown, key?: string): unknown {
   }
   const converted = Object.fromEntries(
     Object.entries(value).map(([itemKey, item]) => {
-      const camelKey = itemKey.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+      const camelKey = itemKey.replace(/_([a-z0-9])/gi, (_match, letter: string) =>
+        letter.toUpperCase(),
+      );
       return [camelKey, fromCanonical(item, itemKey)];
     }),
   );

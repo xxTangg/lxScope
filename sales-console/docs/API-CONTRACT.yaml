@@ -245,7 +245,16 @@ paths:
                       type: object
                       additionalProperties: false
                       required:
-                        [order_id, system_id, amount, tokens, status, delivery_status, recharge_code, expires_at]
+                        [
+                          order_id,
+                          system_id,
+                          amount,
+                          tokens,
+                          status,
+                          delivery_status,
+                          recharge_code,
+                          expires_at,
+                        ]
                       properties:
                         order_id: { type: string }
                         system_id: { type: string }
@@ -308,7 +317,15 @@ paths:
                 type: object
                 additionalProperties: false
                 required:
-                  [report_id, system_id, accepted, reported_at, cumulative_consumed_delta, cumulative_credits_delta, request_id]
+                  [
+                    report_id,
+                    system_id,
+                    accepted,
+                    reported_at,
+                    cumulative_consumed_delta,
+                    cumulative_credits_delta,
+                    request_id,
+                  ]
                 properties:
                   report_id: { type: string }
                   system_id: { type: string }
@@ -512,11 +529,11 @@ components:
         status: { type: string, enum: [active, disabled] }
     RechargeRequest:
       type: object
-      required: [system_id, amount, note, requested_at]
+      required: [system_id, amount, requested_at]
       properties:
         system_id: { type: string, minLength: 1, maxLength: 128 }
         amount: { type: string, pattern: '^\\d+\\.\\d{2}$' }
-        note: { type: string, maxLength: 500 }
+        note: { type: string, maxLength: 300, description: 可选，省略时按空备注处理 }
         requested_at: { type: string, format: date-time }
     RechargeAckRequest:
       type: object

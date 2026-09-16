@@ -4,56 +4,58 @@
 
 ## A. 销售员工接口
 
-| 状态 | 方法 | 路径 | 用途 |
-| --- | --- | --- | --- |
-| [x] | POST | `/api/v1/auth/login` | 销售员工登录，返回 HttpOnly Cookie |
-| [x] | GET | `/api/v1/auth/me` | 当前员工信息 |
-| [x] | POST | `/api/v1/auth/logout` | 注销会话 |
-| [x] | GET | `/api/v1/dashboard` | 经营总览 |
-| [x] | GET | `/api/v1/customers` | 客户列表，返回 `customers、total、request_id` |
-| [x] | POST | `/api/v1/customers` | 创建客户并一次性返回 `api_token_once` |
-| [x] | GET | `/api/v1/customers/{customer_id}` | 客户详情和最近上报摘要 |
-| [x] | PATCH | `/api/v1/customers/{customer_id}` | 修改客户档案 |
-| [x] | DELETE | `/api/v1/customers/{customer_id}` | 停用客户档案 |
-| [x] | POST | `/api/v1/customers/{customer_id}/api-token/rotate` | 轮换 Token，仅一次性返回 |
-| [x] | POST | `/api/v1/customers/{customer_id}/verify-connection` | 双向连接验证 |
-| [x] | GET | `/api/v1/customers/{customer_id}/usage-reports` | 客户用量快照 |
-| [x] | GET | `/api/v1/customers/{customer_id}/recharge-orders` | 客户充值订单 |
-| [x] | POST | `/api/v1/customers/{customer_id}/recharge-codes` | 签发离线充值码 |
-| [x] | POST | `/api/v1/customers/{customer_id}/reset-admin-password` | 远程重置客户管理员密码 |
-| [x] | GET | `/api/v1/recharge-requests` | 待审核充值申请 |
-| [x] | POST | `/api/v1/recharge-requests/{order_id}/approve` | 审批并签发充值码 |
-| [x] | POST | `/api/v1/recharge-requests/{order_id}/reject` | 拒绝充值申请 |
-| [x] | GET | `/api/v1/reconciliation` | 充值、额度和消耗对账 |
-| [x] | GET | `/api/v1/alerts` | 余额和报表告警 |
-| [x] | GET | `/api/v1/audit/events` | 审计摘要 |
-| [x] | GET | `/api/v1/settings` | 读取总部设置 |
-| [x] | PATCH | `/api/v1/settings` | 更新总部设置 |
-| [x] | PATCH | `/api/v1/staff/password` | 修改当前员工密码 |
-| [x] | GET | `/api/v1/public-key` | 总部员工查看签名公钥 |
+| 状态 | 方法   | 路径                                                   | 用途                                          |
+| ---- | ------ | ------------------------------------------------------ | --------------------------------------------- |
+| [x]  | POST   | `/api/v1/auth/login`                                   | 销售员工登录，返回 HttpOnly Cookie            |
+| [x]  | GET    | `/api/v1/auth/me`                                      | 当前员工信息                                  |
+| [x]  | POST   | `/api/v1/auth/logout`                                  | 注销会话                                      |
+| [x]  | GET    | `/api/v1/dashboard`                                    | 经营总览                                      |
+| [x]  | GET    | `/api/v1/customers`                                    | 客户列表，返回 `customers、total、request_id` |
+| [x]  | POST   | `/api/v1/customers`                                    | 创建客户并一次性返回 `api_token_once`         |
+| [x]  | GET    | `/api/v1/customers/{customer_id}`                      | 客户详情和最近上报摘要                        |
+| [x]  | PATCH  | `/api/v1/customers/{customer_id}`                      | 修改客户档案                                  |
+| [x]  | DELETE | `/api/v1/customers/{customer_id}`                      | 停用客户档案                                  |
+| [x]  | POST   | `/api/v1/customers/{customer_id}/api-token/rotate`     | 轮换 Token，仅一次性返回                      |
+| [x]  | POST   | `/api/v1/customers/{customer_id}/verify-connection`    | 双向连接验证                                  |
+| [x]  | GET    | `/api/v1/customers/{customer_id}/usage-reports`        | 客户用量快照                                  |
+| [x]  | GET    | `/api/v1/customers/{customer_id}/recharge-orders`      | 客户充值订单                                  |
+| [x]  | POST   | `/api/v1/customers/{customer_id}/recharge-codes`       | 签发离线充值码                                |
+| [x]  | POST   | `/api/v1/customers/{customer_id}/reset-admin-password` | 远程重置客户管理员密码                        |
+| [x]  | GET    | `/api/v1/recharge-requests`                            | 待审核充值申请                                |
+| [x]  | POST   | `/api/v1/recharge-requests/{order_id}/approve`         | 审批并签发充值码                              |
+| [x]  | POST   | `/api/v1/recharge-requests/{order_id}/reject`          | 拒绝充值申请                                  |
+| [x]  | GET    | `/api/v1/reconciliation`                               | 充值、额度和消耗对账                          |
+| [x]  | GET    | `/api/v1/alerts`                                       | 余额和报表告警                                |
+| [x]  | GET    | `/api/v1/audit/events`                                 | 审计摘要                                      |
+| [x]  | GET    | `/api/v1/settings`                                     | 读取总部设置                                  |
+| [x]  | PATCH  | `/api/v1/settings`                                     | 更新总部设置                                  |
+| [x]  | PATCH  | `/api/v1/staff/password`                               | 修改当前员工密码                              |
+| [x]  | GET    | `/api/v1/public-key`                                   | 总部员工查看签名公钥                          |
 
 ## B. 客户系统机器接口
 
 认证为 `Authorization: Bearer <customer-api-token>`，Token 只对应一个 `system_id`。传入的 `system_id` 仅作一致性校验，不能作为身份来源。
 
-| 状态 | 方法 | 路径 | 用途 |
-| --- | --- | --- | --- |
-| [x] | POST | `/api/v1/integration/recharge-requests` | 提交线上充值申请 |
-| [x] | GET | `/api/v1/integration/recharge-requests/poll` | 轮询已审批充值码 |
-| [x] | POST | `/api/v1/integration/recharge-requests/{order_id}/ack` | 确认已兑换 |
-| [x] | GET | `/api/v1/integration/recharge-codes/legacy` | 同步历史离线充值码 nonce |
-| [x] | POST | `/api/v1/integration/usage-reports` | 上报额度/用量快照 |
-| [x] | POST | `/api/v1/integration/verify-connection` | 请求双向连接验证 |
-| [x] | GET | `/api/v1/integration/releases/{artifact_type}/latest` | 下载 `app` 或 `core` 包 |
-| [x] | GET | `/api/v1/integration/public-key` | 获取充值码验签公钥 |
+| 状态 | 方法 | 路径                                                   | 用途                     |
+| ---- | ---- | ------------------------------------------------------ | ------------------------ |
+| [x]  | POST | `/api/v1/integration/recharge-requests`                | 提交线上充值申请         |
+| [x]  | GET  | `/api/v1/integration/recharge-requests/poll`           | 轮询已审批充值码         |
+| [x]  | POST | `/api/v1/integration/recharge-requests/{order_id}/ack` | 确认已兑换               |
+| [x]  | GET  | `/api/v1/integration/recharge-codes/legacy`            | 同步历史离线充值码 nonce |
+| [x]  | POST | `/api/v1/integration/usage-reports`                    | 上报额度/用量快照        |
+| [x]  | POST | `/api/v1/integration/verify-connection`                | 请求双向连接验证         |
+| [x]  | GET  | `/api/v1/integration/releases/{artifact_type}/latest`  | 下载 `app` 或 `core` 包  |
+| [x]  | GET  | `/api/v1/integration/public-key`                       | 获取充值码验签公钥       |
+
+充值申请请求体与当前客户管理中心保持一致：`system_id`、两位小数金额 `amount`、带时区的 `requested_at` 为必填；`note` 为可选字段，最多 300 个字符。轮询请求还必须携带 `system_id` 查询参数、`X-Request-ID` 和 `Idempotency-Key`。
 
 ## C. 发布与升级
 
-| 状态 | 方法 | 路径 | 关键约定 |
-| --- | --- | --- | --- |
-| [x] | GET | `/api/v1/releases` | 返回 `app` 和 `core` 元数据 |
-| [x] | POST | `/api/v1/releases/{artifact_type}` | multipart 上传，`artifact_type=app\|core` |
-| [x] | POST | `/api/v1/upgrade-all/{artifact_type}` | 请求体使用 `customer_ids[]`，下发文档规定的升级命令 |
+| 状态 | 方法 | 路径                                  | 关键约定                                            |
+| ---- | ---- | ------------------------------------- | --------------------------------------------------- |
+| [x]  | GET  | `/api/v1/releases`                    | 返回 `app` 和 `core` 元数据                         |
+| [x]  | POST | `/api/v1/releases/{artifact_type}`    | multipart 上传，`artifact_type=app\|core`           |
+| [x]  | POST | `/api/v1/upgrade-all/{artifact_type}` | 请求体使用 `customer_ids[]`，下发文档规定的升级命令 |
 
 其中：
 

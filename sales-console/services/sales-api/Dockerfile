@@ -2,8 +2,9 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY apps/admin-web/package.json apps/admin-web/package.json
 COPY services/sales-api/package.json services/sales-api/package.json
-RUN corepack enable && pnpm install --filter sales-api... --frozen-lockfile=false
+RUN corepack enable && pnpm install --filter sales-api... --prod=false --frozen-lockfile=false
 COPY services/sales-api/ services/sales-api/
 RUN pnpm --filter sales-api build
 
