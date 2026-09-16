@@ -24,6 +24,7 @@ export function RechargeMethodsCard() {
 	const recharges = useQuery({
 		queryKey: ['admin', 'recharges'],
 		queryFn: () => adminApi.rechargeRequests(20),
+		refetchInterval: 10_000,
 	});
 	const createRecharge = useMutation({
 		mutationFn: adminApi.createRechargeRequest,
@@ -72,6 +73,8 @@ export function RechargeMethodsCard() {
 		reportUsage.error?.message,
 		redeemCode.error?.message,
 	].find((message): message is string => Boolean(message));
+	const operation = reportUsage.data ?? syncRecharge.data;
+	const operationError = operation?.error;
 	const rechargeItems = recharges.data?.orders ?? [];
 
 	return (
@@ -87,6 +90,13 @@ export function RechargeMethodsCard() {
 				{error && (
 					<Alert variant="destructive">
 						<AlertDescription>{error}</AlertDescription>
+					</Alert>
+				)}
+				{operationError && (
+					<Alert variant="destructive">
+						<AlertDescription>
+							{String(operationError.message ?? 'Sales Hub operation failed.')}
+						</AlertDescription>
 					</Alert>
 				)}
 				{redeemCode.data && (
@@ -184,24 +194,45 @@ export function RechargeMethodsCard() {
 					<div className="text-xs text-muted-foreground">{t('admin.noRecharge')}</div>
 				) : (
 					<div className="space-y-2">
-						{rechargeItems.slice(0, 5).map((item) => (
-							<div
-								key={item.order_id}
-								className="flex items-center justify-between gap-2 rounded-md border px-2 py-2 text-xs"
-							>
-								<div className="min-w-0">
-									<div className="truncate font-mono">{item.order_id}</div>
+		{rechargeItems.slice(0, 5).map((item) => {
+			const isDelivered = item.delivery_status === 'delivered';
+			const approvalLabel =
+				item.status === 'pending'
+					? t('admin.waitingApproval')
+					: item.status === 'approved'
+						? t('admin.approved')
+						: item.status === 'rejected'
+							? t('admin.rejected')
+							: t('admin.unknownStatus');
+			const statusLabel = isDelivered
+								? t('admin.delivered')
+								: item.status === 'pending'
+									? t('admin.sentAwaitingApproval')
+									: item.status === 'approved'
+										? t('admin.approvedAwaitingSync')
+										: t('admin.waitingDelivery');
+							return (
+								<div
+									key={item.order_id}
+									className="flex items-center justify-between gap-2 rounded-md border px-2 py-2 text-xs"
+								>
+									<div className="min-w-0">
+										<div className="truncate font-mono">{item.order_id}</div>
 									<div className="text-muted-foreground">
-										{item.amount} - {item.status}
+										{item.amount} - {approvalLabel}
 									</div>
+										{item.request_id && (
+											<div className="truncate font-mono text-[10px] text-muted-foreground">
+												request_id: {item.request_id}
+											</div>
+										)}
+									</div>
+									<Badge variant={isDelivered ? 'default' : 'outline'}>
+										{statusLabel}
+									</Badge>
 								</div>
-								<Badge variant={item.delivery_status === 'delivered' ? 'default' : 'outline'}>
-									{item.delivery_status === 'delivered'
-										? t('admin.delivered')
-										: t('admin.waitingDelivery')}
-								</Badge>
-							</div>
-						))}
+							);
+						})}
 					</div>
 				)}
 			</CardContent>

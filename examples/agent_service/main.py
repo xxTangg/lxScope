@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """The example script to start the agent service."""
 from contextlib import asynccontextmanager
+import asyncio
 import os
 import sys
+from uuid import uuid4
 
 from pydantic import SecretStr
 import uvicorn
@@ -38,7 +40,7 @@ from agentscope.rag import (
 from agentscope.workspace import WorkspaceBase
 
 from admin_api import AdminService, admin_router, sales_hub_router
-from auth import load_auth_from_env
+from auth import AuthUser, load_auth_from_env
 from longxin_admin.credential_policy import AdminManagedCredentialPolicy
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
 from longxin_admin.upgrade import UpgradeService, upgrade_router
@@ -266,10 +268,49 @@ _base_lifespan = app.router.lifespan_context
 async def _application_lifespan(app_instance):
     async with _base_lifespan(app_instance):
         await _ensure_siliconflow_credential(auth.admin_user_ids)
-        yield
+        recharge_sync_task = asyncio.create_task(
+            _sales_hub_recharge_sync_loop(app_instance.state.admin_service),
+        )
+        try:
+            yield
+        finally:
+            recharge_sync_task.cancel()
+            await asyncio.gather(recharge_sync_task, return_exceptions=True)
 
 
 app.router.lifespan_context = _application_lifespan
+
+
+async def _sales_hub_recharge_sync_loop(service: AdminService) -> None:
+    """Poll approved Sales Hub orders so delivery status advances automatically."""
+    try:
+        interval = max(
+            5.0,
+            float(os.getenv("LONGXIN_RECHARGE_SYNC_INTERVAL_SECONDS", "30")),
+        )
+    except ValueError:
+        interval = 30.0
+    actor = AuthUser(
+        id="system-sales-hub-sync",
+        username="system-sales-hub-sync",
+        role="admin",
+    )
+    while True:
+        try:
+            config = await service.hub_config()
+            if config.get("hub_url") and config.get("token_masked"):
+                await service.sync_recharge(
+                    actor,
+                    request_id=f"req-auto-sync-{uuid4().hex}",
+                    idempotency_key=f"idem-auto-sync-{uuid4().hex}",
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The next cycle retries.  Credentials and response bodies are
+            # intentionally not logged by this background task.
+            pass
+        await asyncio.sleep(interval)
 
 
 if __name__ == "__main__":

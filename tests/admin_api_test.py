@@ -79,7 +79,9 @@ class _FakeHubClient:
     """Deterministic Sales Hub responses for the submit/poll/ACK contract."""
 
     acked_orders: list[str] = []
+    submitted_payloads: list[dict[str, Any]] = []
     reported_payloads: list[dict[str, Any]] = []
+    usage_response: dict[str, Any] | None = None
 
     def __init__(self, **_: Any) -> None:
         pass
@@ -96,9 +98,11 @@ class _FakeHubClient:
         url: str,
         *,
         json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
         **_: Any,
     ) -> httpx.Response:
         if method == "POST" and url.endswith("/api/v1/integration/recharge-requests"):
+            self.submitted_payloads.append(json or {})
             return httpx.Response(
                 200,
                 json={
@@ -106,6 +110,7 @@ class _FakeHubClient:
                     "system_id": "system-test",
                     "status": "pending",
                     "delivery_status": "not_delivered",
+                    "request_id": (headers or {}).get("X-Request-ID", ""),
                 },
             )
         if method == "GET" and url.endswith("/api/v1/integration/recharge-requests/poll"):
@@ -142,6 +147,7 @@ class _FakeHubClient:
                             "recharge_code": code,
                         },
                     ],
+                    "request_id": (headers or {}).get("X-Request-ID", "poll-request"),
                 },
             )
         if method == "POST" and url.endswith("/api/v1/integration/recharge-requests/ord-remote-1/ack"):
@@ -151,9 +157,35 @@ class _FakeHubClient:
             self.reported_payloads.append(json or {})
             return httpx.Response(
                 200,
-                json={"report_id": "report-1", "reported_at": "2026-09-15T00:00:00Z"},
+                json=self.usage_response
+                or {
+                    "report_id": "report-1",
+                    "system_id": "system-test",
+                    "accepted": True,
+                    "reported_at": "2026-09-15T00:00:00Z",
+                    "request_id": (headers or {}).get("X-Request-ID", "report-request"),
+                },
             )
         return httpx.Response(404, json={"detail": "not found"})
+
+
+class _VerifyHubClient:
+    """Return a configurable bidirectional verification response."""
+
+    payload: dict[str, Any] = {}
+
+    def __init__(self, **_: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> "_VerifyHubClient":
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        return None
+
+    async def request(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        del args, kwargs
+        return httpx.Response(200, json=self.payload)
 
 
 def json_module_dumps(value: dict[str, Any]) -> bytes:
@@ -265,6 +297,41 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         self.assertEqual(ping.status_code, 200)
         self.assertEqual(ping.json()["system_id"], "system-test")
 
+    def test_verify_accepts_boolean_inbound_response(self) -> None:
+        login = self._login("admin", "admin-password")
+        headers = {"Authorization": f"Bearer {login['access_token']}"}
+        saved = self.client.patch(
+            "/admin/sales-hub/config",
+            headers=headers,
+            json={
+                "system_id": "system-test",
+                "hub_url": "https://sales.example.test",
+                "token": "customer-token-123",
+            },
+        )
+        self.assertEqual(saved.status_code, 200)
+
+        _VerifyHubClient.payload = {
+            "outbound": True,
+            "inbound": True,
+            "ping": {"ok": True, "system_id": "system-test"},
+        }
+        try:
+            with patch.object(hub_module.httpx, "AsyncClient", _VerifyHubClient):
+                verified = self.client.post(
+                    "/admin/sales-hub/verify",
+                    headers=headers,
+                )
+        finally:
+            _VerifyHubClient.payload = {}
+
+        self.assertEqual(verified.status_code, 200)
+        self.assertEqual(verified.json()["state"], "completed")
+        config = self.client.get("/admin/sales-hub/config", headers=headers)
+        self.assertEqual(config.status_code, 200)
+        self.assertEqual(config.json()["outbound_status"], "ok")
+        self.assertEqual(config.json()["inbound_status"], "ok")
+
     def test_recharge_submit_poll_redeem_ack_and_usage_report(self) -> None:
         login = self._login("admin", "admin-password")
         headers = {"Authorization": f"Bearer {login['access_token']}"}
@@ -279,19 +346,25 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         )
         self.assertEqual(saved.status_code, 200)
         _FakeHubClient.acked_orders.clear()
+        _FakeHubClient.submitted_payloads.clear()
         _FakeHubClient.reported_payloads.clear()
+        _FakeHubClient.usage_response = None
         with patch.dict(os.environ, {"LONGXIN_RECHARGE_CODE_SECRET": "test-secret"}):
             with patch.object(hub_module.httpx, "AsyncClient", _FakeHubClient):
                 submitted = self.client.post(
                     "/admin/quota/recharge-requests",
                     headers={
                         **headers,
+                        "X-Request-ID": "req-submit-1",
                         "Idempotency-Key": "idem-submit-1",
                     },
-                    json={"amount": "100.00"},
+                    json={"amount": "100"},
                 )
                 self.assertEqual(submitted.status_code, 200)
                 self.assertEqual(submitted.json()["status"], "pending")
+                self.assertEqual(submitted.json()["request_id"], "req-submit-1")
+                self.assertEqual(_FakeHubClient.submitted_payloads[0]["amount"], "100.00")
+                self.assertNotIn("note", _FakeHubClient.submitted_payloads[0])
                 duplicate = self.client.post(
                     "/admin/quota/recharge-requests",
                     headers={
@@ -338,3 +411,33 @@ class AdminApiTest(IsolatedAsyncioTestCase):
                 self.assertEqual(report.status_code, 200)
                 self.assertEqual(report.json()["state"], "completed")
                 self.assertEqual(len(_FakeHubClient.reported_payloads), 1)
+                self.assertEqual(_FakeHubClient.reported_payloads[0]["total_recharged"], "100.00")
+
+    def test_usage_report_rejects_incomplete_sales_response(self) -> None:
+        login = self._login("admin", "admin-password")
+        headers = {"Authorization": f"Bearer {login['access_token']}"}
+        saved = self.client.patch(
+            "/admin/sales-hub/config",
+            headers=headers,
+            json={
+                "system_id": "system-test",
+                "hub_url": "https://sales.example.test",
+                "token": "customer-token-123",
+            },
+        )
+        self.assertEqual(saved.status_code, 200)
+        _FakeHubClient.usage_response = {
+            "reported_at": "2026-09-15T00:00:00Z",
+        }
+        try:
+            with patch.object(hub_module.httpx, "AsyncClient", _FakeHubClient):
+                report = self.client.post(
+                    "/admin/sales-hub/usage-report",
+                    headers=headers,
+                )
+        finally:
+            _FakeHubClient.usage_response = None
+
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.json()["state"], "failed")
+        self.assertEqual(report.json()["error"]["code"], "hub_invalid_response")

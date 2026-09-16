@@ -57,6 +57,8 @@ class SalesHubClient:
             "Authorization": f"Bearer {token}",
             "X-Request-ID": request_id,
         }
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         try:

@@ -1,0 +1,39 @@
+services:
+  agentscope:
+    # Mount the repository over the source baked into the image. The named
+    # data volumes from docker-compose.yml remain active for user data.
+    volumes:
+      - .:/app
+    environment:
+      UVICORN_RELOAD: "true"
+
+  web-ui:
+    image: agentscope-web-ui-dev:latest
+    build:
+      context: ./examples/web_ui
+      dockerfile: Dockerfile.dev
+      args:
+        VITE_AGENTSCOPE_API_PORT: ${AGENTSCOPE_API_PORT:-8001}
+    # Vite serves the frontend directly and provides HMR for source changes.
+    command:
+      - pnpm
+      - --filter
+      - frontend
+      - dev
+      - --host
+      - 0.0.0.0
+      - --port
+      - "80"
+    environment:
+      VITE_AGENTSCOPE_API_PORT: ${AGENTSCOPE_API_PORT:-8001}
+    volumes:
+      - ./examples/web_ui:/app
+      # Keep installed dependencies outside the bind mount.
+      - web-ui-node-modules:/app/node_modules
+      - web-ui-frontend-node-modules:/app/frontend/node_modules
+      - web-ui-backend-node-modules:/app/backend/node_modules
+
+volumes:
+  web-ui-node-modules:
+  web-ui-frontend-node-modules:
+  web-ui-backend-node-modules:

@@ -123,6 +123,39 @@ http://服务器IP:8001
 
 服务器防火墙或安全组需要同时允许 `WEB_UI_PORT` 和 `AGENTSCOPE_API_PORT`。如果修改 `AGENTSCOPE_API_PORT`，必须使用 `docker compose up -d --build` 重新构建前端镜像。
 
+## 4.1 开发模式：修改代码无需重新构建
+
+如果需要频繁修改后端或前端代码，使用开发 Compose 覆盖配置。
+
+首次启动时构建一次开发镜像：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+之后修改代码直接执行：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+
+开发模式会：
+
+- 将项目源码挂载到 `agentscope` 容器，并启用 Python 热重载；
+- 使用 Vite 开发服务器运行 Web UI，并启用前端 HMR；
+- 继续使用原来的 Redis、工作区、文件和 Qdrant 数据卷。
+
+只有修改 `pyproject.toml`、Python 依赖或 `examples/web_ui/package.json`、
+`pnpm-lock.yaml` 等依赖配置时，才需要重新构建对应镜像：
+
+```bash
+# 修改 Python 依赖
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build agentscope
+
+# 修改前端依赖
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build web-ui
+```
+
 ## 5. 检查与排错
 
 查看所有服务状态：

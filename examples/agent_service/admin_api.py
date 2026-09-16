@@ -9,7 +9,7 @@ import hmac
 import json
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -31,10 +31,35 @@ _AUDIT_KEY = f"{_PREFIX}:audit"
 # existing member-management API backward compatible without duplicating the
 # plan definitions in the legacy admin module.
 _PLANS = PLAN_VALUES
+_MONEY_INPUT_PATTERN = r"^[0-9]+(?:\.[0-9]{1,2})?$"
+_MONEY_PATTERN = r"^[0-9]+\.[0-9]{2}$"
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _temporary_password_expiry() -> str:
+    try:
+        ttl_seconds = int(os.getenv("LONGXIN_TEMP_PASSWORD_TTL_SECONDS", "86400"))
+    except ValueError:
+        ttl_seconds = 86400
+    ttl_seconds = max(60, ttl_seconds)
+    return (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+
+
+def _format_money(value: str, *, require_positive: bool = False) -> str:
+    """Return a canonical fixed-point amount required by the machine API."""
+    try:
+        amount = Decimal(value)
+        if not amount.is_finite():
+            raise InvalidOperation
+        if amount < 0 or (require_positive and amount == 0):
+            raise InvalidOperation
+        quantized = amount.quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError) as exc:
+        raise _error("invalid_amount", "Amount must be a non-negative decimal.", 422) from exc
+    return format(quantized, ".2f")
 
 
 def _error(
@@ -152,7 +177,7 @@ class OperationResponse(BaseModel):
 
 
 class RechargeRequest(BaseModel):
-    amount: str = Field(pattern=r"^[0-9]+(?:\.[0-9]{1,2})?$")
+    amount: str = Field(pattern=_MONEY_INPUT_PATTERN)
     note: str | None = Field(default=None, max_length=300)
 
 
@@ -163,6 +188,7 @@ class RechargeRequestView(BaseModel):
     status: Literal["pending", "approved", "rejected", "unknown"]
     delivery_status: Literal["not_delivered", "delivered"] = "not_delivered"
     created_at: str
+    request_id: str = ""
 
 
 class RechargeRequestListResponse(BaseModel):
@@ -174,7 +200,7 @@ class RechargeRequestListResponse(BaseModel):
 class RechargePollItem(BaseModel):
     order_id: str
     system_id: str
-    amount: str
+    amount: str = Field(pattern=_MONEY_PATTERN)
     tokens: int = Field(gt=0)
     status: Literal["approved"] = "approved"
     delivery_status: Literal["not_delivered"] = "not_delivered"
@@ -197,7 +223,7 @@ class RechargeAckRequest(BaseModel):
 class UsageReportRequest(BaseModel):
     system_id: str = Field(min_length=1, max_length=128)
     pool_tokens: int = Field(ge=0)
-    total_recharged: str = Field(pattern=r"^[0-9]+(?:\.[0-9]{1,2})?$")
+    total_recharged: str = Field(pattern=_MONEY_PATTERN)
     app_version: str = Field(min_length=1, max_length=128)
     cumulative_consumed: int = Field(ge=0)
     cumulative_credits: int = Field(ge=0)
@@ -205,13 +231,13 @@ class UsageReportRequest(BaseModel):
 
 
 class UsageReportResponse(BaseModel):
-    report_id: str
-    system_id: str
+    report_id: str = Field(min_length=1, max_length=128)
+    system_id: str = Field(min_length=1, max_length=128)
     accepted: bool
-    reported_at: str
+    reported_at: str = Field(min_length=1)
     cumulative_consumed_delta: int | None = None
     cumulative_credits_delta: int | None = None
-    request_id: str
+    request_id: str = Field(min_length=1, max_length=128)
 
 
 class SalesHubConfigView(BaseModel):
@@ -537,7 +563,12 @@ class AdminService:
         if account is None or account.status == "deleted":
             raise _error("user_not_found", "User not found.", 404)
         temporary_password = secrets.token_urlsafe(12)
-        updated = await self._auth.reset_password(user_id, temporary_password)
+        expires_at = _temporary_password_expiry()
+        updated = await self._auth.reset_password(
+            user_id,
+            temporary_password,
+            temporary_password_expires_at=expires_at,
+        )
         await self._audit(
             actor=actor,
             action="user.reset_password",
@@ -551,7 +582,7 @@ class AdminService:
             user_id=updated.id,
             username=updated.username,
             temporary_password=temporary_password,
-            expires_at=datetime.now(timezone.utc).isoformat(),
+            expires_at=expires_at,
         )
 
     async def overview(self) -> dict[str, Any]:
@@ -661,37 +692,64 @@ class AdminService:
             if existing:
                 return RechargeRequestView.model_validate(existing)
         system = await self._system()
+        effective_request_id = request_id or f"req-{uuid4().hex}"
+        amount = _format_money(body.amount, require_positive=True)
+        requested_at = _now()
+        json_body: dict[str, Any] = {
+            "system_id": system["system_id"],
+            "amount": amount,
+            "requested_at": requested_at,
+        }
+        if body.note is not None:
+            json_body["note"] = body.note
         remote = await self._hub_request(
             "POST",
             "/api/v1/integration/recharge-requests",
-            request_id=request_id or f"req-{uuid4().hex}",
+            request_id=effective_request_id,
             idempotency_key=idempotency_key,
-            json_body={
-                "system_id": system["system_id"],
-                "amount": body.amount,
-                "note": body.note,
-                "requested_at": _now(),
-            },
+            json_body=json_body,
         )
         order_id = remote.get("order_id")
         if not isinstance(order_id, str) or not order_id:
             raise _error("hub_invalid_response", "Sales Hub did not return an order ID.", 502)
+        remote_request_id = remote.get("request_id")
+        if not isinstance(remote_request_id, str) or not remote_request_id:
+            raise _error(
+                "hub_invalid_response",
+                "Sales Hub did not return the request ID.",
+                502,
+            )
+        if remote_request_id != effective_request_id:
+            raise _error(
+                "request_id_mismatch",
+                "Sales Hub returned a different request ID.",
+                409,
+            )
         remote_system_id = remote.get("system_id", system["system_id"])
         if remote_system_id != system["system_id"]:
             raise _error("system_id_mismatch", "Sales Hub returned another system ID.", 409)
-        remote_status = remote.get("status", "pending")
+        remote_status = remote.get("status")
         if remote_status not in {"pending", "approved", "rejected", "unknown"}:
-            remote_status = "unknown"
-        delivery_status = remote.get("delivery_status", "not_delivered")
+            raise _error(
+                "hub_invalid_response",
+                "Sales Hub returned an invalid order status.",
+                502,
+            )
+        delivery_status = remote.get("delivery_status")
         if delivery_status not in {"not_delivered", "delivered"}:
-            delivery_status = "not_delivered"
+            raise _error(
+                "hub_invalid_response",
+                "Sales Hub returned an invalid delivery status.",
+                502,
+            )
         order = RechargeRequestView(
             order_id=order_id,
             system_id=system["system_id"],
-            amount=body.amount,
+            amount=amount,
             status=remote_status,
             delivery_status=delivery_status,
             created_at=_now(),
+            request_id=remote_request_id,
         )
         await self._write_json(self._order_key(order.order_id), order.model_dump())
         await self._client().rpush(f"{_PREFIX}:orders", order.order_id)
@@ -738,26 +796,22 @@ class AdminService:
                 state="unknown",
                 error=detail,
             )
-        raw_orders = remote.get("orders")
-        if not isinstance(raw_orders, list):
+        try:
+            poll = RechargePollResponse.model_validate(remote)
+        except ValueError:
             return OperationResponse(
                 operation_id=operation_id,
                 request_id=request_id,
-                state="unknown",
+                state="failed",
                 error={
                     "code": "hub_invalid_response",
-                    "message": "Sales Hub did not return an order list.",
+                    "message": "Sales Hub returned an invalid recharge poll response.",
                 },
             )
         system_id = (await self._system())["system_id"]
         completed: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        for raw_order in raw_orders:
-            try:
-                item = RechargePollItem.model_validate(raw_order)
-            except ValueError:
-                failures.append({"code": "invalid_order", "message": "An order was ignored."})
-                continue
+        for item in poll.orders:
             if item.system_id != system_id:
                 failures.append(
                     {
@@ -770,6 +824,27 @@ class AdminService:
             local = await self._read_json(self._order_key(item.order_id))
             if local is not None and local.get("delivery_status") == "delivered":
                 continue
+            if local is not None:
+                try:
+                    local_amount = _format_money(str(local.get("amount")), require_positive=True)
+                except HTTPException:
+                    failures.append(
+                        {
+                            "order_id": item.order_id,
+                            "code": "invalid_local_amount",
+                            "message": "The local order amount is invalid.",
+                        },
+                    )
+                    continue
+                if local_amount != item.amount:
+                    failures.append(
+                        {
+                            "order_id": item.order_id,
+                            "code": "amount_mismatch",
+                            "message": "The Sales Hub amount does not match the local order.",
+                        },
+                    )
+                    continue
             if local is None:
                 local = RechargeRequestView(
                     order_id=item.order_id,
@@ -814,12 +889,12 @@ class AdminService:
                     f"/api/v1/integration/recharge-requests/{item.order_id}/ack",
                     request_id=request_id,
                     idempotency_key=f"{idempotency_key or operation_id}:{item.order_id}",
-                    json_body={
-                        "operation_id": operation_id,
-                        "system_id": system_id,
-                        "redemption_operation_id": redemption_operation_id,
-                        "ledger_id": ledger_id,
-                    },
+                    json_body=RechargeAckRequest(
+                        operation_id=operation_id,
+                        system_id=system_id,
+                        redemption_operation_id=redemption_operation_id,
+                        ledger_id=ledger_id,
+                    ).model_dump(),
                 )
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {
@@ -860,7 +935,7 @@ class AdminService:
         report = UsageReportRequest(
             system_id=system["system_id"],
             pool_tokens=int(system["pool_tokens"]),
-            total_recharged=str(system["total_recharged"]),
+            total_recharged=_format_money(str(system["total_recharged"])),
             app_version=os.getenv("LONGXIN_APP_VERSION", "3.8.1"),
             cumulative_consumed=int(system.get("cumulative_consumed", 0)),
             cumulative_credits=int(system.get("cumulative_credits", 0)),
@@ -885,17 +960,50 @@ class AdminService:
                 state="unknown",
                 error=detail,
             )
-        reported_at = remote.get("reported_at", _now())
-        system["last_report_at"] = reported_at
+        try:
+            response = UsageReportResponse.model_validate(remote)
+        except ValueError:
+            return OperationResponse(
+                operation_id=operation_id,
+                request_id=request_id,
+                state="failed",
+                error={
+                    "code": "hub_invalid_response",
+                    "message": "Sales Hub returned an invalid usage report response.",
+                },
+            )
+        if response.system_id != report.system_id:
+            return OperationResponse(
+                operation_id=operation_id,
+                request_id=request_id,
+                state="failed",
+                error={
+                    "code": "system_id_mismatch",
+                    "message": "Sales Hub returned another system ID for the usage report.",
+                },
+            )
+        if not response.accepted:
+            return OperationResponse(
+                operation_id=operation_id,
+                request_id=request_id,
+                state="failed",
+                error={
+                    "code": "usage_report_rejected",
+                    "message": "Sales Hub rejected the usage report.",
+                },
+            )
+        system["last_report_at"] = response.reported_at
         await self._save_system(system)
         return OperationResponse(
             operation_id=operation_id,
             request_id=request_id,
             state="completed",
             result={
-                "report_id": remote.get("report_id"),
+                "report_id": response.report_id,
                 "system_id": report.system_id,
-                "reported_at": reported_at,
+                "accepted": response.accepted,
+                "reported_at": response.reported_at,
+                "sales_request_id": response.request_id,
                 "cumulative_consumed": report.cumulative_consumed,
                 "cumulative_credits": report.cumulative_credits,
             },
@@ -1055,8 +1163,16 @@ class AdminService:
                 json_body={},
             )
             value["outbound_status"] = "ok"
-            inbound = result.get("inbound", {}) if isinstance(result, dict) else {}
-            value["inbound_status"] = "ok" if inbound.get("ok", True) else "failed"
+            inbound = result.get("inbound") if isinstance(result, dict) else None
+            if isinstance(inbound, bool):
+                # The current Sales Hub returns a compact boolean, while the
+                # contract-compatible shape is {"ok": true}.
+                inbound_ok = inbound
+            elif isinstance(inbound, dict):
+                inbound_ok = bool(inbound.get("ok", False))
+            else:
+                inbound_ok = False
+            value["inbound_status"] = "ok" if inbound_ok else "failed"
             value["last_verified_at"] = _now()
             await self._write_json(_SALES_HUB_KEY, value)
             return OperationResponse(
@@ -1426,7 +1542,20 @@ async def sales_hub_reset_admin_password(
     account = await service._auth._account_by_username(body.username)
     if account is None or account.role != "admin":
         raise _error("admin_not_found", "The target administrator was not found.", 404)
-    await service._auth.reset_password(account.user_id, body.new_password)
+    expires_at = body.expires_at
+    if expires_at is not None:
+        try:
+            parsed_expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise _error("invalid_expiry", "expires_at must be an ISO-8601 timestamp.", 422) from exc
+        if parsed_expires_at.tzinfo is None or parsed_expires_at <= datetime.now(timezone.utc):
+            raise _error("invalid_expiry", "expires_at must be in the future and include a timezone.", 422)
+        expires_at = parsed_expires_at.astimezone(timezone.utc).isoformat()
+    await service._auth.reset_password(
+        account.user_id,
+        body.new_password,
+        temporary_password_expires_at=expires_at,
+    )
     return {
         "ok": True,
         "operation_id": body.operation_id,

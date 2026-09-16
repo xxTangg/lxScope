@@ -98,6 +98,7 @@ export interface RechargeRequest {
 	status: 'pending' | 'approved' | 'rejected' | 'unknown';
 	delivery_status: 'not_delivered' | 'delivered';
 	created_at: string;
+	request_id: string;
 }
 
 export interface RechargeRequestListResponse {
