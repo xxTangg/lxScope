@@ -742,6 +742,40 @@ export interface SkillRecord extends SkillView {
 	markdown: string;
 }
 
+export type ResourceKind = 'mcp' | 'skill';
+export type PublicationScope = 'all' | 'selected' | 'none';
+
+/** Safe administrator publication metadata; MCP secrets never appear here. */
+export interface ResourcePublication {
+	id: string;
+	kind: ResourceKind;
+	source_id: string;
+	source_record_id: string | null;
+	name: string;
+	display_name: string | null;
+	description: string;
+	tags: string[];
+	author: string | null;
+	icon_url: string | null;
+	version: string | null;
+	scope: PublicationScope;
+	user_ids: string[];
+	enabled: boolean;
+	updated_at: string;
+}
+
+export interface PublishedResource {
+	id: string;
+	kind: ResourceKind;
+	name: string;
+	display_name: string | null;
+	description: string;
+	tags: string[];
+	author: string | null;
+	icon_url: string | null;
+	version: string | null;
+}
+
 // ─── Schedule ─────────────────────────────────────────────────────────────────
 
 export type PermissionMode =

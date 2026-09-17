@@ -1,4 +1,5 @@
 import { client } from './client';
+import type { PublicationScope, ResourceKind, ResourcePublication } from './types';
 
 export type AdminUserStatus = 'active' | 'locked' | 'banned' | 'deleted';
 
@@ -186,6 +187,27 @@ export interface OperationResponse {
 	error: Record<string, unknown> | null;
 }
 
+export interface ResourcePublicationListResponse {
+	resources: ResourcePublication[];
+	total: number;
+}
+
+export interface PublishResourceRequest {
+	kind: ResourceKind;
+	source_id: string;
+	source_record_id?: string | null;
+	name: string;
+	display_name?: string | null;
+	description?: string;
+	tags?: string[];
+	author?: string | null;
+	icon_url?: string | null;
+	version?: string | null;
+	scope: PublicationScope;
+	user_ids?: string[];
+	enabled?: boolean;
+}
+
 const idempotencyHeaders = () => ({
 	'Idempotency-Key': crypto.randomUUID(),
 });
@@ -287,4 +309,11 @@ export const adminApi = {
 		client.post<OperationResponse>('/admin/sales-hub/verify', undefined, undefined, {
 			headers: idempotencyHeaders(),
 		}),
+	resourcePublications: (kind?: ResourceKind) =>
+		client.get<ResourcePublicationListResponse>(
+			'/admin/resources',
+			kind ? { kind } : undefined,
+		),
+	publishResource: (body: PublishResourceRequest) =>
+		client.post<ResourcePublication>('/admin/resources', body),
 };

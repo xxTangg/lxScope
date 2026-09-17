@@ -19,6 +19,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, ValidationError
 
+from agentscope.app.storage import MCPRecord, SkillRecord
 from auth import AuthUser, JWTAuthService
 from longxin_admin.distributed_lock import DistributedLease
 from longxin_admin.plan_billing.catalog import PLAN_VALUES
@@ -29,12 +30,27 @@ _PREFIX = "longxin:admin:v1"
 _SALES_HUB_KEY = "longxin:sales-hub:v1:config"
 _LEDGER_KEY = f"{_PREFIX}:ledger"
 _AUDIT_KEY = f"{_PREFIX}:audit"
+_RESOURCE_PUBLICATIONS_KEY = f"{_PREFIX}:resource-publications"
 # The plan-billing extension owns the catalog.  This projection keeps the
 # existing member-management API backward compatible without duplicating the
 # plan definitions in the legacy admin module.
 _PLANS = PLAN_VALUES
 _MONEY_INPUT_PATTERN = r"^[0-9]+(?:\.[0-9]{1,2})?$"
 _MONEY_PATTERN = r"^[0-9]+\.[0-9]{2}$"
+_DEFAULT_BUILTIN_SKILLS = (
+    ("work-report", "工作汇报", "把工作进展组织成结论清晰的汇报。"),
+    ("project-initiation", "项目立项", "说明项目为什么做、如何做及需要的资源。"),
+    ("customer-solution", "客户方案", "以客户需求为中心组织销售解决方案。"),
+    ("training-course", "培训课件", "把知识拆成可理解、可练习的课程。"),
+    ("research-report", "研究汇报", "清晰呈现研究问题、依据和结论。"),
+    ("presentation-review", "演示内容审阅", "检查演示结构、逻辑和信息密度。"),
+    ("executive-brief", "领导简报", "把复杂材料压缩成快速决策所需的信息。"),
+    ("job-presentation", "述职演示", "把阶段成果、复盘和计划讲得有重点。"),
+    ("roadmap-plan", "路线图与计划", "用阶段、依赖和验收点说明行动计划。"),
+    ("solution-comparison", "方案对比", "用统一口径比较多个方案并给出建议。"),
+    ("speech-story", "演讲叙事", "增强开场、转场和收束的连续性。"),
+    ("data-report", "数据汇报", "让数据结论有口径、有依据、有行动。"),
+)
 
 
 def _now() -> str:
@@ -330,6 +346,74 @@ class OperationResponse(BaseModel):
     state: Literal["pending", "completed", "failed", "unknown", "rolled_back"]
     result: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+
+
+ResourceKind = Literal["mcp", "skill"]
+PublicationScope = Literal["all", "selected", "none"]
+
+
+class ResourcePublicationRequest(BaseModel):
+    """The safe catalog projection an administrator wants to publish.
+
+    MCP configuration values are deliberately not part of this model. The
+    server uses ``source_record_id`` to copy the administrator's configured
+    record without ever returning its secrets to the browser. Built-in
+    skills use ``source_id`` without a storage record.
+    """
+
+    kind: ResourceKind
+    source_id: str = Field(min_length=1, max_length=256)
+    source_record_id: str | None = Field(default=None, max_length=256)
+    name: str = Field(min_length=1, max_length=128)
+    display_name: str | None = Field(default=None, max_length=256)
+    description: str = Field(default="", max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    author: str | None = Field(default=None, max_length=256)
+    icon_url: str | None = Field(default=None, max_length=2000)
+    version: str | None = Field(default=None, max_length=128)
+    scope: PublicationScope = "none"
+    user_ids: list[str] = Field(default_factory=list, max_length=5000)
+    enabled: bool = True
+
+
+class ResourcePublicationView(BaseModel):
+    id: str
+    kind: ResourceKind
+    source_id: str
+    source_record_id: str | None = None
+    name: str
+    display_name: str | None = None
+    description: str
+    tags: list[str]
+    author: str | None = None
+    icon_url: str | None = None
+    version: str | None = None
+    scope: PublicationScope
+    user_ids: list[str]
+    enabled: bool
+    updated_at: str
+
+
+class ResourcePublicationListResponse(BaseModel):
+    resources: list[ResourcePublicationView]
+    total: int
+
+
+class PublishedResourceView(BaseModel):
+    id: str
+    kind: ResourceKind
+    name: str
+    display_name: str | None = None
+    description: str
+    tags: list[str]
+    author: str | None = None
+    icon_url: str | None = None
+    version: str | None = None
+
+
+class PublishedResourceListResponse(BaseModel):
+    resources: list[PublishedResourceView]
+    total: int
 
 
 class RechargeRequest(BaseModel):
@@ -672,6 +756,275 @@ class AdminService:
             page_size=page_size,
             request_id="",
         )
+
+    async def _resource_publications(self) -> list[dict[str, Any]]:
+        value = await self._read_json(_RESOURCE_PUBLICATIONS_KEY)
+        items = value.get("resources", []) if value else []
+        return [item for item in items if isinstance(item, dict)]
+
+    async def _save_resource_publications(
+        self,
+        resources: list[dict[str, Any]],
+    ) -> None:
+        await self._write_json(_RESOURCE_PUBLICATIONS_KEY, {"resources": resources})
+
+    async def ensure_default_builtin_publications(self) -> None:
+        """Seed product-owned skills as visible to everyone on first boot."""
+
+        resources = await self._resource_publications()
+        existing_ids = {item.get("id") for item in resources}
+        changed = False
+        for source_id, display_name, description in _DEFAULT_BUILTIN_SKILLS:
+            publication_id = self._resource_publication_id("skill", source_id)
+            if publication_id in existing_ids:
+                existing = next(
+                    item for item in resources if item.get("id") == publication_id
+                )
+                # Migrate the first version of the seed, which used the
+                # directory id as ``name`` instead of SKILL.md's name.
+                if existing.get("name") == source_id:
+                    existing["name"] = display_name
+                    existing["display_name"] = display_name
+                    existing["description"] = description
+                    existing["updated_at"] = _now()
+                    changed = True
+                continue
+            resources.append(
+                {
+                    "id": publication_id,
+                    "kind": "skill",
+                    "source_id": source_id,
+                    "source_record_id": None,
+                    "name": display_name,
+                    "display_name": display_name,
+                    "description": description,
+                    "tags": ["办公流程"],
+                    "author": "Longxin",
+                    "icon_url": None,
+                    "version": "builtin",
+                    "scope": "all",
+                    "user_ids": [],
+                    "enabled": True,
+                    "updated_at": _now(),
+                    "provisioned": {},
+                },
+            )
+            existing_ids.add(publication_id)
+            changed = True
+        if changed:
+            await self._save_resource_publications(resources)
+
+    @staticmethod
+    def _resource_publication_id(kind: str, source_id: str) -> str:
+        return f"{kind}:{source_id}"
+
+    @staticmethod
+    def _publication_targets(
+        publication: dict[str, Any],
+        accounts: list[AuthUser],
+    ) -> set[str]:
+        active_ids = {account.id for account in accounts if account.status == "active"}
+        scope = publication.get("scope")
+        if scope == "all":
+            return active_ids
+        if scope == "selected":
+            return set(publication.get("user_ids", [])) & active_ids
+        return set()
+
+    async def _sync_resource_publication(
+        self,
+        publication: dict[str, Any],
+        accounts: list[AuthUser],
+    ) -> bool:
+        """Copy an administrator-owned record to the current target users.
+
+        The copied MCP record retains its server-side configuration, while
+        public catalog responses only contain the safe display projection.
+        Built-in skills do not need a copy because the workspace manager
+        seeds their files when a workspace is created.
+        """
+
+        if not publication.get("enabled", True):
+            targets: set[str] = set()
+        else:
+            targets = self._publication_targets(publication, accounts)
+
+        kind = publication.get("kind")
+        source_user_id = publication.get("source_user_id")
+        source_record_id = publication.get("source_record_id")
+        provisioned = {
+            str(user_id): str(record_id)
+            for user_id, record_id in (publication.get("provisioned") or {}).items()
+        }
+        changed = False
+
+        source: MCPRecord | SkillRecord | None = None
+        if source_user_id and source_record_id:
+            if kind == "mcp":
+                source = await self._storage.get_mcp(source_user_id, source_record_id)
+            elif kind == "skill":
+                source = await self._storage.get_skill(source_user_id, source_record_id)
+
+        if source is not None and kind in {"mcp", "skill"}:
+            for user_id in targets:
+                copied = source.model_copy(deep=True)
+                copied.user_id = user_id
+                copied.enabled = True
+                if kind == "mcp":
+                    existing = await self._storage.get_mcp_by_name(
+                        user_id,
+                        source.client.name,
+                    )
+                    if existing is not None and existing.id != copied.id:
+                        # Do not overwrite a user's own same-named resource.
+                        # The published catalog still exposes the approved
+                        # name, while the user's existing record remains
+                        # recoverable when publication is withdrawn.
+                        continue
+                    await self._storage.upsert_mcp(user_id, copied)
+                else:
+                    existing = await self._storage.get_skill_by_name(
+                        user_id,
+                        source.name,
+                    )
+                    if existing is not None and existing.id != copied.id:
+                        continue
+                    await self._storage.upsert_skill(user_id, copied)
+                if provisioned.get(user_id) != copied.id:
+                    provisioned[user_id] = copied.id
+                    changed = True
+
+        for user_id in set(provisioned) - targets:
+            record_id = provisioned[user_id]
+            # The source record belongs to the administrator and is the
+            # configuration authority. Unpublishing must not delete it.
+            if user_id == source_user_id:
+                provisioned.pop(user_id, None)
+                changed = True
+                continue
+            if kind == "mcp":
+                await self._storage.delete_mcp(user_id, record_id)
+            elif kind == "skill":
+                await self._storage.delete_skill(user_id, record_id)
+            provisioned.pop(user_id, None)
+            changed = True
+
+        if publication.get("provisioned") != provisioned:
+            publication["provisioned"] = provisioned
+            changed = True
+        return changed
+
+    async def _sync_resource_publications(
+        self,
+        resources: list[dict[str, Any]],
+    ) -> None:
+        accounts = await self._auth.list_accounts()
+        changed = False
+        for publication in resources:
+            changed = await self._sync_resource_publication(
+                publication,
+                accounts,
+            ) or changed
+        if changed:
+            await self._save_resource_publications(resources)
+
+    async def list_resource_publications(
+        self,
+        kind: ResourceKind | None = None,
+    ) -> ResourcePublicationListResponse:
+        resources = await self._resource_publications()
+        if kind is not None:
+            resources = [item for item in resources if item.get("kind") == kind]
+        views = [ResourcePublicationView.model_validate(item) for item in resources]
+        return ResourcePublicationListResponse(resources=views, total=len(views))
+
+    async def publish_resource(
+        self,
+        body: ResourcePublicationRequest,
+        actor: AuthUser,
+    ) -> ResourcePublicationView:
+        if body.scope == "selected" and not body.user_ids:
+            raise _error(
+                "users_required",
+                "Select at least one user for a selected publication.",
+                422,
+            )
+
+        accounts = await self._auth.list_accounts()
+        known_ids = {account.id for account in accounts if account.status == "active"}
+        unknown_ids = set(body.user_ids) - known_ids
+        if unknown_ids:
+            raise _error(
+                "user_not_found",
+                "One or more selected users do not exist or are inactive.",
+                422,
+            )
+
+        source_record: MCPRecord | SkillRecord | None = None
+        if body.source_record_id:
+            if body.kind == "mcp":
+                source_record = await self._storage.get_mcp(actor.id, body.source_record_id)
+            else:
+                source_record = await self._storage.get_skill(actor.id, body.source_record_id)
+            if source_record is None:
+                raise _error("resource_not_found", "The administrator resource was not found.", 404)
+        elif body.kind == "mcp":
+            raise _error("resource_record_required", "An installed MCP record is required.", 422)
+
+        publication_id = self._resource_publication_id(body.kind, body.source_id)
+        async with self._mutation_lock():
+            resources = await self._resource_publications()
+            existing = next(
+                (item for item in resources if item.get("id") == publication_id),
+                None,
+            )
+            publication = {
+                **(existing or {}),
+                **body.model_dump(),
+                "id": publication_id,
+                "source_user_id": actor.id,
+                "updated_at": _now(),
+            }
+            if source_record is not None:
+                publication["source_record_id"] = source_record.id
+            if existing is None:
+                resources.append(publication)
+            else:
+                resources[resources.index(existing)] = publication
+            await self._sync_resource_publication(publication, accounts)
+            await self._save_resource_publications(resources)
+            return ResourcePublicationView.model_validate(publication)
+
+    async def published_resources(
+        self,
+        user: AuthUser,
+        kind: ResourceKind | None = None,
+    ) -> PublishedResourceListResponse:
+        resources = await self._resource_publications()
+        await self._sync_resource_publications(resources)
+        visible = [
+            item
+            for item in resources
+            if item.get("enabled", True)
+            and item.get("scope") in {"all", "selected"}
+            and (item.get("scope") == "all" or user.id in item.get("user_ids", []))
+            and (kind is None or item.get("kind") == kind)
+        ]
+        views = [
+            PublishedResourceView(
+                id=item["id"],
+                kind=item["kind"],
+                name=item["name"],
+                display_name=item.get("display_name"),
+                description=item.get("description", ""),
+                tags=item.get("tags", []),
+                author=item.get("author"),
+                icon_url=item.get("icon_url"),
+                version=item.get("version"),
+            )
+            for item in visible
+        ]
+        return PublishedResourceListResponse(resources=views, total=len(views))
 
     async def create_user(
         self,
@@ -2327,7 +2680,10 @@ class AdminService:
             raise _error("invalid_customer_token", "The Sales Hub token is invalid.", 401)
 
 
-async def _auth_user(request: Request, authorization: str | None) -> AuthUser:
+async def _auth_user(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> AuthUser:
     auth: JWTAuthService = request.app.state.auth
     return await auth.get_current_user(authorization)
 
@@ -2347,6 +2703,43 @@ def get_admin_service(request: Request) -> AdminService:
 
 
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
+resource_router = APIRouter(prefix="/resources", tags=["resources"])
+
+
+@resource_router.get(
+    "/published",
+    response_model=PublishedResourceListResponse,
+)
+async def list_published_resources(
+    kind: ResourceKind | None = Query(default=None),
+    user: AuthUser = Depends(_auth_user),
+    service: AdminService = Depends(get_admin_service),
+) -> PublishedResourceListResponse:
+    return await service.published_resources(user, kind)
+
+
+@admin_router.get(
+    "/resources",
+    response_model=ResourcePublicationListResponse,
+)
+async def list_resource_publications(
+    kind: ResourceKind | None = Query(default=None),
+    _: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> ResourcePublicationListResponse:
+    return await service.list_resource_publications(kind)
+
+
+@admin_router.post(
+    "/resources",
+    response_model=ResourcePublicationView,
+)
+async def publish_resource(
+    body: ResourcePublicationRequest,
+    actor: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> ResourcePublicationView:
+    return await service.publish_resource(body, actor)
 
 
 @admin_router.get("/overview")

@@ -56,6 +56,7 @@ import { useKnowledgeBases } from '@/hooks/useKnowledgeBases';
 import { useMessages } from '@/hooks/useMessages';
 import { useSessions } from '@/hooks/useSessions';
 import { useWorkspace } from '@/hooks/useWorkspace.ts';
+import { usePublishedResources } from '@/hooks/usePublishedResources';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
@@ -87,6 +88,7 @@ const MAX_PANELS_PER_COLUMN = 2;
 
 /** localStorage key holding the dock layout across page navigations. */
 const PANEL_LAYOUT_KEY = 'chat_panel_layout';
+const OPEN_SKILL_PANEL_KEY = 'chat_open_skill_panel';
 
 // Typed as a full Record so adding a PanelKey without listing it here
 // is a compile error rather than a silently unrestorable panel.
@@ -224,10 +226,22 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	// panels stacked top→bottom. Open order determines placement.
 	// Persisted so leaving and returning to /chat keeps the same panels.
 	const [panelLayout, setPanelLayout] = useState<PanelKey[][]>(loadPanelLayout);
+	const [preferredSkillName] = useState<string | null>(() =>
+		localStorage.getItem('chat_selected_builtin_skill'),
+	);
 
 	useEffect(() => {
 		localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(panelLayout));
 	}, [panelLayout]);
+
+	// The admin skill catalog can send a user directly to chat. Reveal the
+	// workspace skills panel there so the pre-seeded workflow is immediately
+	// discoverable without changing the user's persistent dock layout.
+	useEffect(() => {
+		if (!sessionId || localStorage.getItem(OPEN_SKILL_PANEL_KEY) !== '1') return;
+		localStorage.removeItem(OPEN_SKILL_PANEL_KEY);
+		setPanelLayout((layout) => openPanelInLayout(layout, 'skill'));
+	}, [sessionId]);
 
 	// When the viewport agent differs from the outer page's selected
 	// agent (i.e. user drilled into a team member), `refetchSessions`
@@ -307,6 +321,16 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		addSkillsFromLibrary,
 		removeSkill,
 	} = useWorkspace(agentId, sessionId);
+	const { resources: publishedMcps } = usePublishedResources('mcp');
+	const { resources: publishedSkills } = usePublishedResources('skill');
+	const visibleMcps =
+		user?.role === 'admin'
+			? mcps
+			: mcps.filter((mcp) => publishedMcps.some((resource) => resource.name === mcp.name));
+	const visibleSkills =
+		user?.role === 'admin'
+			? skills
+			: skills.filter((skill) => publishedSkills.some((resource) => resource.name === skill.name));
 	const { knowledgeBases, loading: knowledgeBasesLoading } = useKnowledgeBases();
 	const { schema: kbMiddlewareSchema } = useKnowledgeBaseMiddlewareSchema();
 
@@ -421,7 +445,8 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 				icon: <MCPSvg className="size-4" />,
 				content: (
 					<McpPanel
-						mcps={mcps}
+						mcps={visibleMcps}
+						readOnly={user?.role !== 'admin'}
 						loading={mcpsLoading}
 						onAdd={addMcps}
 						onAddFromLibrary={addMcpsFromLibrary}
@@ -434,8 +459,10 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 				icon: <BookText className="size-4" />,
 				content: (
 					<SkillPanel
-						skills={skills}
+						skills={visibleSkills}
+						readOnly={user?.role !== 'admin'}
 						loading={skillsLoading}
+						preferredSkillName={preferredSkillName}
 						onUpload={uploadSkill}
 						onAddFromLibrary={addSkillsFromLibrary}
 						onRemove={removeSkill}
@@ -502,16 +529,17 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		[
 			t,
 			tasksContext,
-			mcps,
+			visibleMcps,
 			mcpsLoading,
 			addMcps,
 			addMcpsFromLibrary,
 			removeMcp,
-			skills,
+			visibleSkills,
 			skillsLoading,
 			uploadSkill,
 			addSkillsFromLibrary,
 			removeSkill,
+			user?.role,
 			permissionContext,
 			knowledgeBases,
 			knowledgeBasesLoading,

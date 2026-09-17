@@ -49,6 +49,7 @@ import { useResourceDrawer } from '@/hooks/useResourceDrawer.ts';
 import { useTranslation } from '@/i18n/useI18n';
 import { cn } from '@/lib/utils';
 import { avatarTint, formatTime } from '@/utils/common';
+import { PublishedResourcePage } from '@/pages/resources/PublishedResourcePage';
 
 /**
  * The drawer body: the server's README where a skill shows its `SKILL.md`,
@@ -484,7 +485,7 @@ function MinePanel({ mcps, loading, canConfigure, onEdit, onRemove }: MinePanelP
 	);
 }
 
-export function MCPHubPage() {
+function AdminMCPHubPage() {
 	const { t } = useTranslation();
 	const { user } = useAuth();
 	const navigate = useNavigate();
@@ -673,4 +674,11 @@ export function MCPHubPage() {
 			)}
 		</div>
 	);
+}
+
+/** Administrators browse/install from hubs; regular users see only the
+ * catalog entries published to them by an administrator. */
+export function MCPHubPage() {
+	const { user } = useAuth();
+	return user?.role === 'admin' ? <AdminMCPHubPage /> : <PublishedResourcePage kind="mcp" />;
 }

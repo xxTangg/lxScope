@@ -43,7 +43,7 @@ from agentscope.rag import (
 )
 from agentscope.workspace import WorkspaceBase
 
-from admin_api import AdminService, admin_router, sales_hub_router
+from admin_api import AdminService, admin_router, resource_router, sales_hub_router
 from auth import AuthUser, load_auth_from_env
 from longxin_admin.credential_policy import AdminManagedCredentialPolicy
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
@@ -80,6 +80,19 @@ storage = RedisStorage(
     port=int(os.getenv("REDIS_PORT", "6379")),
     password=os.getenv("REDIS_PASSWORD") or None,
 )
+
+# Product-owned office skills are seeded into every new workspace. They do
+# not become user-installed library records, so every account can use them
+# without downloading or installing anything first.
+builtin_skills_dir = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "builtin_skills",
+)
+builtin_skill_paths = [
+    os.path.join(builtin_skills_dir, name)
+    for name in sorted(os.listdir(builtin_skills_dir))
+    if os.path.isdir(os.path.join(builtin_skills_dir, name))
+]
 
 # Qdrant must be persistent in a service deployment.  The previous
 # ``:memory:`` configuration made every API restart look like an empty
@@ -160,6 +173,8 @@ app = create_app(
         ),
         # The default MCP servers that will be added into the workspace
         default_mcps=default_mcps,
+        # All users start with the product-owned office skills available.
+        skill_paths=builtin_skill_paths,
     ),
     # Knowledge base feature — backed by a persistent local Qdrant store. The
     # CollectionPerKbManager allocates one collection per knowledge base,
@@ -314,6 +329,7 @@ app.state.upgrade_service = UpgradeService(storage, auth)
 app.state.sales_hub_authorizer = app.state.admin_service.authorize_hub
 app.include_router(auth.router)
 app.include_router(admin_router)
+app.include_router(resource_router)
 app.include_router(sales_hub_router)
 app.include_router(plan_billing_router)
 app.include_router(upgrade_router)
@@ -328,6 +344,7 @@ _base_lifespan = app.router.lifespan_context
 @asynccontextmanager
 async def _application_lifespan(app_instance):
     async with _base_lifespan(app_instance):
+        await app_instance.state.admin_service.ensure_default_builtin_publications()
         await _ensure_siliconflow_credential(auth.admin_user_ids)
         recharge_sync_task = asyncio.create_task(
             _sales_hub_recharge_sync_loop(app_instance.state.admin_service),

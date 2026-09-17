@@ -147,7 +147,13 @@ export function AppSidebar() {
 							)}
 							<SidebarMenuItem>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.mcp-hub'), hidden: false }}
+									tooltip={{
+										children:
+											user?.role === 'admin'
+												? t('common.mcp-hub')
+												: t('resources.mcpTitle'),
+										hidden: false,
+									}}
 									// Stays lit while browsing a hub under /mcp/:hubId.
 									isActive={location.pathname.startsWith('/mcp')}
 									onClick={() => navigate('/mcp')}
@@ -158,7 +164,13 @@ export function AppSidebar() {
 							</SidebarMenuItem>
 							<SidebarMenuItem>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.skill-hub'), hidden: false }}
+									tooltip={{
+										children:
+											user?.role === 'admin'
+												? t('common.skill-hub')
+												: t('resources.skillTitle'),
+										hidden: false,
+									}}
 									isActive={location.pathname.startsWith('/skill')}
 									onClick={() => navigate('/skill')}
 									className="justify-center"
