@@ -518,6 +518,68 @@ class AdminApiTest(IsolatedAsyncioTestCase):
                 self.assertEqual(len(_FakeHubClient.reported_payloads), 1)
                 self.assertEqual(_FakeHubClient.reported_payloads[0]["total_recharged"], "100.00")
 
+    def test_direct_sales_code_creates_local_shadow_order(self) -> None:
+        login = self._login("admin", "admin-password")
+        headers = {"Authorization": f"Bearer {login['access_token']}"}
+        payload = {
+            "system_id": "local-system",
+            "amount": "100.00",
+            "tokens": 1000,
+            "version": "1",
+            "order_id": "ord-direct-code-1",
+            "nonce": "nonce-direct-code-1",
+            "issued_at": "2026-09-17T00:00:00+00:00",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        }
+        payload_bytes = json_module_dumps(payload)
+        signature = hmac.new(
+            b"test-secret",
+            payload_bytes,
+            hashlib.sha256,
+        ).hexdigest()
+        code = (
+            "LXRC2."
+            + base64.urlsafe_b64encode(payload_bytes).decode().rstrip("=")
+            + "."
+            + signature
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "LONGXIN_RECHARGE_CODE_SECRET": "test-secret",
+                "LONGXIN_ALLOW_LEGACY_HMAC_CODES": "true",
+            },
+        ):
+            redeemed = self.client.post(
+                "/admin/quota/redeem-code",
+                headers={
+                    **headers,
+                    "X-Request-ID": "req-direct-code-1",
+                    "Idempotency-Key": "idem-direct-code-1",
+                },
+                json={"code": code, "confirm": True},
+            )
+            self.assertEqual(redeemed.status_code, 200)
+            self.assertEqual(redeemed.json()["amount"], "100.00")
+            self.assertEqual(redeemed.json()["tokens"], 1000)
+
+            quota = self.client.get("/admin/quota", headers=headers)
+            self.assertEqual(quota.status_code, 200)
+            self.assertEqual(quota.json()["pool_tokens"], 1000)
+
+            orders = self.client.get("/admin/quota/recharge-requests", headers=headers)
+            self.assertEqual(orders.status_code, 200)
+            self.assertEqual(orders.json()["orders"][0]["order_id"], "ord-direct-code-1")
+            self.assertEqual(orders.json()["orders"][0]["delivery_status"], "delivered")
+
+            duplicate = self.client.post(
+                "/admin/quota/redeem-code",
+                headers={**headers, "Idempotency-Key": "idem-direct-code-2"},
+                json={"code": code, "confirm": True},
+            )
+            self.assertEqual(duplicate.status_code, 409)
+            self.assertEqual(duplicate.json()["detail"]["code"], "code_already_redeemed")
+
     def test_usage_report_rejects_incomplete_sales_response(self) -> None:
         login = self._login("admin", "admin-password")
         headers = {"Authorization": f"Bearer {login['access_token']}"}

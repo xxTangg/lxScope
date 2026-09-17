@@ -596,6 +596,31 @@ class AdminService:
         return f"{_PREFIX}:order:{order_id}"
 
     @staticmethod
+    def _sales_code_order(
+        *,
+        order_id: str,
+        system_id: str,
+        amount: str,
+        tokens: int,
+        nonce: str,
+        issued_at: datetime,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Create the local shadow order for a directly issued Sales code."""
+        return {
+            "order_id": order_id,
+            "system_id": system_id,
+            "amount": amount,
+            "status": "approved",
+            "delivery_status": "not_delivered",
+            "created_at": issued_at.isoformat(),
+            "request_id": request_id,
+            "source": "sales_hub_code",
+            "tokens": tokens,
+            "nonce": nonce,
+        }
+
+    @staticmethod
     def _idempotency_key(operation: str, key: str) -> str:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return f"{_PREFIX}:idempotency:{operation}:{digest}"
@@ -2076,7 +2101,15 @@ class AdminService:
             raise _error("invalid_recharge_code", "The recharge amount is invalid.", 400)
         order = await self._read_json(self._order_key(order_id))
         if order is None:
-            raise _error("recharge_order_not_found", "The recharge order was not found locally.", 409)
+            order = self._sales_code_order(
+                order_id=order_id,
+                system_id=system["system_id"],
+                amount=amount,
+                tokens=tokens,
+                nonce=nonce,
+                issued_at=issued_at,
+                request_id=request_id,
+            )
         if order.get("system_id") != system["system_id"]:
             raise _error("system_id_mismatch", "The recharge order targets another system.", 409)
         if order.get("delivery_status") == "delivered":
@@ -2098,7 +2131,18 @@ class AdminService:
                 return existing
             current_order = await self._read_json(self._order_key(order_id))
             if current_order is None:
-                raise _error("recharge_order_not_found", "The recharge order was not found locally.", 409)
+                current_order = self._sales_code_order(
+                    order_id=order_id,
+                    system_id=system["system_id"],
+                    amount=amount,
+                    tokens=tokens,
+                    nonce=nonce,
+                    issued_at=issued_at,
+                    request_id=request_id,
+                )
+                external_order = True
+            else:
+                external_order = False
             if current_order.get("delivery_status") == "delivered" or current_order.get(
                 "redemption_operation_id",
             ):
@@ -2127,12 +2171,14 @@ class AdminService:
             order.update(
                 {
                     "status": "approved",
-                    "delivery_status": "not_delivered",
+                    "delivery_status": "delivered" if external_order else "not_delivered",
                     "ledger_id": ledger.ledger_id,
                     "redemption_operation_id": operation_id,
                 },
             )
             await self._write_json(self._order_key(order_id), order)
+            if external_order:
+                await self._client().rpush(f"{_PREFIX}:orders", order_id)
             result = {
                 "operation_id": operation_id,
                 "state": "completed",
