@@ -54,6 +54,14 @@ export interface UpgradeOperation {
 	error: Record<string, unknown> | null;
 }
 
+export interface UpgradeStatus {
+	app_version: string | null;
+	core_version: string | null;
+	health: 'ok' | 'degraded' | 'unknown';
+	latest_operation: UpgradeOperation | null;
+	target_configured: Record<string, boolean>;
+}
+
 interface BackupListResponse {
 	backups: BackupMeta[];
 	total: number;
@@ -71,6 +79,7 @@ const idempotencyKey = () => {
 
 export const upgradeApi = {
 	catalog: () => client.get<UpgradeCatalog>('/admin/upgrades'),
+	status: () => client.get<UpgradeStatus>('/admin/upgrade/status'),
 	backups: (limit = 20) =>
 		client.get<BackupListResponse>('/admin/upgrades/backups', { limit: String(limit) }),
 	operations: (limit = 20) =>
@@ -93,9 +102,14 @@ export const upgradeApi = {
 		),
 	rollback: (backup_id: string, admin_password: string) =>
 		client.post<UpgradeOperation>(
-			'/admin/upgrades/rollback',
-			{ backup_id, admin_password },
+			`/admin/backups/${encodeURIComponent(backup_id)}/restore`,
+			{ confirm: true, admin_password },
 			undefined,
 			{ headers: { 'Idempotency-Key': idempotencyKey() } },
 		),
+	deleteBackup: (backup_id: string, reason: string) =>
+		client.delete(`/admin/backups/${encodeURIComponent(backup_id)}`, undefined, {
+			body: { confirm: true, reason },
+			headers: { 'Idempotency-Key': idempotencyKey() },
+		}),
 };

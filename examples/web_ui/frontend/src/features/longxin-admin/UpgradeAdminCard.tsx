@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useTranslation } from '@/i18n/useI18n';
+import { useAuth } from '@/hooks/useAuth';
 
 import { upgradeApi, type ArtifactType, type ReleaseMeta, type UpgradeOperation } from './upgrade-api';
 
@@ -27,22 +28,31 @@ function operationVariant(state: UpgradeOperation['state']) {
 
 export function UpgradeAdminCard() {
 	const { t } = useTranslation();
+	const { user } = useAuth();
 	const queryClient = useQueryClient();
 	const [artifactType, setArtifactType] = useState<ArtifactType>('app');
 	const [version, setVersion] = useState('');
 	const [file, setFile] = useState<File | null>(null);
 	const [adminPassword, setAdminPassword] = useState('');
 	const catalog = useQuery({
-		queryKey: ['longxin-upgrades', 'catalog'],
+		queryKey: ['longxin-upgrades', user?.id, 'catalog'],
 		queryFn: upgradeApi.catalog,
+		enabled: user?.role === 'admin',
+	});
+	const status = useQuery({
+		queryKey: ['longxin-upgrades', user?.id, 'status'],
+		queryFn: upgradeApi.status,
+		enabled: user?.role === 'admin',
 	});
 	const backups = useQuery({
-		queryKey: ['longxin-upgrades', 'backups'],
+		queryKey: ['longxin-upgrades', user?.id, 'backups'],
 		queryFn: () => upgradeApi.backups(20),
+		enabled: user?.role === 'admin',
 	});
 	const operations = useQuery({
-		queryKey: ['longxin-upgrades', 'operations'],
+		queryKey: ['longxin-upgrades', user?.id, 'operations'],
 		queryFn: () => upgradeApi.operations(20),
+		enabled: user?.role === 'admin',
 		refetchInterval: (query) =>
 			query.state.data?.operations.some((item) =>
 				['pending', 'downloading', 'backing_up', 'applying', 'health_check'].includes(item.state),
@@ -78,12 +88,23 @@ export function UpgradeAdminCard() {
 		},
 		onSuccess: refresh,
 	});
+	const deleteBackup = useMutation({
+		mutationFn: ({ backupId, reason }: { backupId: string; reason: string }) =>
+			upgradeApi.deleteBackup(backupId, reason),
+		onSuccess: refresh,
+	});
 
 	const latest: Array<{ type: ArtifactType; release: ReleaseMeta | null }> = [
 		{ type: 'app', release: catalog.data?.app ?? null },
 		{ type: 'core', release: catalog.data?.core ?? null },
 	];
-	const error = upload.error?.message ?? apply.error?.message ?? rollback.error?.message ?? catalog.error?.message;
+	const error =
+		upload.error?.message ??
+		apply.error?.message ??
+		rollback.error?.message ??
+		deleteBackup.error?.message ??
+		catalog.error?.message ??
+		status.error?.message;
 
 	const submitUpload = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
@@ -105,6 +126,10 @@ export function UpgradeAdminCard() {
 						<AlertDescription>{error}</AlertDescription>
 					</Alert>
 				)}
+				<div className="text-sm text-muted-foreground">
+					{t('upgrade.health')}: <Badge variant={status.data?.health === 'ok' ? 'default' : 'outline'}>{status.data?.health ?? t('upgrade.unknown')}</Badge>
+					 · {t('upgrade.installed')}: {status.data?.app_version ?? t('upgrade.unknown')} / {status.data?.core_version ?? t('upgrade.unknown')}
+				</div>
 				<div className="max-w-sm space-y-1.5">
 					<Label htmlFor="upgrade-admin-password">{t('upgrade.adminPassword')}</Label>
 					<Input
@@ -201,10 +226,26 @@ export function UpgradeAdminCard() {
 									<div>{t(`upgrade.types.${backup.artifact_type}`)} · {backup.version}</div>
 									<div className="truncate font-mono text-xs text-muted-foreground">{backup.backup_id}</div>
 								</div>
-								<Button size="sm" variant="outline" disabled={!adminPassword || rollback.isPending} onClick={() => rollback.mutate(backup.backup_id)}>
-									<RotateCcw />
-									{t('upgrade.rollback')}
-								</Button>
+																											<Button size="sm" variant="outline" disabled={!adminPassword || rollback.isPending} onClick={() => rollback.mutate(backup.backup_id)}>
+																												<RotateCcw />
+																												{t('upgrade.rollback')}
+																											</Button>
+																											<Button
+																												variant="destructive"
+																												size="sm"
+																												disabled={deleteBackup.isPending}
+																												onClick={() => {
+																													if (!window.confirm(t('upgrade.deleteBackupConfirm'))) return;
+																													const reason = window.prompt(t('upgrade.deleteBackupReason'));
+																													if (reason && reason.trim().length >= 4) {
+																														deleteBackup.mutate({ backupId: backup.backup_id, reason: reason.trim() });
+																													} else if (reason !== null) {
+																														window.alert(t('upgrade.reasonRequired'));
+																													}
+																													}}
+																												>
+																												{t('upgrade.deleteBackup')}
+																											</Button>
 							</div>
 						))
 					) : (

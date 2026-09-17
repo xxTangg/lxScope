@@ -173,6 +173,11 @@ textarea {
   border-color: #b9c5d5;
   background: #fafbfd;
 }
+.compact-button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 12px;
+}
 .danger {
   border: 1px solid #f2d4d8;
   color: var(--red);

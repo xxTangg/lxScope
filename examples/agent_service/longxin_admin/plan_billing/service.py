@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from auth import AuthUser, JWTAuthService
+from longxin_admin.distributed_lock import DistributedLease
 
 from .catalog import PLAN_BY_ID, PLAN_DEFINITIONS, PlanDefinition
 from .models import (
@@ -55,6 +56,13 @@ class PlanBillingService:
         self._storage = storage
         self._auth = auth
         self._lock = asyncio.Lock()
+
+    def _mutation_lock(self) -> DistributedLease:
+        return DistributedLease(
+            self._client,
+            self._lock,
+            f"{PLAN_PREFIX}:mutation-lock",
+        )
 
     def _client(self) -> Any:
         client = self._storage.get_client()
@@ -359,7 +367,7 @@ class PlanBillingService:
             raise _error("admin_cannot_order", "Administrators cannot buy member plans.", 409)
         idem_key = self._order_idempotency_key(f"user:{user.id}", idempotency_key)
         request_fingerprint = {"operation": "create_order", **body.model_dump()}
-        async with self._lock:
+        async with self._mutation_lock():
             previous = await self._read_idempotent(idem_key, request_fingerprint)
             if previous is not None:
                 return self._order_view(previous, request_id)
@@ -408,6 +416,7 @@ class PlanBillingService:
                 target_id=user.id,
                 reason=body.note or "Plan order submitted.",
                 resource_id=order["order_id"],
+                request_id=request_id,
             )
             return self._order_view(order, request_id)
 
@@ -426,6 +435,7 @@ class PlanBillingService:
         order_id: str,
         related_user_id: str,
         operator_id: str,
+        idempotency_key: str | None = None,
     ) -> None:
         entry = {
             "ledger_id": f"ledger-{uuid4().hex}",
@@ -436,6 +446,7 @@ class PlanBillingService:
             "order_id": order_id,
             "related_user_id": related_user_id,
             "operator_id": operator_id,
+            "idempotency_key": idempotency_key,
             "source": "plan_billing",
             "created_at": _now(),
         }
@@ -453,10 +464,11 @@ class PlanBillingService:
         reason: str,
         resource_id: str | None = None,
         result_summary: str = "completed",
+        request_id: str = "",
     ) -> None:
         event = {
             "event_id": f"event-{uuid4().hex}",
-            "actor_type": actor.role,
+            "actor_type": actor.role if actor.role in {"admin", "user"} else "system",
             "actor_id": actor.id,
             "actor_name": actor.username,
             "target_user_id": target_id,
@@ -464,6 +476,7 @@ class PlanBillingService:
             "resource_type": "plan_order",
             "resource_id": resource_id,
             "reason": reason,
+            "request_id": request_id,
             "status": "completed",
             "result_summary": result_summary,
             "created_at": _now(),
@@ -500,7 +513,7 @@ class PlanBillingService:
             "order_id": order_id,
             "reason": body.reason,
         }
-        async with self._lock:
+        async with self._mutation_lock():
             previous = await self._read_idempotent(idem_key, request_fingerprint)
             if previous is not None:
                 return self._order_view(previous, request_id)
@@ -556,6 +569,7 @@ class PlanBillingService:
                 order_id=order_id,
                 related_user_id=order["user_id"],
                 operator_id=actor.id,
+                idempotency_key=idempotency_key,
             )
             order.update(
                 {
@@ -574,6 +588,7 @@ class PlanBillingService:
                 reason=body.reason,
                 resource_id=order_id,
                 result_summary=f"allocated_tokens={allocation}",
+                request_id=request_id,
             )
             return self._order_view(order, request_id)
 
@@ -594,7 +609,7 @@ class PlanBillingService:
             "order_id": order_id,
             "reason": body.reason,
         }
-        async with self._lock:
+        async with self._mutation_lock():
             previous = await self._read_idempotent(idem_key, request_fingerprint)
             if previous is not None:
                 return self._order_view(previous, request_id)
@@ -616,6 +631,7 @@ class PlanBillingService:
                 target_id=order["user_id"],
                 reason=body.reason,
                 resource_id=order_id,
+                request_id=request_id,
             )
             return self._order_view(order, request_id)
 
@@ -638,7 +654,7 @@ class PlanBillingService:
         account = next((item for item in accounts if item.id == user_id), None)
         if account is None:
             raise _error("user_not_found", "User not found.", 404)
-        async with self._lock:
+        async with self._mutation_lock():
             profile = await self._profile(account)
             was_activated = bool(profile.get("plan_started_at"))
             old_quota = int(profile.get("monthly_quota", 0))

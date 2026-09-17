@@ -9,4 +9,11 @@ export default defineConfig({
       '/api': 'http://127.0.0.1:44100',
     },
   },
+  preview: {
+    host: '0.0.0.0',
+    port: 44101,
+    proxy: {
+      '/api': 'http://127.0.0.1:44100',
+    },
+  },
 });

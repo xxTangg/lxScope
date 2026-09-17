@@ -145,10 +145,9 @@ export async function ensureData(): Promise<void> {
     for (const [file, value] of defaults) {
       const key = storeKey(file);
       if (!key) continue;
-      const existing = await databasePool.query(
-        `SELECT 1 FROM ${databaseTable} WHERE key = $1`,
-        [key],
-      );
+      const existing = await databasePool.query(`SELECT 1 FROM ${databaseTable} WHERE key = $1`, [
+        key,
+      ]);
       if (existing.rows.length > 0) continue;
       let initialValue = value;
       try {
@@ -198,25 +197,93 @@ export async function appendAudit(entry: Record<string, unknown>): Promise<void>
   );
 }
 
-export async function getSigningKeyPair(): Promise<{
+type SigningKeyPair = {
   privateKey: crypto.KeyObject;
   publicKey: crypto.KeyObject;
-}> {
+};
+
+let signingKeyPairPromise: Promise<SigningKeyPair> | undefined;
+
+async function readOptionalKeyFile(file: string): Promise<Buffer | null> {
+  try {
+    return await fs.readFile(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(`无法读取充值签名密钥文件：${path.basename(file)}`, { cause: error });
+  }
+}
+
+function keyPairMismatchError(): Error {
+  return new Error('充值签名密钥的私钥与公钥不匹配，请恢复同一密钥对后再启动销售系统');
+}
+
+async function createSigningKeyPair(
+  privateFile: string,
+  publicFile: string,
+): Promise<SigningKeyPair> {
+  const pair = crypto.generateKeyPairSync('ed25519');
+  const privateBytes = pair.privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const publicBytes = pair.publicKey.export({ type: 'spki', format: 'pem' });
+  const privateTemp = `${privateFile}.${crypto.randomUUID()}.tmp`;
+  const publicTemp = `${publicFile}.${crypto.randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(privateTemp, privateBytes, { mode: 0o600 });
+    await fs.writeFile(publicTemp, publicBytes, { mode: 0o644 });
+    await fs.rename(privateTemp, privateFile);
+    await fs.rename(publicTemp, publicFile);
+    return pair;
+  } catch (error) {
+    await Promise.all([fs.rm(privateTemp, { force: true }), fs.rm(publicTemp, { force: true })]);
+    throw new Error('无法持久化充值签名密钥对，已停止启动以避免签发不可兑换的充值码', {
+      cause: error,
+    });
+  }
+}
+
+async function loadOrCreateSigningKeyPair(): Promise<SigningKeyPair> {
   const privateFile = path.join(KEY_DIR, 'private.pem');
   const publicFile = path.join(KEY_DIR, 'public.pem');
-  try {
-    return {
-      privateKey: crypto.createPrivateKey(await fs.readFile(privateFile)),
-      publicKey: crypto.createPublicKey(await fs.readFile(publicFile)),
-    };
-  } catch {
-    const pair = crypto.generateKeyPairSync('ed25519');
-    await fs.writeFile(privateFile, pair.privateKey.export({ type: 'pkcs8', format: 'pem' }), {
-      mode: 0o600,
-    });
-    await fs.writeFile(publicFile, pair.publicKey.export({ type: 'spki', format: 'pem' }), {
-      mode: 0o644,
-    });
-    return pair;
+  const [privateBytes, publicBytes] = await Promise.all([
+    readOptionalKeyFile(privateFile),
+    readOptionalKeyFile(publicFile),
+  ]);
+  if (privateBytes === null && publicBytes === null) {
+    return createSigningKeyPair(privateFile, publicFile);
   }
+  if (privateBytes === null || publicBytes === null) {
+    throw new Error('充值签名密钥对不完整，禁止自动生成新密钥；请恢复 private.pem 和 public.pem');
+  }
+
+  let privateKey: crypto.KeyObject;
+  let publicKey: crypto.KeyObject;
+  try {
+    privateKey = crypto.createPrivateKey(privateBytes);
+    publicKey = crypto.createPublicKey(publicBytes);
+  } catch (error) {
+    throw new Error('充值签名密钥文件损坏或格式不受支持，禁止自动生成新密钥', { cause: error });
+  }
+  if (privateKey.asymmetricKeyType !== 'ed25519' || publicKey.asymmetricKeyType !== 'ed25519') {
+    throw new Error('充值签名密钥必须是 Ed25519 密钥对');
+  }
+  const derivedPublicBytes = crypto
+    .createPublicKey(privateKey)
+    .export({ type: 'spki', format: 'der' });
+  const configuredPublicBytes = publicKey.export({ type: 'spki', format: 'der' });
+  if (
+    derivedPublicBytes.length !== configuredPublicBytes.length ||
+    !crypto.timingSafeEqual(derivedPublicBytes, configuredPublicBytes)
+  ) {
+    throw keyPairMismatchError();
+  }
+  return { privateKey, publicKey };
+}
+
+export function getSigningKeyPair(): Promise<SigningKeyPair> {
+  signingKeyPairPromise ??= loadOrCreateSigningKeyPair();
+  return signingKeyPairPromise;
+}
+
+export function publicKeyFingerprint(publicKey: crypto.KeyObject): string {
+  const der = publicKey.export({ type: 'spki', format: 'der' });
+  return `sha256:${crypto.createHash('sha256').update(der).digest('hex').slice(0, 16)}`;
 }

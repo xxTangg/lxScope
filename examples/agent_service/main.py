@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
 """The example script to start the agent service."""
 from contextlib import asynccontextmanager
+import asyncio
 import os
 import sys
+from uuid import uuid4
 
 from pydantic import SecretStr
 import uvicorn
+from fastapi import HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,12 +25,11 @@ from agentscope.app.deps import get_current_user_id
 from agentscope.app.hub import ClawSkillHub, GitHubMCPHub
 from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
-from agentscope.app.storage import RedisKnowledgeGraphStore, RedisStorage
+from agentscope.app.storage import RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import OpenAICredential
 from agentscope.mcp import MCPClient, StdioMCPConfig
 from agentscope.middleware import AgenticMemoryMiddleware, MiddlewareBase
-from agentscope.model import OpenAIChatModel
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.rag import (
     ApproxTokenChunker,
@@ -35,13 +40,11 @@ from agentscope.rag import (
     QdrantStore,
     TextParser,
     WordParser,
-    KnowledgeGraphExtractor,
 )
 from agentscope.workspace import WorkspaceBase
 
-from admin_api import AdminService, admin_router, sales_hub_router
-from auth import load_auth_from_env
-from sales_integration import create_sales_integration_router
+from admin_api import AdminService, admin_router, resource_router, sales_hub_router
+from auth import AuthUser, load_auth_from_env
 from longxin_admin.credential_policy import AdminManagedCredentialPolicy
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
 from longxin_admin.upgrade import UpgradeService, upgrade_router
@@ -78,67 +81,24 @@ storage = RedisStorage(
     password=os.getenv("REDIS_PASSWORD") or None,
 )
 
+# Product-owned office skills are seeded into every new workspace. They do
+# not become user-installed library records, so every account can use them
+# without downloading or installing anything first.
+builtin_skills_dir = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "builtin_skills",
+)
+builtin_skill_paths = [
+    os.path.join(builtin_skills_dir, name)
+    for name in sorted(os.listdir(builtin_skills_dir))
+    if os.path.isdir(os.path.join(builtin_skills_dir, name))
+]
+
 # Qdrant must be persistent in a service deployment.  The previous
 # ``:memory:`` configuration made every API restart look like an empty
 # knowledge base because all vectors disappeared with the process.
 vector_store = QdrantStore(
     path=os.getenv("QDRANT_PATH", "/app/qdrant_data"),
-)
-
-
-def _build_knowledge_graph_extractor() -> KnowledgeGraphExtractor | None:
-    """Build the optional graph extractor from the existing LLM settings."""
-    siliconflow_key = os.getenv("SILICONFLOW_API_KEY")
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-    api_key = siliconflow_key or deepseek_key
-    if not api_key:
-        return None
-    using_siliconflow = bool(siliconflow_key)
-    provider_name = "SiliconFlow" if using_siliconflow else "DeepSeek"
-    model = OpenAIChatModel(
-        credential=OpenAICredential(
-            id=(
-                os.getenv("SILICONFLOW_CREDENTIAL_ID", "siliconflow")
-                if using_siliconflow
-                else os.getenv("DEEPSEEK_CREDENTIAL_ID", "deepseek")
-            ),
-            name=f"{provider_name} graph extractor",
-            api_key=SecretStr(api_key),
-            base_url=os.getenv(
-                "SILICONFLOW_BASE_URL"
-                if using_siliconflow
-                else "DEEPSEEK_BASE_URL",
-                "https://api.siliconflow.cn/v1"
-                if using_siliconflow
-                else "https://api.deepseek.com/v1",
-            ),
-        ),
-        model=(
-            os.getenv("LXSCOPE_GRAPH_MODEL")
-            or os.getenv(
-                "SILICONFLOW_CHAT_MODEL"
-                if using_siliconflow
-                else "DEEPSEEK_CHAT_MODEL",
-                "deepseek-ai/DeepSeek-V3.2"
-                if using_siliconflow
-                else "deepseek-v4-flash",
-            )
-        ),
-        parameters=OpenAIChatModel.Parameters(
-            temperature=0.1,
-            max_tokens=1200,
-            thinking_enable=False,
-        ),
-        stream=False,
-    )
-    return KnowledgeGraphExtractor(model=model)
-
-
-knowledge_graph_extractor = _build_knowledge_graph_extractor()
-knowledge_graph_store = (
-    RedisKnowledgeGraphStore(storage)
-    if knowledge_graph_extractor is not None
-    else None
 )
 
 
@@ -213,6 +173,8 @@ app = create_app(
         ),
         # The default MCP servers that will be added into the workspace
         default_mcps=default_mcps,
+        # All users start with the product-owned office skills available.
+        skill_paths=builtin_skill_paths,
     ),
     # Knowledge base feature — backed by a persistent local Qdrant store. The
     # CollectionPerKbManager allocates one collection per knowledge base,
@@ -221,8 +183,6 @@ app = create_app(
         storage=storage,
         vector_store=vector_store,
     ),
-    knowledge_graph_store=knowledge_graph_store,
-    knowledge_graph_extractor=knowledge_graph_extractor,
     # Chunker classes users can pick from when creating a knowledge base;
     # the chosen type and parameters are pinned on the knowledge base.
     knowledge_chunkers=[ApproxTokenChunker],
@@ -299,6 +259,63 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
     ],
     download_secret=os.getenv("AGENTSCOPE_DOWNLOAD_SECRET"),
 )
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Generate one correlation ID and echo it on every application response."""
+    request_id = request.headers.get("X-Request-ID", "").strip() or f"req-{uuid4().hex}"
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def admin_error_handler(request: Request, exc: HTTPException):
+    """Add the contract correlation ID only to the product API domains."""
+    if not (
+        request.url.path.startswith("/admin")
+        or request.url.path.startswith("/integration/sales/v1")
+    ):
+        return await http_exception_handler(request, exc)
+    if not isinstance(exc.detail, dict):
+        return await http_exception_handler(request, exc)
+    detail = dict(exc.detail)
+    detail.setdefault("request_id", getattr(request.state, "request_id", ""))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": detail},
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def admin_validation_error_handler(request: Request, exc: RequestValidationError):
+    if not (
+        request.url.path.startswith("/admin")
+        or request.url.path.startswith("/integration/sales/v1")
+    ):
+        from fastapi.exception_handlers import request_validation_exception_handler
+
+        return await request_validation_exception_handler(request, exc)
+    fields: dict[str, str] = {}
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error.get("loc", ()))
+        fields[location or "request"] = str(error.get("msg", "Invalid request."))
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "code": "validation_error",
+                "message": "The request payload is invalid.",
+                "fields": fields,
+                "request_id": getattr(request.state, "request_id", ""),
+            },
+        },
+    )
+
+
 app.state.auth = auth
 app.state.plan_billing_service = PlanBillingService(storage, auth)
 app.state.credential_access_check = auth.is_admin_user
@@ -311,8 +328,8 @@ app.state.admin_service = AdminService(
 app.state.upgrade_service = UpgradeService(storage, auth)
 app.state.sales_hub_authorizer = app.state.admin_service.authorize_hub
 app.include_router(auth.router)
-app.include_router(create_sales_integration_router(storage=storage, auth=auth))
 app.include_router(admin_router)
+app.include_router(resource_router)
 app.include_router(sales_hub_router)
 app.include_router(plan_billing_router)
 app.include_router(upgrade_router)
@@ -327,11 +344,51 @@ _base_lifespan = app.router.lifespan_context
 @asynccontextmanager
 async def _application_lifespan(app_instance):
     async with _base_lifespan(app_instance):
+        await app_instance.state.admin_service.ensure_default_builtin_publications()
         await _ensure_siliconflow_credential(auth.admin_user_ids)
-        yield
+        recharge_sync_task = asyncio.create_task(
+            _sales_hub_recharge_sync_loop(app_instance.state.admin_service),
+        )
+        try:
+            yield
+        finally:
+            recharge_sync_task.cancel()
+            await asyncio.gather(recharge_sync_task, return_exceptions=True)
 
 
 app.router.lifespan_context = _application_lifespan
+
+
+async def _sales_hub_recharge_sync_loop(service: AdminService) -> None:
+    """Poll approved Sales Hub orders so delivery status advances automatically."""
+    try:
+        interval = max(
+            5.0,
+            float(os.getenv("LONGXIN_RECHARGE_SYNC_INTERVAL_SECONDS", "30")),
+        )
+    except ValueError:
+        interval = 30.0
+    actor = AuthUser(
+        id="system-sales-hub-sync",
+        username="system-sales-hub-sync",
+        role="admin",
+    )
+    while True:
+        try:
+            config = await service.hub_config()
+            if config.get("hub_url") and config.get("token_masked"):
+                await service.sync_recharge(
+                    actor,
+                    request_id=f"req-auto-sync-{uuid4().hex}",
+                    idempotency_key=f"idem-auto-sync-{uuid4().hex}",
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The next cycle retries.  Credentials and response bodies are
+            # intentionally not logged by this background task.
+            pass
+        await asyncio.sleep(interval)
 
 
 if __name__ == "__main__":

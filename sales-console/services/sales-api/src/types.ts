@@ -22,6 +22,7 @@ export interface Customer {
   ip: string;
   port: number;
   baseUrl: string | null;
+  internalBaseUrl?: string | null;
   contact: string;
   notes: string;
   apiToken: string;

@@ -41,8 +41,8 @@ interface Props {
 	skill: ResourceDetail | null;
 	/** Whether the detail body is still being fetched. */
 	loading?: boolean;
-	/** The action button, which differs between browsing and the library. */
-	action: React.ReactNode;
+	/** The optional action button, which differs between browsing and the library. */
+	action?: React.ReactNode;
 	/**
 	 * The scrolling body: a skill's `SKILL.md`, an MCP's config template.
 	 * Falls back to `skill.markdown` when omitted.
@@ -184,7 +184,7 @@ export function ResourceDetailDrawer({
 					)}
 				</div>
 
-				<DrawerFooter>{action}</DrawerFooter>
+				{action ? <DrawerFooter>{action}</DrawerFooter> : null}
 			</DrawerContent>
 		</Drawer>
 	);

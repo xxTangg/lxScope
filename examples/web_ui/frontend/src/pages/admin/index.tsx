@@ -2,11 +2,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
 	Activity,
 	BadgeDollarSign,
+	ChevronLeft,
+	ChevronRight,
 	Database,
+	KeyRound,
 	Loader2,
 	RefreshCw,
 	Save,
 	ShieldCheck,
+	UserRoundX,
 	UserPlus,
 	Users,
 	type LucideIcon,
@@ -88,6 +92,8 @@ export function AdminPage() {
 	const [systemId, setSystemId] = useState('');
 	const [hubUrl, setHubUrl] = useState('');
 	const [hubToken, setHubToken] = useState('');
+	const [statusFilter, setStatusFilter] = useState('');
+	const [userPage, setUserPage] = useState(1);
 
 	const enabled = user?.role === 'admin';
 	const overview = useQuery({
@@ -101,8 +107,24 @@ export function AdminPage() {
 		enabled,
 	});
 	const users = useQuery({
-		queryKey: ['admin', user?.id, 'users', keyword],
-		queryFn: () => adminApi.users({ keyword: keyword || undefined, page_size: 50 }),
+		queryKey: ['admin', user?.id, 'users', keyword, statusFilter, userPage],
+		queryFn: () =>
+			adminApi.users({
+				keyword: keyword || undefined,
+				status: statusFilter || undefined,
+				page: userPage,
+				page_size: 20,
+			}),
+		enabled,
+	});
+	const policy = useQuery({
+		queryKey: ['admin', user?.id, 'policy'],
+		queryFn: adminApi.policy,
+		enabled,
+	});
+	const audit = useQuery({
+		queryKey: ['admin', user?.id, 'audit'],
+		queryFn: () => adminApi.auditEvents(20),
 		enabled,
 	});
 	const hub = useQuery({
@@ -145,8 +167,28 @@ export function AdminPage() {
 		onSuccess: refresh,
 	});
 	const deleteUser = useMutation({
-		mutationFn: adminApi.deleteUser,
+		mutationFn: ({ userId, reason }: { userId: string; reason: string }) =>
+			adminApi.deleteUser(userId, reason),
 		onSuccess: refresh,
+	});
+	const resetPassword = useMutation({
+		mutationFn: ({ userId, reason, admin_password }: { userId: string; reason: string; admin_password: string }) =>
+			adminApi.resetPassword(userId, { reason, admin_password }),
+		onSuccess: async (data) => {
+			window.alert(`${t('admin.temporaryPassword')}: ${data.temporary_password}\n${t('admin.expiresAt')}: ${data.expires_at}`);
+			await refresh();
+		},
+	});
+	const revokeSessions = useMutation({
+		mutationFn: adminApi.revokeSessions,
+		onSuccess: refresh,
+	});
+	const auditOverview = useMutation({
+		mutationFn: adminApi.auditOverview,
+		onSuccess: (data) => {
+			window.alert(`${t('admin.auditOverviewResult')}\n${JSON.stringify(data.data, null, 2)}`);
+			void refresh();
+		},
 	});
 	const updateQuota = useMutation({
 		mutationFn: adminApi.updateQuota,
@@ -171,8 +213,10 @@ export function AdminPage() {
 	const error = [
 		overview.error?.message,
 		quota.error?.message,
+		policy.error?.message,
 		users.error?.message,
 		hub.error?.message,
+		audit.error?.message,
 		createUser.error?.message,
 		plans.error?.message,
 		updateUser.error?.message,
@@ -180,8 +224,33 @@ export function AdminPage() {
 		updateQuota.error?.message,
 		updateHub.error?.message,
 		verifyHub.error?.message,
+		resetPassword.error?.message,
+		revokeSessions.error?.message,
+		auditOverview.error?.message,
 	].find((message): message is string => Boolean(message));
 	const userItems = users.data?.users ?? [];
+	const hasPreviousPage = userPage > 1;
+	const hasNextPage = users.data ? userPage * users.data.page_size < users.data.total : false;
+
+	const handleResetPassword = (item: AdminUser) => {
+		const adminPassword = window.prompt(t('admin.adminPasswordPrompt'));
+		if (!adminPassword) return;
+		const reason = window.prompt(t('admin.resetPasswordReasonPrompt'));
+		if (!reason || reason.trim().length < 4) {
+			window.alert(t('admin.reasonRequired'));
+			return;
+		}
+		resetPassword.mutate({ userId: item.id, reason: reason.trim(), admin_password: adminPassword });
+	};
+
+	const handleAuditOverview = (item: AdminUser) => {
+		const reason = window.prompt(t('admin.auditOverviewPrompt', { username: item.username }));
+		if (!reason || reason.trim().length < 4) {
+			if (reason !== null) window.alert(t('admin.reasonRequired'));
+			return;
+		}
+		auditOverview.mutate({ target_user_id: item.id, reason: reason.trim() });
+	};
 
 	const submitCreateUser = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
@@ -322,10 +391,27 @@ export function AdminPage() {
 							<div className="flex items-center gap-3">
 								<Input
 									value={keyword}
-									onChange={(event) => setKeyword(event.target.value)}
+									onChange={(event) => {
+										setKeyword(event.target.value);
+										setUserPage(1);
+									}}
 									placeholder={t('admin.searchMembers')}
 									className="max-w-xs"
 								/>
+								<select
+									value={statusFilter}
+									onChange={(event) => {
+										setStatusFilter(event.target.value);
+										setUserPage(1);
+									}}
+									className="border-input bg-background h-9 rounded-md border px-3 text-sm"
+								>
+									<option value="">{t('admin.allStatuses')}</option>
+									<option value="active">{t('admin.statusValues.active')}</option>
+									<option value="locked">{t('admin.statusValues.locked')}</option>
+									<option value="banned">{t('admin.statusValues.banned')}</option>
+									<option value="deleted">{t('admin.statusValues.deleted')}</option>
+								</select>
 								{users.isFetching && (
 									<Loader2 className="size-4 animate-spin text-muted-foreground" />
 								)}
@@ -355,45 +441,73 @@ export function AdminPage() {
 												<td className="px-3 py-2 text-right font-mono text-xs">
 													{formatNumber(item.monthly_used)} / {formatNumber(item.monthly_quota)}
 												</td>
-												<td className="px-3 py-2 text-right">
-													{item.role !== 'admin' && (
-														<div className="flex justify-end gap-1">
-															<Button
-																variant="ghost"
-																size="sm"
-																disabled={updateUser.isPending}
-																onClick={() =>
-																	updateUser.mutate({
-																		userId: item.id,
-																		status: item.status === 'active' ? 'banned' : 'active',
-																	})
-																}
-															>
-																{item.status === 'active'
-																	? t('admin.ban')
-																	: t('admin.activate')}
-															</Button>
-															<Button
-																variant="destructive"
-																size="sm"
-																disabled={deleteUser.isPending}
-																onClick={() => {
-																	if (
-																		window.confirm(
-																			t('admin.deleteConfirm', {
-																				username: item.username,
-																			}),
-																		)
-																	) {
-																		deleteUser.mutate(item.id);
-																	}
-																}}
-															>
-																{t('common.delete')}
-															</Button>
-														</div>
-													)}
-												</td>
+														<td className="px-3 py-2 text-right">
+															<div className="flex justify-end gap-1">
+																<Button
+																	variant="ghost"
+																	size="sm"
+																	disabled={auditOverview.isPending}
+																	onClick={() => handleAuditOverview(item)}
+																>
+																	{t('admin.auditMember')}
+																</Button>
+																{item.role !== 'admin' && (
+																	<>
+																		<Button
+																			variant="ghost"
+																			size="sm"
+																			disabled={updateUser.isPending}
+																			onClick={() =>
+																				updateUser.mutate({
+																						userId: item.id,
+																						status: item.status === 'active' ? 'banned' : 'active',
+																					})
+																			}
+																		>
+																			{item.status === 'active' ? t('admin.ban') : t('admin.activate')}
+																		</Button>
+																		<Button
+																			variant="destructive"
+																			size="sm"
+																			disabled={deleteUser.isPending}
+																			onClick={() => {
+																				if (!window.confirm(t('admin.deleteConfirm', { username: item.username }))) return;
+																				const reason = window.prompt(t('admin.deleteReasonPrompt'));
+																				if (reason && reason.trim().length >= 4) {
+																					deleteUser.mutate({ userId: item.id, reason: reason.trim() });
+																				} else if (reason !== null) {
+																					window.alert(t('admin.reasonRequired'));
+																				}
+																			}}
+																			>
+																				{t('common.delete')}
+																			</Button>
+																			<Button
+																				variant="ghost"
+																				size="sm"
+																				disabled={resetPassword.isPending}
+																				onClick={() => handleResetPassword(item)}
+																			>
+																				<KeyRound />
+																				{t('admin.resetPassword')}
+																			</Button>
+																			<Button
+																				variant="ghost"
+																				size="sm"
+																				disabled={revokeSessions.isPending}
+																				onClick={() => {
+																				if (window.confirm(t('admin.revokeSessionsConfirm', { username: item.username }))) {
+																					revokeSessions.mutate(item.id);
+																				}
+																			}}
+																			>
+																				<UserRoundX />
+																				{t('admin.revokeSessions')}
+																			</Button>
+																	</>
+																)}
+															</div>
+														</td>
 											</tr>
 										))}
 										{!users.isPending && userItems.length === 0 && (
@@ -405,6 +519,42 @@ export function AdminPage() {
 										)}
 									</tbody>
 								</table>
+							</div>
+							<div className="flex items-center justify-between text-xs text-muted-foreground">
+								<span>
+									{users.data ? `${users.data.total} · ${userPage}/${Math.max(1, Math.ceil(users.data.total / users.data.page_size))}` : '...'}
+								</span>
+								<div className="flex gap-1">
+									<Button variant="outline" size="sm" disabled={!hasPreviousPage || users.isFetching} onClick={() => setUserPage((page) => page - 1)}>
+										<ChevronLeft />
+									</Button>
+									<Button variant="outline" size="sm" disabled={!hasNextPage || users.isFetching} onClick={() => setUserPage((page) => page + 1)}>
+										<ChevronRight />
+									</Button>
+								</div>
+							</div>
+						</CardContent>
+					</Card>
+
+					<Card>
+						<CardHeader>
+							<CardTitle>{t('admin.auditTitle')}</CardTitle>
+							<CardDescription>{t('admin.auditDescription')}</CardDescription>
+						</CardHeader>
+						<CardContent>
+							<div className="space-y-2 text-xs">
+								{(audit.data?.events ?? []).map((event) => (
+									<div key={event.event_id} className="rounded-md border p-2">
+										<div className="flex justify-between gap-2 font-medium">
+											<span>{event.action}</span>
+											<span className="text-muted-foreground">{new Date(event.created_at).toLocaleString()}</span>
+										</div>
+										<div className="mt-1 text-muted-foreground">{event.reason}</div>
+									</div>
+								))}
+								{!audit.isPending && (audit.data?.events.length ?? 0) === 0 && (
+									<div className="text-muted-foreground">{t('admin.noAudit')}</div>
+								)}
 							</div>
 						</CardContent>
 					</Card>
@@ -458,6 +608,32 @@ export function AdminPage() {
 						</Card>
 
 						<ModelConfigCard />
+
+						<Card>
+							<CardHeader>
+								<CardTitle className="flex items-center gap-2">
+									<ShieldCheck className="size-4" />
+									{t('admin.policyTitle')}
+								</CardTitle>
+								<CardDescription>{t('admin.policyDescription')}</CardDescription>
+							</CardHeader>
+							<CardContent className="space-y-2 text-xs">
+								<div className="flex justify-between gap-3">
+									<span>{t('admin.policyCredentials')}</span>
+									<Badge>{policy.data?.credential_management ?? '...'}</Badge>
+								</div>
+								<div className="flex justify-between gap-3">
+									<span>{t('admin.policyChatMutation')}</span>
+									<Badge variant={policy.data?.policy_mutation_from_chat ? 'destructive' : 'default'}>
+										{policy.data?.policy_mutation_from_chat ? t('common.enabled') : t('common.disabled')}
+									</Badge>
+								</div>
+								<div className="flex justify-between gap-3">
+									<span>{t('admin.policyPlugins')}</span>
+									<Badge variant="outline">{policy.data?.high_risk_plugin_installation ?? '...'}</Badge>
+								</div>
+							</CardContent>
+						</Card>
 
 						<Card>
 							<CardHeader>

@@ -511,6 +511,10 @@ components:
         system_id: { type: string }
         protocol: { type: string, enum: [http, https] }
         configured_ip: { type: string }
+        internal_base_url:
+          type: string
+          format: uri
+          description: 可选的服务器内部连接地址；网络或网关连接失败时回退到 configured_ip
         port: { type: integer, minimum: 1, maximum: 65535 }
         environment: { type: string, enum: [production, test, unclassified] }
         contact: { type: string }
@@ -522,6 +526,10 @@ components:
         system_id: { type: string }
         protocol: { type: string, enum: [http, https] }
         configured_ip: { type: string }
+        internal_base_url:
+          type: string
+          format: uri
+          description: 可选的服务器内部连接地址；传空字符串可清除
         port: { type: integer, minimum: 1, maximum: 65535 }
         environment: { type: string, enum: [production, test, unclassified] }
         contact: { type: string }

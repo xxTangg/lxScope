@@ -40,7 +40,7 @@ Docker 部署前先复制 `.env.example` 为 `.env`，替换管理员密码和 P
 - Web：`http://127.0.0.1:44101`
 - 健康检查：`http://127.0.0.1:44100/health`
 
-首次启动会自动创建 PostgreSQL 数据表、数据卷、签名密钥和管理员账号。开发环境默认账号为 `admin`，默认密码为 `change-me`；生产环境必须设置 `SALES_ADMIN_PASSWORD`、`POSTGRES_PASSWORD` 和 `DATABASE_URL`，并通过环境变量提供稳定的 `SALES_DATA_DIR`。
+首次启动会自动创建 PostgreSQL 数据表、数据卷、签名密钥和管理员账号。开发环境默认账号为 `admin`，默认密码为 `change-me`；生产环境必须设置 `SALES_ADMIN_PASSWORD`、`POSTGRES_PASSWORD` 和 `DATABASE_URL`，并通过环境变量提供稳定的 `SALES_DATA_DIR`。签名密钥位于 `SALES_DATA_DIR/keys`，必须随 `sales_data` 数据卷持久化；销售 API 发现密钥缺失、损坏或私钥/公钥不匹配时会直接启动失败，不会自动换钥。
 
 ## 目录
 

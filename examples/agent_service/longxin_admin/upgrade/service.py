@@ -23,9 +23,11 @@ import httpx
 from fastapi import HTTPException, UploadFile
 
 from auth import AuthUser, JWTAuthService
+from longxin_admin.distributed_lock import DistributedLease
 
 from .models import (
     ArtifactType,
+    BackupDeleteRequest,
     BackupListResponse,
     BackupMeta,
     ReleaseCatalogResponse,
@@ -33,6 +35,7 @@ from .models import (
     RemoteUpgradeRequest,
     UpgradeOperation,
     UpgradeOperationListResponse,
+    UpgradeStatusResponse,
 )
 
 
@@ -111,6 +114,13 @@ class UpgradeService:
         self._staging_root = data_root / "upgrade-staging"
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
+
+    def _mutation_lock(self) -> DistributedLease:
+        return DistributedLease(
+            self._client,
+            self._lock,
+            f"{UPGRADE_PREFIX}:mutation-lock",
+        )
 
     def _client(self) -> Any:
         client = self._storage.get_client()
@@ -329,7 +339,7 @@ class UpgradeService:
         if not upload.filename or not upload.filename.lower().endswith((".tar.gz", ".tgz")):
             raise _error("invalid_release_filename", "The release must be a .tar.gz archive.", 400)
         idem_key = self._idempotency_key(f"upload:{actor.id}", idempotency_key)
-        async with self._lock:
+        async with self._mutation_lock():
             previous = await self._read_json(idem_key)
             if previous is not None:
                 return self._release_view(previous)
@@ -401,7 +411,7 @@ class UpgradeService:
         values: list[BackupMeta] = []
         for backup_id in reversed(await self._read_list(self._backup_index_key())):
             value = await self._read_json(self._backup_key(backup_id))
-            if value is not None:
+            if value is not None and not value.get("deleted"):
                 values.append(self._backup_view(value))
             if len(values) >= limit:
                 break
@@ -425,6 +435,27 @@ class UpgradeService:
         if value is None:
             raise _error("operation_not_found", "Upgrade operation not found.", 404)
         return self._operation_view(value, request_id)
+
+    async def status(self, request_id: str = "") -> UpgradeStatusResponse:
+        versions = await self.current_versions()
+        operations = await self.list_operations(limit=1, request_id=request_id)
+        latest = operations.operations[0] if operations.operations else None
+        if latest is None:
+            health = "unknown"
+        elif latest.state == "completed":
+            health = "ok"
+        elif latest.state in {"failed", "rolled_back"}:
+            health = "degraded"
+        else:
+            health = "unknown"
+        return UpgradeStatusResponse(
+            app_version=versions.get("app"),
+            core_version=versions.get("core"),
+            health=health,
+            latest_operation=latest,
+            target_configured=self._target_configured(),
+            request_id=request_id,
+        )
 
     async def _create_operation(
         self,
@@ -464,19 +495,29 @@ class UpgradeService:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    async def _require_admin_password(self, actor: AuthUser, password: str) -> None:
+        if not await self._auth.verify_password(actor.id, password):
+            raise _error(
+                "admin_password_invalid",
+                "The current admin password is invalid.",
+                403,
+            )
+
     async def start_admin_upgrade(
         self,
         artifact_type: ArtifactType,
         version: str,
         actor: AuthUser,
         *,
+        admin_password: str,
         idempotency_key: str,
         request_id: str,
     ) -> UpgradeOperation:
+        await self._require_admin_password(actor, admin_password)
         release = await self._release(artifact_type, version)
         idem_key = self._idempotency_key(f"admin-upgrade:{actor.id}", idempotency_key)
         idem_payload = {"artifact_type": artifact_type, "version": version}
-        async with self._lock:
+        async with self._mutation_lock():
             previous = await self._read_json(idem_key)
             if previous is not None:
                 if previous.get("idempotency_fingerprint") != self._fingerprint(idem_payload):
@@ -527,7 +568,7 @@ class UpgradeService:
             "artifact_type": artifact_type,
             **body.model_dump(mode="json"),
         }
-        async with self._lock:
+        async with self._mutation_lock():
             previous = await self._read_json(idem_key)
             if previous is not None:
                 if previous.get("idempotency_fingerprint") != self._fingerprint(idem_payload):
@@ -841,15 +882,17 @@ class UpgradeService:
         backup_id: str,
         actor: AuthUser,
         *,
+        admin_password: str,
         idempotency_key: str,
         request_id: str,
     ) -> UpgradeOperation:
+        await self._require_admin_password(actor, admin_password)
         backup = await self._read_json(self._backup_key(backup_id))
         if backup is None:
             raise _error("backup_not_found", "The requested backup was not found.", 404)
         idem_key = self._idempotency_key(f"rollback:{actor.id}", idempotency_key)
         idem_payload = {"backup_id": backup_id}
-        async with self._lock:
+        async with self._mutation_lock():
             previous = await self._read_json(idem_key)
             if previous is not None:
                 if previous.get("idempotency_fingerprint") != self._fingerprint(idem_payload):
@@ -877,6 +920,89 @@ class UpgradeService:
             )
         self._schedule(self._run_rollback(operation["operation_id"], backup))
         return self._operation_view(operation, request_id)
+
+    async def delete_backup(
+        self,
+        backup_id: str,
+        actor: AuthUser,
+        body: BackupDeleteRequest,
+        *,
+        idempotency_key: str,
+        request_id: str,
+    ) -> None:
+        if not body.confirm:
+            raise _error("confirmation_required", "Explicit confirmation is required.", 400)
+        idem_key = self._idempotency_key(f"delete-backup:{actor.id}", idempotency_key)
+        idem_payload = {
+            "operation": "delete_backup",
+            "backup_id": backup_id,
+            "confirm": body.confirm,
+            "reason": body.reason,
+        }
+        async with self._mutation_lock():
+            previous = await self._read_json(idem_key)
+            if previous is not None:
+                if previous.get("idempotency_fingerprint") != self._fingerprint(idem_payload):
+                    raise _error(
+                        "idempotency_key_reused",
+                        "The idempotency key was already used with another request.",
+                        409,
+                    )
+                return
+            backup = await self._read_json(self._backup_key(backup_id))
+            if backup is None or backup.get("deleted"):
+                raise _error("backup_not_found", "The requested backup was not found.", 404)
+            operation = await self._read_json(self._operation_key(str(backup.get("operation_id", ""))))
+            if operation and operation.get("state") in {
+                "pending",
+                "downloading",
+                "backing_up",
+                "applying",
+                "health_check",
+            }:
+                raise _error("backup_in_use", "The backup belongs to an active upgrade operation.", 409)
+            path = Path(str(backup.get("path", ""))).resolve()
+            if self._backup_root not in path.parents or path == self._backup_root:
+                raise _error("invalid_backup_path", "The backup path is outside backups/.", 500)
+            if path.exists():
+                if not path.is_dir():
+                    raise _error("invalid_backup_path", "The backup path is not a directory.", 500)
+                await asyncio.to_thread(shutil.rmtree, path)
+            client = self._client()
+            if hasattr(client, "lrem"):
+                await client.lrem(self._backup_index_key(), 0, backup_id)
+            backup["deleted"] = True
+            backup["deleted_at"] = _now()
+            await self._write_json(self._backup_key(backup_id), backup)
+            await client.rpush(
+                "longxin:admin:v1:audit",
+                json.dumps(
+                    {
+                        "event_id": f"evt-{uuid4().hex}",
+                        "actor_type": "admin",
+                        "actor_id": actor.id,
+                        "actor_name": actor.username,
+                        "target_user_id": None,
+                        "target_user_name": None,
+                        "action": "backup.delete",
+                        "resource_type": "backup",
+                        "resource_id": backup_id,
+                        "reason": body.reason,
+                        "request_id": request_id,
+                        "status": "completed",
+                        "result_summary": "Backup metadata and payload removed.",
+                        "created_at": _now(),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            await self._write_json(
+                idem_key,
+                {
+                    "idempotency_fingerprint": self._fingerprint(idem_payload),
+                    "result": {"state": "completed", "backup_id": backup_id},
+                },
+            )
 
     async def _run_rollback(self, operation_id: str, backup: dict[str, Any]) -> None:
         try:

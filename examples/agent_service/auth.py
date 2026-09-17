@@ -83,6 +83,7 @@ class _StoredAccount(BaseModel):
     failed_attempts: int = 0
     locked_until: str | None = None
     token_version: int = 0
+    temporary_password_expires_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class _Account:
     failed_attempts: int = 0
     locked_until: str | None = None
     token_version: int = 0
+    temporary_password_expires_at: str | None = None
 
 
 def _derive_password(password: str, salt: bytes) -> bytes:
@@ -275,6 +277,7 @@ class JWTAuthService:
             failed_attempts=stored.failed_attempts,
             locked_until=stored.locked_until,
             token_version=stored.token_version,
+            temporary_password_expires_at=stored.temporary_password_expires_at,
         )
 
     async def _registered_by_username(self, username: str) -> _Account | None:
@@ -327,6 +330,7 @@ class JWTAuthService:
             failed_attempts=account.failed_attempts,
             locked_until=account.locked_until,
             token_version=account.token_version,
+            temporary_password_expires_at=account.temporary_password_expires_at,
         )
         await client.set(self._username_key(account.username), stored.model_dump_json())
         await client.set(self._user_key(account.user_id), account.username)
@@ -344,6 +348,20 @@ class JWTAuthService:
         except ValueError:
             return True
 
+    @staticmethod
+    def _temporary_password_is_expired(account: _Account) -> bool:
+        if not account.temporary_password_expires_at:
+            return False
+        try:
+            expires_at = datetime.fromisoformat(
+                account.temporary_password_expires_at.replace("Z", "+00:00"),
+            )
+        except ValueError:
+            return True
+        if expires_at.tzinfo is None:
+            return True
+        return expires_at <= datetime.now(timezone.utc)
+
     async def authenticate(self, username: str, password: str) -> AuthUser:
         try:
             normalized = self._normalize_username(username)
@@ -358,6 +376,9 @@ class JWTAuthService:
             raise _unauthorized("Invalid username or password.")
         if account.status in {"banned", "deleted"} or self._lock_is_active(account):
             raise _unauthorized("This account is not available.")
+
+        if self._temporary_password_is_expired(account):
+            raise _unauthorized("The temporary password has expired.")
 
         candidate = await asyncio.to_thread(_derive_password, password, account.salt)
         if not hmac.compare_digest(candidate, account.password_digest):
@@ -521,12 +542,18 @@ class JWTAuthService:
 
     async def verify_password(self, user_id: str, password: str) -> bool:
         account = await self._account_by_id(user_id)
-        if account is None:
+        if account is None or self._temporary_password_is_expired(account):
             return False
         candidate = await asyncio.to_thread(_derive_password, password, account.salt)
         return hmac.compare_digest(candidate, account.password_digest)
 
-    async def reset_password(self, user_id: str, password: str) -> AuthUser:
+    async def reset_password(
+        self,
+        user_id: str,
+        password: str,
+        *,
+        temporary_password_expires_at: str | None = None,
+    ) -> AuthUser:
         account = await self._account_by_id(user_id)
         if account is None:
             raise HTTPException(status_code=404, detail="User not found.")
@@ -540,6 +567,7 @@ class JWTAuthService:
             locked_until=None,
             status="active" if account.status == "locked" else account.status,
             token_version=account.token_version + 1,
+            temporary_password_expires_at=temporary_password_expires_at,
         )
         await self._save_account(updated)
         return self._public_user(updated)

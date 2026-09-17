@@ -120,6 +120,7 @@ class UpgradeTest(IsolatedAsyncioTestCase):
             "app",
             "3.0.4",
             admin,
+            admin_password="admin-password",
             idempotency_key="apply-1",
             request_id="req-1",
         )
@@ -134,6 +135,7 @@ class UpgradeTest(IsolatedAsyncioTestCase):
         rollback = await self.service.start_rollback(
             backups.backups[0].backup_id,
             admin,
+            admin_password="admin-password",
             idempotency_key="rollback-1",
             request_id="req-2",
         )

@@ -5,6 +5,11 @@ const getDefaultBaseUrl = () => {
 	return `${window.location.protocol}//${window.location.hostname}:${port}`;
 };
 
+const createRequestToken = () => {
+	if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+	return `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
 export const getBaseUrl = () => localStorage.getItem('server_url') ?? getDefaultBaseUrl();
 const ACCESS_TOKEN_KEY = 'agentscope_access_token';
 
@@ -93,15 +98,22 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 	const deadline = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
 	const combined =
 		deadline && signal ? AbortSignal.any([signal, deadline]) : (deadline ?? signal);
+	const headers: Record<string, string> = {
+		...buildHeaders(body !== undefined && !(body instanceof FormData), authenticated),
+		'X-Request-ID': createRequestToken(),
+		...extraHeaders,
+	};
+	const isMutation = !['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase());
+	const hasIdempotencyKey = Object.keys(headers).some(
+		(key) => key.toLowerCase() === 'idempotency-key' && Boolean(headers[key]),
+	);
+	if (isMutation && !hasIdempotencyKey) headers['Idempotency-Key'] = createRequestToken();
 
 	let res: Response;
 	try {
 		res = await fetch(url.toString(), {
 			method,
-			headers: {
-				...buildHeaders(body !== undefined && !(body instanceof FormData), authenticated),
-				...extraHeaders,
-			},
+			headers,
 			body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
 			signal: combined,
 		});
@@ -186,7 +198,21 @@ export const client = {
 			silent: options?.silent,
 			headers: options?.headers,
 		}),
-	delete: <T = void>(path: string, params?: Record<string, string>) =>
-		request<T>(path, { method: 'DELETE', params }),
+	delete: <T = void>(
+		path: string,
+		params?: Record<string, string>,
+		options?: {
+			silent?: boolean;
+			body?: unknown;
+			headers?: Record<string, string>;
+		},
+	) =>
+		request<T>(path, {
+			method: 'DELETE',
+			params,
+			body: options?.body,
+			silent: options?.silent,
+			headers: options?.headers,
+		}),
 	stream: (path: string, options?: RequestOptions) => streamRequest(path, options),
 };

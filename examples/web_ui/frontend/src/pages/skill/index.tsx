@@ -44,9 +44,11 @@ import { useResourceDrawer } from '@/hooks/useResourceDrawer.ts';
 import { useSkillHubCards } from '@/hooks/useSkillHubCards.ts';
 import { useSkillHubs } from '@/hooks/useSkillHubs.ts';
 import { useSkills } from '@/hooks/useSkills.ts';
+import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { cn } from '@/lib/utils';
 import { avatarTint, formatTime } from '@/utils/common';
+import { PublishedResourcePage } from '@/pages/resources/PublishedResourcePage';
 
 interface CardItemProps {
 	card: SkillCard;
@@ -470,7 +472,7 @@ function MinePanel({ skills, loading, onRemove }: MinePanelProps) {
 	);
 }
 
-export function SkillHubPage() {
+function AdminSkillHubPage() {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	// No `hubId` in the URL means the "mine" tab, which is the default.
@@ -609,4 +611,11 @@ export function SkillHubPage() {
 			</main>
 		</div>
 	);
+}
+
+/** Administrators browse/install from hubs; regular users see only the
+ * catalog entries published to them by an administrator. */
+export function SkillHubPage() {
+	const { user } = useAuth();
+	return user?.role === 'admin' ? <AdminSkillHubPage /> : <PublishedResourcePage kind="skill" />;
 }

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { Skill } from '@/api';
 import type { UploadOptions } from '@/api/workspace';
 import { AddSkillDialog } from '@/components/dialog/AddSkillDialog.tsx';
+import { ResourceDetailDrawer } from '@/components/drawer/ResourceDetailDrawer.tsx';
 import { DeleteDialog } from '@/components/dialog/DeleteDialog.tsx';
 import { PanelEmpty } from '@/components/panel/PanelEmpty';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.tsx';
@@ -23,6 +24,8 @@ import { useTranslation } from '@/i18n/useI18n.ts';
 interface SkillPanelProps {
 	/** The skills equipped in the workspace. */
 	skills: Skill[];
+	/** Regular users can use published skills but cannot change the list. */
+	readOnly?: boolean;
 	/** Whether the skill list is still loading. */
 	loading?: boolean;
 	/**
@@ -64,6 +67,7 @@ interface SkillPanelProps {
  */
 export function SkillPanel({
 	skills,
+	readOnly = false,
 	loading = false,
 	onUpload,
 	onAddFromLibrary,
@@ -71,6 +75,7 @@ export function SkillPanel({
 }: SkillPanelProps) {
 	const { t } = useTranslation();
 	const [search, setSearch] = useState('');
+	const [detailSkill, setDetailSkill] = useState<Skill | null>(null);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 	const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 	// The workspace stores only the skill itself, so the icon and author
@@ -115,7 +120,20 @@ export function SkillPanel({
 					{filtered.map((skill) => {
 						const installed = byName.get(skill.name);
 						return (
-							<Item key={skill.name} variant="outline" className="group/skill">
+							<Item
+								key={skill.name}
+								variant="outline"
+								className="group/skill cursor-pointer transition-colors hover:bg-accent/50"
+								role="button"
+								tabIndex={0}
+								onClick={() => setDetailSkill(skill)}
+								onKeyDown={(event) => {
+									if (event.key === 'Enter' || event.key === ' ') {
+										event.preventDefault();
+										setDetailSkill(skill);
+									}
+								}}
+							>
 								<ItemMedia>
 									<Avatar className="rounded-md">
 										<AvatarImage
@@ -145,18 +163,21 @@ export function SkillPanel({
 									{/* Only on hover: deleting is rare, and a
 									    button on every row competes with the
 									    content for attention. */}
-									<Button
-										variant="secondary"
-										size="icon-sm"
-										className="opacity-0 transition-opacity group-hover/skill:opacity-100 focus-visible:opacity-100"
-										onClick={() => {
-											setDeleteTarget(skill.name);
-											setDeleteOpen(true);
-										}}
-										title={t('common.delete')}
-									>
-										<Trash className="size-3" />
-									</Button>
+									{!readOnly && (
+										<Button
+											variant="secondary"
+											size="icon-sm"
+											className="opacity-0 transition-opacity group-hover/skill:opacity-100 focus-visible:opacity-100"
+											onClick={(event) => {
+												event.stopPropagation();
+												setDeleteTarget(skill.name);
+												setDeleteOpen(true);
+											}}
+											title={t('common.delete')}
+										>
+											<Trash className="size-3" />
+										</Button>
+									)}
 								</ItemActions>
 							</Item>
 						);
@@ -164,27 +185,48 @@ export function SkillPanel({
 				</div>
 			)}
 
-			<AddSkillDialog
-				present={new Set(skills.map((s) => s.name))}
-				onUpload={onUpload}
-				onAddFromLibrary={onAddFromLibrary}
-			>
-				<Button variant="default">
-					<PlusCircle />
-					{t('panel.skill.add')}
-				</Button>
-			</AddSkillDialog>
+			{!readOnly && (
+				<AddSkillDialog
+					present={new Set(skills.map((s) => s.name))}
+					onUpload={onUpload}
+					onAddFromLibrary={onAddFromLibrary}
+				>
+					<Button variant="default">
+						<PlusCircle />
+						{t('panel.skill.add')}
+					</Button>
+				</AddSkillDialog>
+			)}
 
-			<DeleteDialog
-				open={deleteOpen}
-				onOpenChange={setDeleteOpen}
-				title={t('common.deleteTitle', {
-					entity: t('dialog-mcp-delete.skillEntity'),
-					name: deleteTarget ?? '',
-				})}
-				description={t('dialog-mcp-delete.skillDescription')}
-				onConfirm={async () => {
-					if (deleteTarget) await onRemove(deleteTarget);
+			{!readOnly && (
+				<DeleteDialog
+					open={deleteOpen}
+					onOpenChange={setDeleteOpen}
+					title={t('common.deleteTitle', {
+						entity: t('dialog-mcp-delete.skillEntity'),
+						name: deleteTarget ?? '',
+					})}
+					description={t('dialog-mcp-delete.skillDescription')}
+					onConfirm={async () => {
+						if (deleteTarget) await onRemove(deleteTarget);
+					}}
+				/>
+			)}
+
+			<ResourceDetailDrawer
+				skill={
+					detailSkill
+						? {
+								name: detailSkill.name,
+								description: detailSkill.description,
+								tags: [],
+								updated_at: detailSkill.updated_at,
+								markdown: detailSkill.markdown,
+							}
+						: null
+				}
+				onOpenChange={(open) => {
+					if (!open) setDetailSkill(null);
 				}}
 			/>
 		</div>

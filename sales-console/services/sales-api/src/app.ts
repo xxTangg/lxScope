@@ -9,9 +9,10 @@ import * as tar from 'tar';
 import type { ReadEntry } from 'tar';
 
 import {
-  customerUrl,
+  customerConnectionUrls,
   enrichCustomer,
   isValidIP,
+  isRechargeCodeSignatureValid,
   measuredConsumption,
   safeMoney,
   signRechargeCode,
@@ -26,6 +27,7 @@ import {
   ensureData,
   getSigningKeyPair,
   readJson,
+  publicKeyFingerprint,
   RELEASE_DIR,
   serial,
   updateJson,
@@ -41,6 +43,28 @@ type ReleaseType = 'app' | 'core';
 const sessionStore = new Map<string, { staffID: string; expiresAt: number }>();
 const loginAttempts = new Map<string, { at: number; count: number }>();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: RELEASE_MAX_BYTES } });
+
+async function reissueRechargeCode(
+  order: RechargeOrder,
+  systemId: string,
+  expiresAt = Date.now() + RECHARGE_CODE_TTL_MS,
+): Promise<void> {
+  if (
+    order.method !== 'code' ||
+    order.status !== 'issued' ||
+    order.delivered ||
+    typeof order.amount !== 'number' ||
+    !Number.isFinite(order.amount) ||
+    order.amount <= 0 ||
+    typeof order.tokens !== 'number' ||
+    !Number.isInteger(order.tokens) ||
+    order.tokens <= 0
+  ) {
+    throw Object.assign(new Error('该订单不是可重新签发的一次性充值码'), { status: 409 });
+  }
+  order.expiresAt = expiresAt;
+  order.code = await signRechargeCode(order.amount, order.tokens, systemId, order.id, expiresAt);
+}
 
 function requestID(req: Request): string {
   const header = String(req.headers['x-request-id'] ?? '').trim();
@@ -109,6 +133,33 @@ function requiredISOTime(value: unknown, field: string): number {
   return time;
 }
 
+function optionalHttpBaseUrl(value: unknown, field: string): string | null {
+  if (value === undefined || value === null || (typeof value === 'string' && !value.trim()))
+    return null;
+  if (typeof value !== 'string' || value.length > 2048) {
+    throw Object.assign(new Error(`${field} 参数不合法`), { status: 400 });
+  }
+  try {
+    const parsed = new URL(value.trim());
+    if (
+      !['http:', 'https:'].includes(parsed.protocol) ||
+      !parsed.hostname ||
+      parsed.username ||
+      parsed.password ||
+      (parsed.pathname !== '/' && parsed.pathname !== '') ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error('invalid base URL');
+    }
+    return parsed.origin;
+  } catch {
+    throw Object.assign(new Error(`${field} 必须是仅包含协议、主机和端口的 HTTP(S) 地址`), {
+      status: 400,
+    });
+  }
+}
+
 function requiredSystemQuery(req: Request, customer: Customer): string {
   const value = req.query.system_id;
   if (typeof value !== 'string' || !value.trim()) {
@@ -142,6 +193,7 @@ function canonicalCustomer(value: unknown): Record<string, unknown> {
     system_id: converted.system_id ?? null,
     protocol: converted.protocol,
     base_url: converted.base_url ?? null,
+    internal_base_url: converted.internal_base_url ?? null,
     configured_ip: converted.ip ?? null,
     port: converted.port,
     contact: converted.contact ?? '',
@@ -652,8 +704,8 @@ async function callCustomer(
   body: unknown,
   options: CustomerCallOptions = {},
 ): Promise<Record<string, unknown>> {
-  const base = customerUrl(customer);
-  if (!base) throw new Error('客户未配置可连接地址');
+  const bases = customerConnectionUrls(customer);
+  if (!bases.length) throw new Error('客户未配置可连接地址');
   const requestIDValue = options.requestID ?? crypto.randomUUID();
   const headers: Record<string, string> = {
     Authorization: `Bearer ${customer.apiToken}`,
@@ -661,15 +713,37 @@ async function callCustomer(
     'X-Request-ID': requestIDValue,
   };
   if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
-  const response = await fetch(`${base}${endpoint}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(toCanonical(body)),
-    signal: AbortSignal.timeout(120_000),
-  });
-  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!response.ok) throw new Error(customerErrorMessage(payload, response.status));
-  return fromCanonical(payload) as Record<string, unknown>;
+  const requestBody = JSON.stringify(toCanonical(body));
+  let lastConnectionError: unknown;
+  for (const base of bases) {
+    let response: Awaited<ReturnType<typeof fetch>>;
+    try {
+      response = await fetch(`${base}${endpoint}`, {
+        method: 'POST',
+        headers,
+        body: requestBody,
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch (error) {
+      lastConnectionError = error;
+      continue;
+    }
+    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok) {
+      const responseError = new Error(customerErrorMessage(payload, response.status));
+      if ([502, 503, 504].includes(response.status)) {
+        lastConnectionError = responseError;
+        continue;
+      }
+      throw responseError;
+    }
+    return fromCanonical(payload) as Record<string, unknown>;
+  }
+  const detail =
+    lastConnectionError instanceof Error && lastConnectionError.message
+      ? lastConnectionError.message
+      : '连接失败';
+  throw new Error(`无法连接客户系统（已尝试 ${bases.length} 个地址）：${detail}`);
 }
 
 async function validateReleaseArchive(
@@ -773,6 +847,9 @@ async function dashboard() {
 
 export async function createApp(): Promise<express.Express> {
   await ensureData();
+  // Validate the persisted signer before serving any request. A missing,
+  // corrupt, or mismatched pair must never silently rotate the trust root.
+  await getSigningKeyPair();
   await bootstrapStaff();
   const app = express();
   app.disable('x-powered-by');
@@ -949,6 +1026,7 @@ export async function createApp(): Promise<express.Express> {
         req.headers['x-canonical-api'] === '1' ? requiredRequestID(req) : requestID(req);
       res.json({
         publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+        publicKeyFingerprint: publicKeyFingerprint(publicKey),
         systemId: customer.systemId,
         requestId: publicKeyRequestID,
       });
@@ -1012,7 +1090,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ detail: { code: 'customer_not_found', message: '客户不存在' } });
         return;
       }
-      if (!customerUrl(customer)) {
+      if (!customerConnectionUrls(customer).length) {
         res.json({
           customerId: customer.id,
           systemId: customer.systemId,
@@ -1204,6 +1282,21 @@ export async function createApp(): Promise<express.Express> {
         if (found.length) {
           const now = Date.now();
           for (const item of found) {
+            if (
+              typeof item.amount === 'number' &&
+              typeof item.tokens === 'number' &&
+              typeof item.expiresAt === 'number' &&
+              typeof item.code === 'string' &&
+              !(await isRechargeCodeSignatureValid(item.code))
+            ) {
+              item.code = await signRechargeCode(
+                item.amount,
+                item.tokens,
+                customer.systemId,
+                item.id,
+                item.expiresAt,
+              );
+            }
             item.deliveryAttempts = (item.deliveryAttempts ?? 0) + 1;
             item.lastDeliveryAt = now;
           }
@@ -1279,16 +1372,19 @@ export async function createApp(): Promise<express.Express> {
       const strictContract = req.headers['x-canonical-api'] === '1';
       if (strictContract) requiredRequestID(req);
       const operationID = strictContract
-        ? requiredText(req.body.operationID, 'operation_id')
+        ? requiredText(req.body.operationID ?? req.body.operationId, 'operation_id')
         : String(req.body.operationID ?? '').trim();
       const systemID = strictContract
         ? requiredText(req.body.systemId, 'system_id')
         : String(req.body.systemId ?? '').trim();
       const redemptionOperationID = strictContract
-        ? requiredText(req.body.redemptionOperationID, 'redemption_operation_id')
+        ? requiredText(
+            req.body.redemptionOperationID ?? req.body.redemptionOperationId,
+            'redemption_operation_id',
+          )
         : String(req.body.redemptionOperationID ?? '').trim();
       const ledgerID = strictContract
-        ? requiredText(req.body.ledgerID, 'ledger_id')
+        ? requiredText(req.body.ledgerID ?? req.body.ledgerId, 'ledger_id')
         : String(req.body.ledgerID ?? '').trim();
       if (
         (strictContract && (!customer.systemId || systemID !== customer.systemId)) ||
@@ -1455,8 +1551,8 @@ export async function createApp(): Promise<express.Express> {
       }
       const outboundRequestID =
         req.headers['x-canonical-api'] === '1' ? requiredRequestID(req) : requestID(req);
-      if (!customerUrl(customer)) {
-        res.json({ outbound: true, inbound: false, inboundError: '客户尚未配置 IP' });
+      if (!customerConnectionUrls(customer).length) {
+        res.json({ outbound: true, inbound: false, inboundError: '客户尚未配置可连接地址' });
         return;
       }
       try {
@@ -1491,7 +1587,10 @@ export async function createApp(): Promise<express.Express> {
   app.get('/api/public-key', async (_req, res, next) => {
     try {
       const { publicKey } = await getSigningKeyPair();
-      res.json({ publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString() });
+      res.json({
+        publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+        publicKeyFingerprint: publicKeyFingerprint(publicKey),
+      });
     } catch (error) {
       next(error);
     }
@@ -1598,6 +1697,7 @@ export async function createApp(): Promise<express.Express> {
       const ip = String(req.body.ip ?? '').trim();
       const protocol = req.body.protocol === 'https' ? 'https' : 'http';
       const port = Number(req.body.port) || (protocol === 'https' ? 3443 : 3000);
+      const internalBaseUrl = optionalHttpBaseUrl(req.body.internalBaseUrl, 'internal_base_url');
       if (!name) {
         res.status(400).json({ error: '请填写客户名称' });
         return;
@@ -1622,6 +1722,7 @@ export async function createApp(): Promise<express.Express> {
         ip,
         port,
         baseUrl: ip ? `${protocol}://${ip}:${port}` : null,
+        internalBaseUrl,
         contact: String(req.body.contact ?? '').trim(),
         notes: String(req.body.notes ?? '')
           .trim()
@@ -1678,6 +1779,10 @@ export async function createApp(): Promise<express.Express> {
             protocol,
             port,
             baseUrl: ip ? `${protocol}://${ip}:${port}` : null,
+            internalBaseUrl:
+              req.body.internalBaseUrl === undefined
+                ? (item.internalBaseUrl ?? null)
+                : optionalHttpBaseUrl(req.body.internalBaseUrl, 'internal_base_url'),
             contact:
               req.body.contact === undefined ? item.contact : String(req.body.contact).trim(),
             notes:
@@ -1738,8 +1843,8 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ error: '客户不存在' });
         return;
       }
-      if (!customer.ip) {
-        res.status(400).json({ error: '这个客户还没有配置 IP，无法远程连接' });
+      if (!customerConnectionUrls(customer).length) {
+        res.status(400).json({ error: '这个客户还没有配置可连接地址，无法远程连接' });
         return;
       }
       const username = String(req.body.username ?? '').trim();
@@ -1790,6 +1895,18 @@ export async function createApp(): Promise<express.Express> {
         if (previous) {
           if (previous.customerID !== customer.id || previous.amount !== amount)
             throw Object.assign(new Error('重复请求内容不一致'), { status: 409 });
+          if (
+            previous.method === 'code' &&
+            previous.status === 'issued' &&
+            !previous.delivered &&
+            !(await isRechargeCodeSignatureValid(previous.code ?? ''))
+          ) {
+            // A retry of an old idempotent request must not return a code that
+            // was created by the pre-LXRC2 signing implementation. Reissue
+            // the same order with the current Sales Hub key pair.
+            await reissueRechargeCode(previous, customer.systemId);
+            await writeJson(db.files.orders, orders);
+          }
           return previous;
         }
         const { tokenExchangeRate } = await db.settings();
@@ -1818,6 +1935,36 @@ export async function createApp(): Promise<express.Express> {
       });
       await audit(req.staff!, req);
       res.status(201).json({
+        order: result,
+        tier: tierFor(
+          (await db.customers()).find((item) => item.id === req.params.id)?.totalRecharged ?? 0,
+        ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/customers/:id/recharge-codes/:orderId/reissue', async (req, res, next) => {
+    try {
+      const result = await serial(async () => {
+        const customers = await db.customers();
+        const customer = customers.find((item) => item.id === req.params.id);
+        if (!customer || customer.status === 'disabled')
+          throw Object.assign(new Error('客户不存在或已停用'), { status: 404 });
+        if (!customer.systemId)
+          throw Object.assign(new Error('请先登记客户系统 ID'), { status: 400 });
+        const orders = await db.orders();
+        const order = orders.find(
+          (item) => item.id === req.params.orderId && item.customerID === customer.id,
+        );
+        if (!order) throw Object.assign(new Error('充值订单不存在'), { status: 404 });
+        await reissueRechargeCode(order, customer.systemId);
+        await writeJson(db.files.orders, orders);
+        return order;
+      });
+      await audit(req.staff!, req);
+      res.json({
         order: result,
         tier: tierFor(
           (await db.customers()).find((item) => item.id === req.params.id)?.totalRecharged ?? 0,
@@ -2071,7 +2218,10 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const customers = (await db.customers()).filter(
-        (customer) => selected.has(customer.id) && customer.status === 'active' && customer.ip,
+        (customer) =>
+          selected.has(customer.id) &&
+          customer.status === 'active' &&
+          customerConnectionUrls(customer).length > 0,
       );
       if (customers.length !== selected.size) {
         res.status(400).json({ error: '存在无法升级的目标，请重新选择' });

@@ -41,6 +41,7 @@ type Customer = {
   port: number;
   protocol: 'http' | 'https';
   baseUrl?: string | null;
+  internalBaseUrl?: string | null;
   contact?: string;
   notes?: string;
   status: string;
@@ -104,9 +105,13 @@ function fromCanonical(value: unknown, key?: string): unknown {
     }
     if (
       typeof value === 'string' &&
-      ['amount', 'requested_amount', 'total_recharged', 'recharged_amount', 'recharged_30d'].includes(
-        key ?? '',
-      )
+      [
+        'amount',
+        'requested_amount',
+        'total_recharged',
+        'recharged_amount',
+        'recharged_30d',
+      ].includes(key ?? '')
     ) {
       const parsed = Number(value);
       return Number.isFinite(parsed) ? parsed : value;
@@ -132,6 +137,7 @@ function fromCanonicalCustomer(value: unknown): Customer {
     systemId: customer.systemId ?? '',
     ip: customer.configuredIp ?? customer.ip ?? '',
     baseUrl: customer.baseUrl ?? null,
+    internalBaseUrl: customer.internalBaseUrl ?? null,
     lastSeenIP: customer.lastSourceIp ?? customer.lastSeenIP ?? null,
     lastSeenAt: customer.lastReportAt ?? customer.lastSeenAt ?? null,
     totalRecharged: Number(customer.totalRecharged ?? 0),
@@ -171,9 +177,11 @@ function normalizeCanonicalResponse<T>(path: string, value: unknown): T {
   if (path === '/api/v1/recharge-requests' && Array.isArray(converted?.orders)) {
     return converted.orders.map((item: any) => ({ ...item, id: item.orderId ?? item.id })) as T;
   }
-  if (path === '/api/v1/reconciliation' && Array.isArray(converted?.items)) return converted.items as T;
+  if (path === '/api/v1/reconciliation' && Array.isArray(converted?.items))
+    return converted.items as T;
   if (path === '/api/v1/alerts' && Array.isArray(converted?.alerts)) return converted.alerts as T;
-  if (path === '/api/v1/audit/events' && Array.isArray(converted?.events)) return converted.events as T;
+  if (path === '/api/v1/audit/events' && Array.isArray(converted?.events))
+    return converted.events as T;
   if (/^\/api\/v1\/upgrade-all\/(?:app|core)$/.test(path) && Array.isArray(converted?.results)) {
     return {
       ...converted,
@@ -548,6 +556,7 @@ function Customers() {
   const [ip, setIp] = useState('');
   const [protocol, setProtocol] = useState<'http' | 'https'>('https');
   const [port, setPort] = useState('3443');
+  const [internalBaseUrl, setInternalBaseUrl] = useState('');
   const [environment, setEnvironment] = useState('unclassified');
   const [contact, setContact] = useState('');
   const [notes, setNotes] = useState('');
@@ -605,6 +614,7 @@ function Customers() {
           name,
           system_id: systemId,
           configured_ip: ip,
+          internal_base_url: internalBaseUrl,
           protocol,
           port: Number(port),
           environment,
@@ -623,6 +633,7 @@ function Customers() {
       setIp('');
       setProtocol('https');
       setPort('3443');
+      setInternalBaseUrl('');
       setEnvironment('unclassified');
       setContact('');
       setNotes('');
@@ -652,6 +663,21 @@ function Customers() {
       setError(reason instanceof Error ? reason.message : '生成失败');
     }
   }
+  async function reissueCode(orderId: string) {
+    if (!selected) return;
+    try {
+      const result = await api<{ order: { code?: string } }>(
+        `/api/v1/customers/${selected.id}/recharge-codes/${orderId}/reissue`,
+        { method: 'POST', body: JSON.stringify({}) },
+      );
+      setToken(result.order.code ?? '');
+      setTokenKind('code');
+      setError('充值码已按当前签名重新签发，请交付新码，旧码不要继续使用');
+      void loadDetail(selected.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '重新签发失败');
+    }
+  }
   function updateSelected(patch: Partial<Customer>) {
     setSelected((current) => (current ? { ...current, ...patch } : current));
   }
@@ -665,6 +691,7 @@ function Customers() {
           system_id: selected.systemId,
           environment: selected.environment,
           configured_ip: selected.ip,
+          internal_base_url: selected.internalBaseUrl ?? '',
           port: selected.port,
           protocol: selected.protocol,
           contact: selected.contact,
@@ -740,6 +767,11 @@ function Customers() {
               placeholder="客户 IP（可选）"
               value={ip}
               onChange={(event) => setIp(event.target.value)}
+            />
+            <input
+              placeholder="内部连接地址（可选，如 http://host.docker.internal:8001）"
+              value={internalBaseUrl}
+              onChange={(event) => setInternalBaseUrl(event.target.value)}
             />
             <div className="detail-grid">
               <label>
@@ -911,6 +943,17 @@ function Customers() {
                     onChange={(event) => updateSelected({ ip: event.target.value })}
                   />
                 </label>
+                <label>
+                  内部连接地址（可选）
+                  <input
+                    value={selected.internalBaseUrl ?? ''}
+                    placeholder="例如 http://host.docker.internal:8001"
+                    onChange={(event) =>
+                      updateSelected({ internalBaseUrl: event.target.value || null })
+                    }
+                  />
+                  <small>服务器调用时优先使用；网络或网关失败才回退到配置 IP。</small>
+                </label>
                 <div className="detail-grid">
                   <label>
                     环境
@@ -1049,6 +1092,7 @@ function Customers() {
                         <th>批准金额</th>
                         <th>状态</th>
                         <th>经手人</th>
+                        <th>操作</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1065,6 +1109,19 @@ function Customers() {
                             />
                           </td>
                           <td>{order.processedBy ?? '—'}</td>
+                          <td>
+                            {order.method === 'code' && order.status === 'issued' ? (
+                              <button
+                                className="secondary compact-button"
+                                onClick={() => reissueCode(order.id)}
+                              >
+                                <RefreshCw size={14} />
+                                重签
+                              </button>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1549,9 +1606,13 @@ function Upgrades() {
 
 function PublicKey() {
   const [key, setKey] = useState('');
+  const [fingerprint, setFingerprint] = useState('');
   useEffect(() => {
-    api<{ publicKeyPem: string }>('/api/v1/public-key')
-      .then((result) => setKey(result.publicKeyPem))
+    api<{ publicKeyPem: string; publicKeyFingerprint?: string }>('/api/v1/public-key')
+      .then((result) => {
+        setKey(result.publicKeyPem);
+        setFingerprint(result.publicKeyFingerprint ?? '');
+      })
       .catch(() => undefined);
   }, []);
   return (
@@ -1564,6 +1625,7 @@ function PublicKey() {
       <Panel title="Sales Hub Ed25519 公钥" subtitle="公钥可以分发，不属于机密信息">
         <div className="key-box">
           <textarea value={key} readOnly rows={8} />
+          {fingerprint && <small>指纹：{fingerprint}</small>}
           <button className="secondary" onClick={() => navigator.clipboard.writeText(key)}>
             <Copy size={15} />
             复制公钥

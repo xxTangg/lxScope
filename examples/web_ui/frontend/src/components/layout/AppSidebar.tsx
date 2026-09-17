@@ -100,7 +100,7 @@ export function AppSidebar() {
 									<SidebarMenuButton
 										tooltip={{ children: t('admin.title'), hidden: false }}
 										isActive={location.pathname.startsWith('/admin')}
-										onClick={() => navigate('/admin')}
+										onClick={() => navigate('/admin/overview')}
 										className="justify-center"
 									>
 										<ShieldCheck />
@@ -137,8 +137,8 @@ export function AppSidebar() {
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('common.credential'), hidden: false }}
-										isActive={location.pathname === '/credential'}
-										onClick={() => navigate('/credential')}
+										isActive={location.pathname === '/credential' || location.pathname.startsWith('/admin/models')}
+										onClick={() => navigate('/admin/models')}
 										className="justify-center"
 									>
 										<KeyRound />
@@ -147,7 +147,13 @@ export function AppSidebar() {
 							)}
 							<SidebarMenuItem>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.mcp-hub'), hidden: false }}
+									tooltip={{
+										children:
+											user?.role === 'admin'
+												? t('common.mcp-hub')
+												: t('resources.mcpTitle'),
+										hidden: false,
+									}}
 									// Stays lit while browsing a hub under /mcp/:hubId.
 									isActive={location.pathname.startsWith('/mcp')}
 									onClick={() => navigate('/mcp')}
@@ -158,7 +164,13 @@ export function AppSidebar() {
 							</SidebarMenuItem>
 							<SidebarMenuItem>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.skill-hub'), hidden: false }}
+									tooltip={{
+										children:
+											user?.role === 'admin'
+												? t('common.skill-hub')
+												: t('resources.skillTitle'),
+										hidden: false,
+									}}
 									isActive={location.pathname.startsWith('/skill')}
 									onClick={() => navigate('/skill')}
 									className="justify-center"

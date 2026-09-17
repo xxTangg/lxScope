@@ -11,6 +11,7 @@
 - `id`：销售中心内部 ID
 - `name`：客户名称
 - `systemId`：客户系统 ID
+- `internalBaseUrl`：可选的服务器内部连接地址；优先于配置 IP，仅在网络或网关连接失败时回退
 - `environment`：`test` / `production` / `unclassified`
 - `protocol`、`ip`、`port`：客户系统地址
 - `apiToken`：客户接口访问令牌，严禁写入前端日志

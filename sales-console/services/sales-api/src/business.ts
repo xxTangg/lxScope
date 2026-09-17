@@ -23,6 +23,14 @@ export function customerUrl(customer: Customer): string | null {
   return `${customer.protocol}://${customer.ip}:${customer.port || (customer.protocol === 'https' ? 3443 : 3000)}`;
 }
 
+export function customerConnectionUrls(customer: Customer): string[] {
+  const configured = customerUrl(customer);
+  const candidates = [customer.internalBaseUrl, configured]
+    .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    .map((value) => value.trim().replace(/\/+$/, ''));
+  return [...new Set(candidates)];
+}
+
 export async function signRechargeCode(
   amount: number,
   tokens: number,
@@ -40,10 +48,24 @@ export async function signRechargeCode(
     issued_at: new Date().toISOString(),
     expires_at: new Date(expiresAt).toISOString(),
   };
-  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const payloadBytes = Buffer.from(JSON.stringify(payload));
+  const body = payloadBytes.toString('base64url');
   const { privateKey } = await getSigningKeyPair();
-  const signature = crypto.sign(null, Buffer.from(body), privateKey).toString('base64url');
+  const signature = crypto.sign(null, payloadBytes, privateKey).toString('base64url');
   return `LXRC2.${body}.${signature}`;
+}
+
+export async function isRechargeCodeSignatureValid(code: string): Promise<boolean> {
+  const parts = code.split('.', 3);
+  if (parts.length !== 3 || parts[0] !== 'LXRC2') return false;
+  try {
+    const payloadBytes = Buffer.from(parts[1], 'base64url');
+    const signature = Buffer.from(parts[2], 'base64url');
+    const { publicKey } = await getSigningKeyPair();
+    return crypto.verify(null, payloadBytes, publicKey, signature);
+  } catch {
+    return false;
+  }
 }
 
 export function measuredConsumption(points: UsageReport[]): number | null {
