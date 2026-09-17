@@ -304,6 +304,10 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         )
         self.assertEqual(deleted_again.status_code, 204)
 
+        visible_after_delete = self.client.get("/admin/users", headers=headers)
+        self.assertEqual(visible_after_delete.status_code, 200)
+        self.assertNotIn(user_id, {item["id"] for item in visible_after_delete.json()["users"]})
+
     def test_normal_user_cannot_enter_admin_api(self) -> None:
         login = self._login("admin", "admin-password")
         admin_headers = {"Authorization": f"Bearer {login['access_token']}"}

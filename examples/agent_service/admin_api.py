@@ -22,7 +22,12 @@ from pydantic import BaseModel, Field, ValidationError
 from agentscope.app.storage import MCPRecord, SkillRecord
 from auth import AuthUser, JWTAuthService
 from longxin_admin.distributed_lock import DistributedLease
-from longxin_admin.plan_billing.catalog import PLAN_VALUES
+from longxin_admin.plan_billing.catalog import (
+    PLAN_VALUES,
+    UNASSIGNED_MONTHLY_QUOTA,
+    UNASSIGNED_PLAN_ID,
+    UNASSIGNED_PLAN_NAME,
+)
 from sales_hub_client import SalesHubClient, SalesHubClientError
 
 
@@ -706,9 +711,9 @@ class AdminService:
             return value
         return {
             "user_id": account.id,
-            "plan_id": "plan_basic",
-            "plan_name": _PLANS["plan_basic"][0],
-            "monthly_quota": _PLANS["plan_basic"][1],
+            "plan_id": UNASSIGNED_PLAN_ID,
+            "plan_name": UNASSIGNED_PLAN_NAME,
+            "monthly_quota": UNASSIGNED_MONTHLY_QUOTA,
             "monthly_used": 0,
             "bonus_tokens": 0,
             "account_type": "standard",
@@ -759,7 +764,11 @@ class AdminService:
         page: int,
         page_size: int,
     ) -> UserListResponse:
-        accounts = await self._auth.list_accounts()
+        accounts = [
+            item
+            for item in await self._auth.list_accounts()
+            if item.status != "deleted"
+        ]
         if keyword:
             needle = keyword.casefold()
             accounts = [
@@ -1085,8 +1094,8 @@ class AdminService:
                 body.initial_password,
             )
             # ``plan_id`` has a compatibility default.  Only an explicitly
-            # selected plan is provisioned immediately; old callers that
-            # omit it keep the original inactive-basic behavior.
+            # selected plan is provisioned immediately; callers that omit it
+            # create an account with no plan and zero monthly quota.
             if explicit_plan:
                 await self._plan_billing.admin_assign_plan(
                     account.id,
@@ -1099,13 +1108,12 @@ class AdminService:
                 await self._save_profile(profile)
                 system = await self._system()
             else:
-                plan_name, monthly_quota = _PLANS[body.plan_id]
                 await self._save_profile(
                     {
                         "user_id": account.id,
-                        "plan_id": body.plan_id,
-                        "plan_name": plan_name,
-                        "monthly_quota": monthly_quota,
+                        "plan_id": UNASSIGNED_PLAN_ID,
+                        "plan_name": UNASSIGNED_PLAN_NAME,
+                        "monthly_quota": UNASSIGNED_MONTHLY_QUOTA,
                         "monthly_used": 0,
                         "bonus_tokens": body.bonus_tokens,
                         "account_type": "standard",
@@ -1363,7 +1371,11 @@ class AdminService:
             return result
 
     async def overview(self) -> dict[str, Any]:
-        accounts = await self._auth.list_accounts()
+        accounts = [
+            item
+            for item in await self._auth.list_accounts()
+            if item.status != "deleted"
+        ]
         system = await self._system()
         return {
             "system_id": system["system_id"],

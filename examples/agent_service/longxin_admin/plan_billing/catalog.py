@@ -9,6 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+UNASSIGNED_PLAN_ID = "plan_none"
+UNASSIGNED_PLAN_NAME = "No plan"
+UNASSIGNED_MONTHLY_QUOTA = 0
+
+
 @dataclass(frozen=True)
 class PlanDefinition:
     id: str
@@ -58,4 +63,3 @@ PLAN_BY_ID = {item.id: item for item in PLAN_DEFINITIONS}
 PLAN_VALUES = {
     item.id: (item.name, item.monthly_quota) for item in PLAN_DEFINITIONS
 }
-

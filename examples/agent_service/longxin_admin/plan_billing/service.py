@@ -19,7 +19,14 @@ from fastapi import HTTPException
 from auth import AuthUser, JWTAuthService
 from longxin_admin.distributed_lock import DistributedLease
 
-from .catalog import PLAN_BY_ID, PLAN_DEFINITIONS, PlanDefinition
+from .catalog import (
+    PLAN_BY_ID,
+    PLAN_DEFINITIONS,
+    UNASSIGNED_MONTHLY_QUOTA,
+    UNASSIGNED_PLAN_ID,
+    UNASSIGNED_PLAN_NAME,
+    PlanDefinition,
+)
 from .models import (
     CreatePlanOrderRequest,
     CurrentPlanView,
@@ -164,12 +171,29 @@ class PlanBillingService:
     async def _profile(self, user: AuthUser) -> dict[str, Any]:
         value = await self._read_json(self._profile_key(user.id))
         if value is not None:
+            # Older deployments created self-registered accounts with the
+            # Basic display values but without an activation timestamp.  Such
+            # accounts were never granted quota; normalize them to the
+            # explicit no-plan state instead of showing a misleading 100k.
+            if (
+                not value.get("plan_started_at")
+                and int(value.get("monthly_quota", 0)) > 0
+            ):
+                value.update(
+                    {
+                        "plan_id": UNASSIGNED_PLAN_ID,
+                        "plan_name": UNASSIGNED_PLAN_NAME,
+                        "monthly_quota": UNASSIGNED_MONTHLY_QUOTA,
+                        "monthly_used": 0,
+                    },
+                )
+                await self._save_profile(value)
             return value
         return {
             "user_id": user.id,
-            "plan_id": "plan_basic",
-            "plan_name": PLAN_BY_ID["plan_basic"].name,
-            "monthly_quota": PLAN_BY_ID["plan_basic"].monthly_quota,
+            "plan_id": UNASSIGNED_PLAN_ID,
+            "plan_name": UNASSIGNED_PLAN_NAME,
+            "monthly_quota": UNASSIGNED_MONTHLY_QUOTA,
             "monthly_used": 0,
             "bonus_tokens": 0,
             "bonus_tokens_granted": 0,
@@ -379,7 +403,7 @@ class PlanBillingService:
                 )
             profile = await self._profile(user)
             activated = bool(profile.get("plan_started_at"))
-            current_plan_id = str(profile.get("plan_id", "plan_basic"))
+            current_plan_id = str(profile.get("plan_id", UNASSIGNED_PLAN_ID))
             if not activated:
                 order_type = "activation"
             elif body.plan_id == current_plan_id:
@@ -387,7 +411,11 @@ class PlanBillingService:
             elif plan.monthly_quota > int(profile.get("monthly_quota", 0)):
                 order_type = "upgrade"
             else:
-                order_type = "downgrade"
+                raise _error(
+                    "plan_upgrade_only",
+                    "Only the current plan or a higher plan can be requested.",
+                    409,
+                )
             order = {
                 "order_id": f"plan-order-{uuid4().hex}",
                 "user_id": user.id,

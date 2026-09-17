@@ -195,3 +195,68 @@ class PlanBillingTest(TestCase):
         system = json.loads(self.redis.values["longxin:admin:v1:system"])
         self.assertEqual(system["pool_tokens"], 100_000)
         self.assertNotIn("longxin:admin:v1:ledger", self.redis.values)
+
+    def test_registered_account_starts_without_a_plan(self) -> None:
+        registered = self.client.post(
+            "/auth/register",
+            json={"username": "new-user", "password": "new-user-password"},
+        )
+        self.assertEqual(registered.status_code, 201)
+        headers = {
+            "Authorization": f"Bearer {registered.json()['access_token']}",
+        }
+
+        current = self.client.get("/account/plan", headers=headers)
+
+        self.assertEqual(current.status_code, 200)
+        self.assertEqual(current.json()["plan_id"], "plan_none")
+        self.assertEqual(current.json()["monthly_quota"], 0)
+        self.assertEqual(current.json()["remaining_tokens"], 0)
+        self.assertEqual(current.json()["status"], "inactive")
+
+    def test_member_cannot_downgrade_after_activation(self) -> None:
+        import asyncio
+
+        asyncio.run(
+            self.service._save_system(
+                {
+                    "system_id": "local-system",
+                    "pool_tokens": 1_000_000,
+                    "total_recharged": "0.00",
+                    "test_default_tokens": 0,
+                    "updated_at": "",
+                },
+            ),
+        )
+        registered = self.client.post(
+            "/auth/register",
+            json={"username": "upgrade-user", "password": "upgrade-password"},
+        )
+        member_headers = {
+            "Authorization": f"Bearer {registered.json()['access_token']}",
+        }
+        admin_headers = {
+            "Authorization": f"Bearer {self._login('admin', 'admin-password')['access_token']}",
+        }
+        created = self.client.post(
+            "/account/orders",
+            headers={**member_headers, "Idempotency-Key": "order-upgrade-user"},
+            json={"plan_id": "plan_pro"},
+        )
+        self.assertEqual(created.status_code, 201)
+        order_id = created.json()["order_id"]
+        approved = self.client.post(
+            f"/admin/orders/{order_id}/approve",
+            headers={**admin_headers, "Idempotency-Key": "approve-upgrade-user"},
+            json={"reason": "已确认申请", "admin_password": "admin-password"},
+        )
+        self.assertEqual(approved.status_code, 200)
+
+        downgrade = self.client.post(
+            "/account/orders",
+            headers={**member_headers, "Idempotency-Key": "order-downgrade-user"},
+            json={"plan_id": "plan_basic"},
+        )
+
+        self.assertEqual(downgrade.status_code, 409)
+        self.assertEqual(downgrade.json()["detail"]["code"], "plan_upgrade_only")

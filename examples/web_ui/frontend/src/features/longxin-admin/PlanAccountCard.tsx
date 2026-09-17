@@ -31,7 +31,8 @@ export function PlanAccountCard() {
 			await queryClient.invalidateQueries({ queryKey: ['longxin-plan-billing'] });
 		},
 	});
-	const activePlanId = current.data?.status === 'active' ? current.data.plan_id : null;
+	const currentPlanId = current.data?.status !== 'inactive' ? current.data?.plan_id : null;
+	const currentQuota = current.data?.status !== 'inactive' ? current.data?.monthly_quota ?? 0 : 0;
 
 	return (
 		<Card>
@@ -50,7 +51,9 @@ export function PlanAccountCard() {
 						<div className="rounded-lg bg-muted/60 p-3">
 							<div className="text-xs text-muted-foreground">{t('billing.currentPlan')}</div>
 							<div className="mt-1 flex items-center gap-2 font-medium">
-								{current.data.plan_name}
+								{current.data.plan_id === 'plan_none'
+									? t('billing.noPlan')
+									: current.data.plan_name}
 								<Badge variant={current.data.status === 'active' ? 'default' : 'outline'}>
 									{t(`billing.planStatus.${current.data.status}`)}
 								</Badge>
@@ -80,8 +83,11 @@ export function PlanAccountCard() {
 				)}
 
 				<div className="grid gap-3 md:grid-cols-3">
-					{(plans.data?.plans ?? []).map((plan) => (
-						<div key={plan.id} className="flex flex-col gap-3 rounded-lg border p-4">
+					{(plans.data?.plans ?? []).map((plan) => {
+						const isSamePlan = currentPlanId === plan.id;
+						const isLowerPlan = currentQuota > 0 && plan.monthly_quota < currentQuota;
+						return (
+							<div key={plan.id} className="flex flex-col gap-3 rounded-lg border p-4">
 							<div>
 								<div className="flex items-center justify-between gap-2">
 									<div className="font-medium">{plan.name}</div>
@@ -95,16 +101,21 @@ export function PlanAccountCard() {
 								</div>
 							</div>
 							<Button
-								variant={plan.id === activePlanId ? 'default' : 'outline'}
-								disabled={createOrder.isPending}
+								variant={isSamePlan ? 'default' : 'outline'}
+								disabled={createOrder.isPending || isLowerPlan}
 								onClick={() => createOrder.mutate(plan.id)}
 							>
-								{plan.id === activePlanId
+								{isLowerPlan
+									? t('billing.upgradeOnly')
+									: isSamePlan
 									? t('billing.renew')
-									: t('billing.choose')}
+									: currentQuota > 0
+										? t('billing.upgrade')
+										: t('billing.choose')}
 							</Button>
-						</div>
-					))}
+							</div>
+						);
+					})}
 				</div>
 
 				<div className="space-y-2">

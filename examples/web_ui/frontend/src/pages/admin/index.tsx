@@ -410,7 +410,6 @@ export function AdminPage() {
 									<option value="active">{t('admin.statusValues.active')}</option>
 									<option value="locked">{t('admin.statusValues.locked')}</option>
 									<option value="banned">{t('admin.statusValues.banned')}</option>
-									<option value="deleted">{t('admin.statusValues.deleted')}</option>
 								</select>
 								{users.isFetching && (
 									<Loader2 className="size-4 animate-spin text-muted-foreground" />
