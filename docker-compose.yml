@@ -2,6 +2,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    ports:
+      - "6379:6379"
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     command:
@@ -54,8 +56,13 @@ services:
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       SILICONFLOW_BASE_URL: ${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
       SILICONFLOW_CHAT_MODEL: ${SILICONFLOW_CHAT_MODEL:-deepseek-ai/DeepSeek-V3.2}
+      LXSCOPE_GRAPH_MODEL: ${LXSCOPE_GRAPH_MODEL:-}
       SILICONFLOW_EMBEDDING_MODEL: ${SILICONFLOW_EMBEDDING_MODEL:-BAAI/bge-m3}
       SILICONFLOW_EMBEDDING_DIMENSIONS: ${SILICONFLOW_EMBEDDING_DIMENSIONS:-1024}
+      # DeepSeek 官方 OpenAI 兼容端点(与 SILICONFLOW_API_KEY 同一把 key)
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+      DEEPSEEK_CHAT_MODEL: ${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash}
       QDRANT_PATH: ${QDRANT_PATH:-/app/qdrant_data}
       LONGXIN_DATA_DIR: ${LONGXIN_DATA_DIR:-/app/longxin-data}
       LONGXIN_APP_TARGET_DIR: ${LONGXIN_APP_TARGET_DIR:-}
@@ -68,6 +75,20 @@ services:
       # that still resolve Playwright's legacy default path.
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
       AGENTSCOPE_DOWNLOAD_SECRET: ${AGENTSCOPE_DOWNLOAD_SECRET:-change-me-in-production}
+      LONGXIN_SYSTEM_NAME: ${LONGXIN_SYSTEM_NAME:-Longxin AgentScope}
+      LONGXIN_SYSTEM_ID: ${LONGXIN_SYSTEM_ID:-local-system}
+      LONGXIN_APP_VERSION: ${LONGXIN_APP_VERSION:-3.8.1}
+      LONGXIN_CORE_VERSION: ${LONGXIN_CORE_VERSION:-2.0.8}
+      SALES_CENTER_BASE_URL: ${SALES_CENTER_BASE_URL:-}
+      SALES_CENTER_API_TOKEN: ${SALES_CENTER_API_TOKEN:-}
+      SALES_CENTER_API_TOKEN_FILE: ${SALES_CENTER_API_TOKEN_FILE:-}
+      SALES_CENTER_TIMEOUT_SECONDS: ${SALES_CENTER_TIMEOUT_SECONDS:-8}
+      SALES_CENTER_VERIFY_TLS: ${SALES_CENTER_VERIFY_TLS:-true}
+      SALES_INTEGRATION_ADMIN_USERNAME: ${SALES_INTEGRATION_ADMIN_USERNAME:-admin}
+      LONGXIN_UPGRADE_DIR: ${LONGXIN_UPGRADE_DIR:-/app/upgrade-packages}
+      LONGXIN_POOL_TOKENS: ${LONGXIN_POOL_TOKENS:-0}
+      LONGXIN_TOTAL_RECHARGED: ${LONGXIN_TOTAL_RECHARGED:-0.00}
+      LONGXIN_CUMULATIVE_CREDITS: ${LONGXIN_CUMULATIVE_CREDITS:-0}
     volumes:
       - agentscope-workspaces:/app/examples/agent_service/workspaces
       - agentscope-blobs:/app/blobs

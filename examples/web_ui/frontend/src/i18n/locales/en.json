@@ -435,6 +435,23 @@
 			"previewTooLargeTitle": "File too large to preview",
 			"previewTooLargeDescription": "This file exceeds the inline preview limit. Download it to view the original.",
 			"downloadButton": "Download original file"
+		},
+		"graph": {
+			"title": "Knowledge graph",
+			"ready": "Ready",
+			"building": "Building",
+			"error": "Build failed",
+			"disabled": "Disabled",
+			"emptyStatus": "Empty",
+			"loading": "Loading knowledge graph…",
+			"empty": "No cross-document knowledge graph yet. Upload and finish indexing documents first.",
+			"stats": "{{nodes}} nodes · {{edges}} edges",
+			"search": "Search",
+			"rebuild": "Rebuild graph",
+			"searchPlaceholder": "Search entities, types, or aliases",
+			"sources": "Source documents",
+			"chunk": "Chunk {{index}}",
+			"selectNode": "Select a node to view its source documents and chunks."
 		}
 	},
 	"llm-select": {

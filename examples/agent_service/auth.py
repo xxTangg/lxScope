@@ -77,6 +77,7 @@ class _StoredAccount(BaseModel):
     salt: str
     password_digest: str
     created_at: str
+    password_expires_at: str | None = None
     role: Literal["user", "admin"] = "user"
     status: Literal["active", "locked", "banned", "deleted"] = "active"
     failed_attempts: int = 0
@@ -91,6 +92,7 @@ class _Account:
     user_id: str
     salt: bytes
     password_digest: bytes
+    password_expires_at: datetime | None = None
     role: Literal["user", "admin"] = "user"
     status: Literal["active", "locked", "banned", "deleted"] = "active"
     failed_attempts: int = 0
@@ -265,6 +267,11 @@ class JWTAuthService:
             user_id=stored.user_id,
             salt=base64.b64decode(stored.salt),
             password_digest=base64.b64decode(stored.password_digest),
+            password_expires_at=(
+                datetime.fromisoformat(stored.password_expires_at.replace("Z", "+00:00"))
+                if stored.password_expires_at
+                else None
+            ),
             role=stored.role,
             status=stored.status,
             failed_attempts=stored.failed_attempts,
@@ -313,6 +320,11 @@ class JWTAuthService:
             salt=base64.b64encode(account.salt).decode("ascii"),
             password_digest=base64.b64encode(account.password_digest).decode("ascii"),
             created_at=datetime.now(timezone.utc).isoformat(),
+            password_expires_at=(
+                account.password_expires_at.isoformat()
+                if account.password_expires_at is not None
+                else None
+            ),
             role=account.role,
             status=account.status,
             failed_attempts=account.failed_attempts,
@@ -356,6 +368,9 @@ class JWTAuthService:
         except ValueError as exc:
             raise _unauthorized("Invalid username or password.") from exc
         account = await self._account_by_username(normalized)
+        if account is not None and account.password_expires_at is not None:
+            if account.password_expires_at <= datetime.now(timezone.utc):
+                account = None
         if account is None:
             await asyncio.to_thread(_derive_password, password, b"longxin-login--")
             raise _unauthorized("Invalid username or password.")
@@ -392,6 +407,42 @@ class JWTAuthService:
             )
             await self._save_account(account)
         return self._public_user(account)
+
+    async def reset_password(
+        self,
+        identity: str,
+        password: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> AuthUser:
+        """Reset a password by user id or username and persist the change."""
+        try:
+            account = await self._account_by_id(identity)
+            if account is None:
+                account = await self._account_by_username(
+                    self._normalize_username(identity),
+                )
+        except ValueError as exc:
+            raise ValueError("Invalid username.") from exc
+        if not password:
+            raise ValueError("A new password is required.")
+        if account is None:
+            raise ValueError("The requested account does not exist.")
+
+        salt = secrets.token_bytes(16)
+        digest = await asyncio.to_thread(_derive_password, password, salt)
+        updated = replace(
+            account,
+            salt=salt,
+            password_digest=digest,
+            password_expires_at=expires_at,
+            failed_attempts=0,
+            locked_until=None,
+            status="active" if account.status == "locked" else account.status,
+            token_version=account.token_version + 1,
+        )
+        await self._save_account(updated)
+        return self._public_user(updated)
 
     async def register(self, username: str, password: str) -> AuthUser:
         try:

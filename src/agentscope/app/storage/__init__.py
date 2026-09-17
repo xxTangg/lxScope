@@ -4,6 +4,10 @@ from typing import TYPE_CHECKING
 
 from ._base import StorageBase
 from ._redis_storage import RedisStorage
+from ._knowledge_graph import (
+    KnowledgeGraphStoreBase,
+    RedisKnowledgeGraphStore,
+)
 from ._model import (
     AgentData,
     AgentRecord,
@@ -74,6 +78,8 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "StorageBase",
     "RedisStorage",
+    "KnowledgeGraphStoreBase",
+    "RedisKnowledgeGraphStore",
     "AsyncSQLAlchemyStorage",
     # The ORM models
     "InviteConfig",

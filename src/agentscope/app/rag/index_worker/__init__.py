@@ -73,8 +73,8 @@ if TYPE_CHECKING:
     from ..blob_store import BlobStoreBase
     from ..knowledge_base_manager import KnowledgeBaseManagerBase
     from ...message_bus import MessageBus
-    from ...storage import StorageBase
-    from ....rag import ChunkerBase, ParserBase
+    from ...storage import KnowledgeGraphStoreBase, StorageBase
+    from ....rag import ChunkerBase, KnowledgeGraphExtractor, ParserBase
 
 
 async def run_worker(
@@ -89,6 +89,8 @@ async def run_worker(
     worker_max_concurrency: int = 4,
     consumer_max_batch: int = 32,
     parser_executor: ProcessPoolExecutor | None = None,
+    knowledge_graph_store: "KnowledgeGraphStoreBase | None" = None,
+    knowledge_graph_extractor: "KnowledgeGraphExtractor | None" = None,
     **kwargs: Any,
 ) -> None:
     """Run the out-of-process index worker until cancelled.
@@ -137,6 +139,11 @@ async def run_worker(
         parser_executor (`ProcessPoolExecutor | None`, optional):
             Process pool for CPU-bound parses. ``None`` runs parses
             inline (fine for text-only deployments).
+        knowledge_graph_store (`KnowledgeGraphStoreBase | None`, optional):
+            Optional persistence for the merged knowledge-base graph.
+        knowledge_graph_extractor (`KnowledgeGraphExtractor | None`,
+            optional):
+            Optional structured-output extractor run after vector indexing.
         **kwargs (`Any`):
             Deprecated arguments forwarded to :class:`IndexWorker`
             (e.g. the old ``chunker`` instance).
@@ -160,6 +167,8 @@ async def run_worker(
             node_id=resolved_node_id,
             max_concurrency=worker_max_concurrency,
             parser_executor=parser_executor,
+            knowledge_graph_store=knowledge_graph_store,
+            knowledge_graph_extractor=knowledge_graph_extractor,
             **kwargs,
         )
         await stack.enter_async_context(

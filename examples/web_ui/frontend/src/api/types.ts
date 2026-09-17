@@ -1044,6 +1044,49 @@ export interface KnowledgeDocumentView {
 	updated_at: string;
 }
 
+export interface KnowledgeGraphSourceRef {
+	document_id: string;
+	chunk_index?: number | null;
+	filename?: string | null;
+	metadata?: Record<string, unknown>;
+}
+
+export interface KnowledgeGraphNode {
+	id: string;
+	label: string;
+	type: string;
+	properties: Record<string, unknown>;
+	aliases: string[];
+	source_refs: KnowledgeGraphSourceRef[];
+}
+
+export interface KnowledgeGraphEdge {
+	id: string;
+	source: string;
+	target: string;
+	label: string;
+	properties: Record<string, unknown>;
+	source_refs: KnowledgeGraphSourceRef[];
+}
+
+export interface KnowledgeGraphResponse {
+	status: 'disabled' | 'empty' | 'building' | 'ready' | 'error' | string;
+	error?: string | null;
+	nodes: KnowledgeGraphNode[];
+	edges: KnowledgeGraphEdge[];
+	node_count: number;
+	edge_count: number;
+	version: number;
+	updated_at?: string | null;
+}
+
+export interface RebuildKnowledgeGraphResponse {
+	status: 'disabled' | 'ready' | 'error' | string;
+	documents: number;
+	skipped: number;
+	error?: string | null;
+}
+
 /** Query parameters accepted by `GET /knowledge_bases/{id}/documents`. */
 export interface ListKnowledgeDocumentsParams {
 	/** Filter down to one document by id. */
