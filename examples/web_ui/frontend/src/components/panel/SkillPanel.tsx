@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { Skill } from '@/api';
 import type { UploadOptions } from '@/api/workspace';
 import { AddSkillDialog } from '@/components/dialog/AddSkillDialog.tsx';
+import { ResourceDetailDrawer } from '@/components/drawer/ResourceDetailDrawer.tsx';
 import { DeleteDialog } from '@/components/dialog/DeleteDialog.tsx';
 import { PanelEmpty } from '@/components/panel/PanelEmpty';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.tsx';
@@ -25,8 +26,6 @@ interface SkillPanelProps {
 	skills: Skill[];
 	/** Regular users can use published skills but cannot change the list. */
 	readOnly?: boolean;
-	/** A built-in skill selected from the admin workflow catalog. */
-	preferredSkillName?: string | null;
 	/** Whether the skill list is still loading. */
 	loading?: boolean;
 	/**
@@ -70,13 +69,13 @@ export function SkillPanel({
 	skills,
 	readOnly = false,
 	loading = false,
-	preferredSkillName = null,
 	onUpload,
 	onAddFromLibrary,
 	onRemove,
 }: SkillPanelProps) {
 	const { t } = useTranslation();
 	const [search, setSearch] = useState('');
+	const [detailSkill, setDetailSkill] = useState<Skill | null>(null);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 	const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 	// The workspace stores only the skill itself, so the icon and author
@@ -87,11 +86,6 @@ export function SkillPanel({
 	const filtered = search
 		? skills.filter((s) => s.name.toLowerCase().includes(search.toLowerCase()))
 		: skills;
-	const ordered = [...filtered].sort((a, b) => {
-		if (a.name === preferredSkillName) return -1;
-		if (b.name === preferredSkillName) return 1;
-		return 0;
-	});
 
 	return (
 		<div className="flex flex-col flex-1 min-h-0 gap-y-2">
@@ -123,15 +117,22 @@ export function SkillPanel({
 				/>
 			) : (
 				<div className="flex flex-col flex-1 min-h-0 overflow-y-auto scroll-fade gap-y-2">
-					{ordered.map((skill) => {
+					{filtered.map((skill) => {
 						const installed = byName.get(skill.name);
 						return (
 							<Item
 								key={skill.name}
 								variant="outline"
-								className={`group/skill ${
-									skill.name === preferredSkillName ? 'border-primary bg-primary/5' : ''
-								}`}
+								className="group/skill cursor-pointer transition-colors hover:bg-accent/50"
+								role="button"
+								tabIndex={0}
+								onClick={() => setDetailSkill(skill)}
+								onKeyDown={(event) => {
+									if (event.key === 'Enter' || event.key === ' ') {
+										event.preventDefault();
+										setDetailSkill(skill);
+									}
+								}}
 							>
 								<ItemMedia>
 									<Avatar className="rounded-md">
@@ -148,11 +149,6 @@ export function SkillPanel({
 								<ItemContent>
 									<ItemTitle>
 										<span className="truncate font-medium">{skill.name}</span>
-										{skill.name === preferredSkillName && (
-											<span className="text-xs text-primary">
-												{t('panel.skill.selected')}
-											</span>
-										)}
 										{installed?.author && (
 											<span className="text-xs text-muted-foreground">
 												@{installed.author}
@@ -172,7 +168,8 @@ export function SkillPanel({
 											variant="secondary"
 											size="icon-sm"
 											className="opacity-0 transition-opacity group-hover/skill:opacity-100 focus-visible:opacity-100"
-											onClick={() => {
+											onClick={(event) => {
+												event.stopPropagation();
 												setDeleteTarget(skill.name);
 												setDeleteOpen(true);
 											}}
@@ -215,6 +212,23 @@ export function SkillPanel({
 					}}
 				/>
 			)}
+
+			<ResourceDetailDrawer
+				skill={
+					detailSkill
+						? {
+								name: detailSkill.name,
+								description: detailSkill.description,
+								tags: [],
+								updated_at: detailSkill.updated_at,
+								markdown: detailSkill.markdown,
+							}
+						: null
+				}
+				onOpenChange={(open) => {
+					if (!open) setDetailSkill(null);
+				}}
+			/>
 		</div>
 	);
 }

@@ -672,8 +672,8 @@
 			"installedEmptyDescription": "Install one from the MCP Hub, or paste a configuration."
 		},
 		"skill": {
-			"title": "Skills",
-			"description": "The skills equipped in the workspace.",
+			"title": "Current skills",
+			"description": "Skills currently available in this workspace. The model chooses when to use them.",
 			"searchPlaceholder": "Search skills in the workspace",
 			"add": "Add Skill",
 			"emptyTitle": "No skills",

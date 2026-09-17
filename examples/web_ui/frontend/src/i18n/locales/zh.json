@@ -672,8 +672,8 @@
 			"installedEmptyDescription": "去 MCP 中心安装一个，或在这里粘贴配置。"
 		},
 		"skill": {
-			"title": "技能",
-			"description": "工作区中配置的技能。",
+			"title": "当前技能",
+			"description": "当前工作区可用的技能，模型会根据任务自动调用。",
 			"searchPlaceholder": "在工作区中搜索技能",
 			"add": "添加技能",
 			"emptyTitle": "暂无技能",

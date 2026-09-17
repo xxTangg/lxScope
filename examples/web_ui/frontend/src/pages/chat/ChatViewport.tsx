@@ -226,9 +226,6 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	// panels stacked top→bottom. Open order determines placement.
 	// Persisted so leaving and returning to /chat keeps the same panels.
 	const [panelLayout, setPanelLayout] = useState<PanelKey[][]>(loadPanelLayout);
-	const [preferredSkillName] = useState<string | null>(() =>
-		localStorage.getItem('chat_selected_builtin_skill'),
-	);
 
 	useEffect(() => {
 		localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(panelLayout));
@@ -322,15 +319,14 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		removeSkill,
 	} = useWorkspace(agentId, sessionId);
 	const { resources: publishedMcps } = usePublishedResources('mcp');
-	const { resources: publishedSkills } = usePublishedResources('skill');
 	const visibleMcps =
 		user?.role === 'admin'
 			? mcps
 			: mcps.filter((mcp) => publishedMcps.some((resource) => resource.name === mcp.name));
-	const visibleSkills =
-		user?.role === 'admin'
-			? skills
-			: skills.filter((skill) => publishedSkills.some((resource) => resource.name === skill.name));
+	// The workspace endpoint is the source of truth for what the model can
+	// currently see. Publication scope controls catalog distribution; it is
+	// not a per-turn skill selector.
+	const visibleSkills = skills;
 	const { knowledgeBases, loading: knowledgeBasesLoading } = useKnowledgeBases();
 	const { schema: kbMiddlewareSchema } = useKnowledgeBaseMiddlewareSchema();
 
@@ -462,7 +458,6 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 						skills={visibleSkills}
 						readOnly={user?.role !== 'admin'}
 						loading={skillsLoading}
-						preferredSkillName={preferredSkillName}
 						onUpload={uploadSkill}
 						onAddFromLibrary={addSkillsFromLibrary}
 						onRemove={removeSkill}
