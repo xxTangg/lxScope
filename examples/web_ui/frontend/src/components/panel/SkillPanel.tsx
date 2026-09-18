@@ -1,6 +1,7 @@
 import { FileX, PlusCircle, Search, SearchX, Trash } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
+import { skillApi } from '@/api';
 import type { PublishedResource, Skill } from '@/api';
 import type { UploadOptions } from '@/api/workspace';
 import { AddSkillDialog } from '@/components/dialog/AddSkillDialog.tsx';
@@ -18,6 +19,7 @@ import {
 	ItemMedia,
 	ItemTitle,
 } from '@/components/ui/item';
+import { useSkills } from '@/hooks/useSkills.ts';
 import { useTranslation } from '@/i18n/useI18n.ts';
 
 interface SkillPanelProps {
@@ -61,6 +63,8 @@ type DisplaySkill = {
 	icon_url: string | null;
 	version: string | null;
 	hub_id: string | null;
+	url: string | null;
+	libraryId: string | null;
 };
 
 /**
@@ -91,26 +95,43 @@ export function SkillPanel({
 	const { t } = useTranslation();
 	const [search, setSearch] = useState('');
 	const [detailSkill, setDetailSkill] = useState<DisplaySkill | null>(null);
+	const [detailLoading, setDetailLoading] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 	const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+	const detailRequestRef = useRef(0);
+	const { skills: librarySkills, refetch: refetchLibrarySkills } = useSkills();
 	// The publication catalog is the source of truth for what this user may
 	// see. The workspace is only used to enrich an item with its markdown
 	// body when that skill has already been equipped for the current session.
 	const workspaceByName = new Map(skills.map((skill) => [skill.name, skill]));
+	const libraryByName = new Map(librarySkills.map((skill) => [skill.name, skill]));
+	const publishedSignature = publishedSkills
+		?.map((resource) => `${resource.id}:${resource.name}`)
+		.join('|');
+
+	useEffect(() => {
+		if (publishedSignature) void refetchLibrarySkills();
+	}, [publishedSignature, refetchLibrarySkills]);
+
 	const displayedSkills: DisplaySkill[] = publishedSkills
 		? publishedSkills.map((resource) => {
 				const workspaceSkill = workspaceByName.get(resource.name);
+				const librarySkill = libraryByName.get(resource.name);
 				return {
 					name: resource.name,
-					display_name: resource.display_name || resource.name,
-					description: resource.description || workspaceSkill?.description || '',
+					display_name:
+						resource.display_name || librarySkill?.display_name || resource.name,
+					description:
+						resource.description || librarySkill?.description || workspaceSkill?.description || '',
 					markdown: workspaceSkill?.markdown || '',
 					updated_at: workspaceSkill?.updated_at || 0,
-					tags: resource.tags,
-					author: resource.author,
-					icon_url: resource.icon_url,
-					version: resource.version,
-					hub_id: null,
+					tags: resource.tags.length > 0 ? resource.tags : (librarySkill?.tags ?? []),
+					author: resource.author || librarySkill?.author || null,
+					icon_url: resource.icon_url || librarySkill?.icon_url || null,
+					version: resource.version || librarySkill?.version || null,
+					hub_id: librarySkill?.hub_id || null,
+					url: librarySkill?.url || null,
+					libraryId: librarySkill?.id || null,
 				};
 			})
 		: skills.map((skill) => ({
@@ -124,6 +145,8 @@ export function SkillPanel({
 				icon_url: null,
 				version: null,
 				hub_id: null,
+				url: null,
+				libraryId: null,
 			}));
 
 	const filtered = search
@@ -134,6 +157,42 @@ export function SkillPanel({
 					.includes(search.toLowerCase()),
 			)
 		: displayedSkills;
+
+	const openSkillDetails = async (skill: DisplaySkill) => {
+		const requestId = ++detailRequestRef.current;
+		setDetailSkill(skill);
+		if (skill.markdown || !skill.libraryId) {
+			setDetailLoading(false);
+			return;
+		}
+
+		setDetailLoading(true);
+		try {
+			const record = await skillApi.get(skill.libraryId);
+			if (requestId !== detailRequestRef.current) return;
+			setDetailSkill((current) =>
+				current && current.name === skill.name
+					? {
+							...current,
+							display_name: record.display_name || current.display_name,
+							description: record.description || current.description,
+							tags: record.tags,
+							author: record.author || current.author,
+							icon_url: record.icon_url || current.icon_url,
+							version: record.version || current.version,
+							hub_id: record.hub_id || current.hub_id,
+							url: record.url || current.url,
+							markdown: record.markdown,
+						}
+					: current,
+			);
+		} catch {
+			// Keep the catalog summary visible if the library detail request
+			// fails; the drawer will show the same fallback as before.
+		} finally {
+			if (requestId === detailRequestRef.current) setDetailLoading(false);
+		}
+	};
 
 	return (
 		<div className="flex flex-col flex-1 min-h-0 gap-y-2">
@@ -173,20 +232,20 @@ export function SkillPanel({
 								className="group/skill cursor-pointer transition-colors hover:bg-accent/50"
 								role="button"
 								tabIndex={0}
-								onClick={() => setDetailSkill(skill)}
+								onClick={() => void openSkillDetails(skill)}
 								onKeyDown={(event) => {
 									if (event.key === 'Enter' || event.key === ' ') {
 										event.preventDefault();
-										setDetailSkill(skill);
+										void openSkillDetails(skill);
 									}
 								}}
 							>
 								<ItemMedia>
 									<Avatar className="rounded-md">
 										<AvatarImage
-												src={skill.icon_url ?? undefined}
-												alt={skill.name}
-												loading="lazy"
+											src={skill.icon_url ?? undefined}
+											alt={skill.name}
+											loading="lazy"
 										/>
 										<AvatarFallback className="rounded-md">
 											{skill.name.slice(0, 1).toUpperCase()}
@@ -210,7 +269,7 @@ export function SkillPanel({
 									{/* Only on hover: deleting is rare, and a
 									    button on every row competes with the
 									    content for attention. */}
-											{!readOnly && onRemove && (
+									{!readOnly && onRemove && (
 										<Button
 											variant="secondary"
 											size="icon-sm"
@@ -273,12 +332,18 @@ export function SkillPanel({
 								author: detailSkill.author,
 								icon_url: detailSkill.icon_url,
 								hub_id: detailSkill.hub_id,
+								url: detailSkill.url,
 								markdown: detailSkill.markdown,
-							}
+								}
 						: null
 				}
+				loading={detailLoading}
 				onOpenChange={(open) => {
-					if (!open) setDetailSkill(null);
+					if (!open) {
+						detailRequestRef.current += 1;
+						setDetailSkill(null);
+						setDetailLoading(false);
+					}
 				}}
 			/>
 		</div>
