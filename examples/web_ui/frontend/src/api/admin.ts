@@ -316,4 +316,8 @@ export const adminApi = {
 		),
 	publishResource: (body: PublishResourceRequest) =>
 		client.post<ResourcePublication>('/admin/resources', body),
+	removeSkill: (skillId: string) =>
+		client.delete(`/admin/skills/${encodeURIComponent(skillId)}`, undefined, {
+			headers: idempotencyHeaders(),
+		}),
 };

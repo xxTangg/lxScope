@@ -8,6 +8,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,9 @@ from longxin_admin.plan_billing.catalog import (
     UNASSIGNED_PLAN_NAME,
 )
 from sales_hub_client import SalesHubClient, SalesHubClientError
+
+
+_logger = logging.getLogger(__name__)
 
 
 _PREFIX = "longxin:admin:v1"
@@ -553,10 +557,15 @@ class AdminService:
         storage: Any,
         auth: JWTAuthService,
         plan_billing: Any | None = None,
+        workspace_service_provider: Any | None = None,
     ) -> None:
         self._storage = storage
         self._auth = auth
         self._plan_billing = plan_billing
+        # Kept as a provider because the generic app creates the workspace
+        # service during its lifespan. This stays in the product layer and
+        # avoids changing AgentScope's application factory.
+        self._workspace_service_provider = workspace_service_provider
         self._lock = asyncio.Lock()
         self._sales_hub_client = SalesHubClient(self._hub_connection_config)
 
@@ -972,6 +981,18 @@ class AdminService:
         views = [ResourcePublicationView.model_validate(item) for item in resources]
         return ResourcePublicationListResponse(resources=views, total=len(views))
 
+    async def managed_resource_names(
+        self,
+        kind: ResourceKind,
+    ) -> set[str]:
+        """Return names controlled by the administrator publication catalog."""
+
+        return {
+            str(item["name"])
+            for item in await self._resource_publications()
+            if item.get("kind") == kind and isinstance(item.get("name"), str)
+        }
+
     async def publish_resource(
         self,
         body: ResourcePublicationRequest,
@@ -1028,6 +1049,121 @@ class AdminService:
             await self._sync_resource_publication(publication, accounts)
             await self._save_resource_publications(resources)
             return ResourcePublicationView.model_validate(publication)
+
+    async def remove_installed_skill(
+        self,
+        skill_id: str,
+        actor: AuthUser,
+    ) -> None:
+        """Remove an administrator skill and its existing workspace copies.
+
+        The library record and publication are application data, while the
+        extracted files live in workspaces. Deleting only the record leaves
+        those files usable by a later AgentScope turn, so the admin action
+        explicitly reconciles both layers through the existing workspace
+        service API.
+        """
+
+        source = await self._storage.get_skill(actor.id, skill_id)
+        if source is None:
+            raise _error("resource_not_found", "The administrator skill was not found.", 404)
+
+        accounts = await self._auth.list_accounts()
+        resources = await self._resource_publications()
+        publication_id = self._resource_publication_id("skill", skill_id)
+        publication = next(
+            (item for item in resources if item.get("id") == publication_id),
+            None,
+        )
+
+        async with self._mutation_lock():
+            # Withdraw first so no new user-library copy can be provisioned
+            # while the existing workspaces are being reconciled.
+            if publication is not None:
+                withdrawn = {
+                    **publication,
+                    "scope": "none",
+                    "user_ids": [],
+                    "enabled": False,
+                }
+                await self._sync_resource_publication(withdrawn, accounts)
+
+            await self._remove_skill_from_workspaces(
+                {
+                    name
+                    for name in (
+                        getattr(source, "name", None),
+                        publication.get("name") if publication else None,
+                        publication.get("display_name") if publication else None,
+                    )
+                    if isinstance(name, str) and name
+                },
+                accounts,
+            )
+            await self._storage.delete_skill(actor.id, skill_id)
+            resources = [
+                item for item in resources if item.get("id") != publication_id
+            ]
+            await self._save_resource_publications(resources)
+
+    async def _remove_skill_from_workspaces(
+        self,
+        skill_names: set[str],
+        accounts: list[AuthUser],
+    ) -> None:
+        provider = self._workspace_service_provider
+        if not skill_names or provider is None:
+            return
+        workspace_service = provider()
+        if workspace_service is None:
+            return
+
+        # A workspace can be shared by several sessions. Resolve each
+        # workspace id once, but still inspect every user/agent pair.
+        seen: set[tuple[str, str, str]] = set()
+        for account in accounts:
+            if account.status == "deleted":
+                continue
+            try:
+                agents = await self._storage.list_agents(account.id)
+            except Exception:
+                _logger.exception("Unable to enumerate agents for skill cleanup")
+                continue
+            for agent in agents:
+                try:
+                    sessions = await self._storage.list_sessions(account.id, agent.id)
+                except Exception:
+                    _logger.exception(
+                        "Unable to enumerate sessions for skill cleanup: %s",
+                        agent.id,
+                    )
+                    continue
+                for session in sessions:
+                    workspace_id = getattr(session.config, "workspace_id", None)
+                    key = (account.id, agent.id, workspace_id or "__agent__")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    try:
+                        workspace = await workspace_service.resolve(
+                            account.id,
+                            agent.id,
+                            session.id,
+                        )
+                        available = await workspace.list_skills(agent_id=agent.id)
+                        for skill in available:
+                            if skill.name in skill_names:
+                                await workspace.remove_skill(
+                                    skill.name,
+                                    agent_id=agent.id,
+                                )
+                    except Exception:
+                        # A stale/closed remote workspace must not prevent the
+                        # administrator from removing the catalog record.
+                        _logger.exception(
+                            "Unable to remove deleted skill from workspace %s",
+                            key,
+                        )
 
     async def published_resources(
         self,
@@ -2798,6 +2934,15 @@ async def publish_resource(
     service: AdminService = Depends(get_admin_service),
 ) -> ResourcePublicationView:
     return await service.publish_resource(body, actor)
+
+
+@admin_router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_installed_skill(
+    skill_id: str,
+    actor: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> None:
+    await service.remove_installed_skill(skill_id, actor)
 
 
 @admin_router.get("/overview")

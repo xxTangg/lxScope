@@ -54,6 +54,7 @@ import { useChatAttachmentContentTypes } from '@/hooks/useChatAttachmentContentT
 import { useKnowledgeBaseMiddlewareSchema } from '@/hooks/useKnowledgeBaseMiddlewareSchema';
 import { useKnowledgeBases } from '@/hooks/useKnowledgeBases';
 import { useMessages } from '@/hooks/useMessages';
+import { useSkills } from '@/hooks/useSkills';
 import { useSessions } from '@/hooks/useSessions';
 import { useWorkspace } from '@/hooks/useWorkspace.ts';
 import { usePublishedResources } from '@/hooks/usePublishedResources';
@@ -314,19 +315,96 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		removeMcp,
 		skills,
 		skillsLoading,
+		refetchSkills,
 		uploadSkill,
 		addSkillsFromLibrary,
 		removeSkill,
 	} = useWorkspace(agentId, sessionId);
+	const {
+		skills: librarySkills,
+		loading: librarySkillsLoading,
+		refetch: refetchLibrarySkills,
+	} = useSkills();
 	const { resources: publishedMcps } = usePublishedResources('mcp');
+	const {
+		resources: publishedSkills,
+		loading: publishedSkillsLoading,
+	} = usePublishedResources('skill');
 	const visibleMcps =
 		user?.role === 'admin'
 			? mcps
 			: mcps.filter((mcp) => publishedMcps.some((resource) => resource.name === mcp.name));
-	// The workspace endpoint is the source of truth for what the model can
-	// currently see. Publication scope controls catalog distribution; it is
-	// not a per-turn skill selector.
-	const visibleSkills = skills;
+	// Workspaces are seeded with the product skill set, so the workspace
+	// endpoint can contain skills that an administrator has hidden from a
+	// regular user. Keep the panel aligned with the published catalog, just as
+	// the MCP panel already is.
+	// `/resources/published` is already evaluated for the current user. Do
+	// not let the administrator role bypass it: a session should show only
+	// the skills this specific user is allowed to see.
+	const visibleSkills = publishedSkillsLoading
+		? []
+		: skills.filter((skill) =>
+				publishedSkills.some((resource) => resource.name === skill.name),
+			);
+	const skillsPanelLoading =
+		skillsLoading || publishedSkillsLoading;
+
+	// A publication gives a user a library record, while AgentScope loads
+	// skills from the session workspace. Reconcile the two once the published
+	// catalog has finished syncing: this is what makes a newly published,
+	// installed skill available to the current agent instead of only showing it
+	// in the Skill Hub page.
+	useEffect(() => {
+		if (!sessionId || publishedSkillsLoading) return;
+		void Promise.all([refetchLibrarySkills(), refetchSkills()]);
+	}, [publishedSkills, publishedSkillsLoading, refetchLibrarySkills, refetchSkills, sessionId]);
+
+	const autoEquippedSkillsRef = useRef<{ key: string; attemptedAt: number } | null>(null);
+	useEffect(() => {
+		if (
+			!agentId ||
+			!sessionId ||
+			skillsLoading ||
+			publishedSkillsLoading ||
+			librarySkillsLoading
+		) {
+			return;
+		}
+		const publishedNames = new Set(publishedSkills.map((resource) => resource.name));
+		const workspaceNames = new Set(skills.map((skill) => skill.name));
+		const missing = librarySkills.filter(
+			(skill) => publishedNames.has(skill.name) && !workspaceNames.has(skill.name),
+		);
+		const reconciliationKey = `${sessionId}:${missing
+			.map((skill) => skill.id)
+			.sort()
+			.join(',')}`;
+		if (missing.length === 0) return;
+		const previousAttempt = autoEquippedSkillsRef.current;
+		if (
+			previousAttempt?.key === reconciliationKey &&
+			Date.now() - previousAttempt.attemptedAt < 15_000
+		) {
+			return;
+		}
+		autoEquippedSkillsRef.current = {
+			key: reconciliationKey,
+			attemptedAt: Date.now(),
+		};
+		void addSkillsFromLibrary(missing.map((skill) => skill.id)).catch((error) => {
+			toast.error(formatApiErrorForAlert(error));
+		});
+	}, [
+		addSkillsFromLibrary,
+		agentId,
+		librarySkills,
+		librarySkillsLoading,
+		publishedSkills,
+		publishedSkillsLoading,
+		sessionId,
+		skills,
+		skillsLoading,
+	]);
 	const { knowledgeBases, loading: knowledgeBasesLoading } = useKnowledgeBases();
 	const { schema: kbMiddlewareSchema } = useKnowledgeBaseMiddlewareSchema();
 
@@ -457,7 +535,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 					<SkillPanel
 						skills={visibleSkills}
 						readOnly={user?.role !== 'admin'}
-						loading={skillsLoading}
+						loading={skillsPanelLoading}
 						onUpload={uploadSkill}
 						onAddFromLibrary={addSkillsFromLibrary}
 						onRemove={removeSkill}
@@ -530,7 +608,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 			addMcpsFromLibrary,
 			removeMcp,
 			visibleSkills,
-			skillsLoading,
+			skillsPanelLoading,
 			uploadSkill,
 			addSkillsFromLibrary,
 			removeSkill,

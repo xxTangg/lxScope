@@ -28,6 +28,7 @@ from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
 from agentscope.app.storage import RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import OpenAICredential
+from agentscope._logging import logger
 from agentscope.mcp import MCPClient, StdioMCPConfig
 from agentscope.middleware import AgenticMemoryMiddleware, MiddlewareBase
 from agentscope.permission import PermissionContext, PermissionMode
@@ -138,6 +139,91 @@ auth = load_auth_from_env(
 )
 
 
+_builtin_skill_paths_by_id = {
+    os.path.basename(path): path
+    for path in builtin_skill_paths
+}
+
+
+async def _sync_current_user_skills(
+    user_id: str,
+    agent_id: str,
+    workspace: WorkspaceBase,
+) -> None:
+    """Align one live workspace with this user's published skill scope.
+
+    This is an application-level reconciliation before the AgentScope
+    toolkit is assembled. It deliberately uses the existing workspace and
+    skill-hub APIs instead of changing the AgentScope core skill loader.
+    """
+
+    account = await auth._account_by_id(user_id)
+    application = globals().get("app")
+    if account is None or account.status != "active" or application is None:
+        return
+
+    admin_service = application.state.admin_service
+    current_user = auth._public_user(account)
+    visible_resources = await admin_service.published_resources(current_user, "skill")
+    visible_names = {resource.name for resource in visible_resources.resources}
+    managed_names = await admin_service.managed_resource_names("skill")
+
+    current_skills = await workspace.list_skills(agent_id=agent_id)
+    current_names = {skill.name for skill in current_skills}
+
+    # Keep user-created/local skills intact. Only remove skills that the
+    # administrator publication catalog controls and has revoked for this
+    # particular user.
+    for skill in current_skills:
+        if skill.name in managed_names and skill.name not in visible_names:
+            await workspace.remove_skill(skill.name, agent_id=agent_id)
+            current_names.discard(skill.name)
+
+    # Built-ins are seeded by the workspace manager. If a previous scope
+    # reconciliation removed one and it becomes visible again, restore it
+    # from the product-owned source directory.
+    for resource in visible_resources.resources:
+        source_id = resource.id.removeprefix("skill:")
+        builtin_path = _builtin_skill_paths_by_id.get(source_id)
+        if builtin_path is None or resource.name in current_names:
+            continue
+        try:
+            await workspace.add_skill(builtin_path, agent_id=agent_id)
+            current_names.add(resource.name)
+        except Exception:
+            logger.exception("Unable to restore builtin skill %s", resource.name)
+
+    # Installed skills are already copied into the user's library when an
+    # administrator publishes them. Missing visible skills are downloaded
+    # into this workspace only when this user actually starts a turn here.
+    skill_hubs = getattr(application.state, "skill_hubs", {})
+    workspace_service = getattr(application.state, "workspace_service", None)
+    if workspace_service is None:
+        return
+    for record in await storage.list_skills(user_id):
+        if record.name not in visible_names or record.name in current_names:
+            continue
+        hub = skill_hubs.get(record.hub_id or "")
+        if hub is None:
+            continue
+        try:
+            archive = await hub.download(
+                user_id,
+                record.card_id or record.name,
+                record.version,
+            )
+            await workspace_service.install_skill(
+                workspace,
+                archive.stream,
+                archive.format,
+                record.name,
+                agent_id=agent_id,
+            )
+            current_names.add(record.name)
+        except Exception:
+            logger.exception("Unable to equip published skill %s", record.name)
+
+
 async def longterm_memory_factory(
     user_id: str,
     agent_id: str,
@@ -146,7 +232,8 @@ async def longterm_memory_factory(
 ) -> list[MiddlewareBase]:
     """Attach Markdown-file long-term memory, stored under the session's
     workspace so it is reachable through whichever backend is bound."""
-    del user_id, agent_id, session_id
+    del session_id
+    await _sync_current_user_skills(user_id, agent_id, workspace)
     return [
         AgenticMemoryMiddleware(
             workdir=workspace.workdir,
@@ -329,6 +416,7 @@ app.state.admin_service = AdminService(
     storage,
     auth,
     plan_billing=app.state.plan_billing_service,
+    workspace_service_provider=lambda: getattr(app.state, "workspace_service", None),
 )
 app.state.upgrade_service = UpgradeService(storage, auth)
 app.state.sales_hub_authorizer = app.state.admin_service.authorize_hub

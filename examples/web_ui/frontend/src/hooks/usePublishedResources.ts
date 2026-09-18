@@ -8,8 +8,8 @@ export function usePublishedResources(kind: ResourceKind) {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<Error | null>(null);
 
-	const refetch = useCallback(async () => {
-		setLoading(true);
+	const refetch = useCallback(async (options?: { silent?: boolean }) => {
+		if (!options?.silent) setLoading(true);
 		setError(null);
 		try {
 			const response = await publishedApi.list(kind);
@@ -23,6 +23,18 @@ export function usePublishedResources(kind: ResourceKind) {
 
 	useEffect(() => {
 		void refetch();
+	}, [refetch]);
+
+	useEffect(() => {
+		const refresh = () => {
+			if (document.visibilityState === 'visible') void refetch({ silent: true });
+		};
+		window.addEventListener('focus', refresh);
+		const timer = window.setInterval(refresh, 15_000);
+		return () => {
+			window.removeEventListener('focus', refresh);
+			window.clearInterval(timer);
+		};
 	}, [refetch]);
 
 	return { resources, loading, error, refetch };

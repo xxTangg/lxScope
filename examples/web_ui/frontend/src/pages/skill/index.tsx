@@ -1,9 +1,16 @@
 import { Blocks, Check, Download, Plug, Trash2, TriangleAlert } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import type { HubInfo, SkillCard, SkillView } from '@/api';
-import { hubApi, skillApi } from '@/api';
+import type {
+	AdminUser,
+	HubInfo,
+	PublicationScope,
+	ResourcePublication,
+	SkillCard,
+	SkillView,
+} from '@/api';
+import { adminApi, hubApi, skillApi } from '@/api';
 import { ApiError } from '@/api/client';
 import { ResourceDetailDrawer } from '@/components/drawer/ResourceDetailDrawer.tsx';
 import { LoadMore } from '@/components/hub/LoadMore.tsx';
@@ -49,6 +56,7 @@ import { useTranslation } from '@/i18n/useI18n';
 import { cn } from '@/lib/utils';
 import { avatarTint, formatTime } from '@/utils/common';
 import { PublishedResourcePage } from '@/pages/resources/PublishedResourcePage';
+import { UserScopePicker } from '@/pages/admin/skills';
 
 interface CardItemProps {
 	card: SkillCard;
@@ -312,9 +320,103 @@ interface MinePanelProps {
 	skills: SkillView[];
 	loading: boolean;
 	onRemove: (skillId: string) => void;
+	publications: ResourcePublication[];
+	users: AdminUser[];
+	onPublicationSaved: () => void;
 }
 
-function MinePanel({ skills, loading, onRemove }: MinePanelProps) {
+function SkillPublicationControls({
+	skill,
+	publication,
+	users,
+	onSaved,
+}: {
+	skill: SkillView;
+	publication?: ResourcePublication;
+	users: AdminUser[];
+	onSaved: () => void;
+}) {
+	const { t } = useTranslation();
+	const [scope, setScope] = useState<PublicationScope>(publication?.scope ?? 'none');
+	const [userIds, setUserIds] = useState<string[]>(publication?.user_ids ?? []);
+	const [saving, setSaving] = useState(false);
+
+	useEffect(() => {
+		setScope(publication?.scope ?? 'none');
+		setUserIds(publication?.user_ids ?? []);
+	}, [publication]);
+
+	const save = async (nextScope = scope, nextUserIds = userIds) => {
+		if (nextScope === 'selected' && nextUserIds.length === 0) return;
+		setSaving(true);
+		try {
+			await adminApi.publishResource({
+				kind: 'skill',
+				source_id: skill.id,
+				source_record_id: skill.id,
+				name: skill.name,
+				display_name: skill.display_name,
+				description: skill.description,
+				tags: skill.tags,
+				author: skill.author,
+				icon_url: skill.icon_url,
+				version: skill.version,
+				scope: nextScope,
+				user_ids: nextScope === 'selected' ? nextUserIds : [],
+			});
+			onSaved();
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	return (
+		<div
+			className="flex flex-wrap items-center gap-2"
+			onClick={(event) => event.stopPropagation()}
+		>
+			<span className="text-xs text-muted-foreground">{t('admin.publishTo')}</span>
+			<select
+				value={scope}
+				disabled={saving}
+				onChange={(event) => {
+					const next = event.target.value as PublicationScope;
+					setScope(next);
+					if (next !== 'selected') {
+						setUserIds([]);
+						void save(next, []);
+					}
+				}}
+				className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+			>
+				<option value="none">{t('admin.publishNone')}</option>
+				<option value="all">{t('admin.publishAll')}</option>
+				<option value="selected">{t('admin.publishSelected')}</option>
+			</select>
+			{scope === 'selected' && (
+				<>
+					<UserScopePicker users={users} userIds={userIds} onChange={setUserIds} />
+					<Button
+						size="xs"
+						disabled={saving || userIds.length === 0}
+						onClick={() => void save()}
+					>
+						{t('admin.savePublication')}
+					</Button>
+				</>
+			)}
+		</div>
+	);
+}
+
+function MinePanel({
+	skills,
+	loading,
+	onRemove,
+	publications,
+	users,
+	onPublicationSaved,
+}: MinePanelProps) {
 	const { t } = useTranslation();
 	const [query, setQuery] = useState('');
 	// The list view omits SKILL.md; the detail endpoint carries it.
@@ -424,7 +526,15 @@ function MinePanel({ skills, loading, onRemove }: MinePanelProps) {
 								</ItemDescription>
 							</ItemContent>
 
-							<ItemActions>
+							<ItemActions className="items-center gap-3">
+								<SkillPublicationControls
+									skill={skill}
+									publication={publications.find(
+										(item) => item.source_record_id === skill.id,
+									)}
+									users={users}
+									onSaved={onPublicationSaved}
+								/>
 								{skill.version && (
 									<span className="text-xs text-muted-foreground whitespace-nowrap">
 										{skill.version}
@@ -480,7 +590,30 @@ function AdminSkillHubPage() {
 	const { hubs, loading: hubsLoading, error: hubsError, refetch } = useSkillHubs();
 	// Loaded page-wide, not per panel: the hub view needs it to mark cards
 	// as already installed, and the "mine" view to list them.
-	const { skills, loading: skillsLoading, refetch: refetchSkills, remove } = useSkills();
+	const { skills, loading: skillsLoading, refetch: refetchSkills } = useSkills();
+	const [publications, setPublications] = useState<ResourcePublication[]>([]);
+	const [users, setUsers] = useState<AdminUser[]>([]);
+
+	const refetchPublicationSettings = useCallback(async () => {
+		const [publicationResponse, userResponse] = await Promise.all([
+			adminApi.resourcePublications('skill'),
+			adminApi.users({ page: 1, page_size: 100 }),
+		]);
+		setPublications(publicationResponse.resources);
+		setUsers(userResponse.users);
+	}, []);
+
+	useEffect(() => {
+		void refetchPublicationSettings();
+	}, [refetchPublicationSettings]);
+
+	const removeAdminSkill = useCallback(
+		async (skillId: string) => {
+			await adminApi.removeSkill(skillId);
+			await Promise.all([refetchSkills(), refetchPublicationSettings()]);
+		},
+		[refetchPublicationSettings, refetchSkills],
+	);
 	const installedNames = new Set(skills.map((skill) => skill.name));
 
 	return (
@@ -606,7 +739,14 @@ function AdminSkillHubPage() {
 						onInstalled={refetchSkills}
 					/>
 				) : (
-					<MinePanel skills={skills} loading={skillsLoading} onRemove={remove} />
+					<MinePanel
+						skills={skills}
+						loading={skillsLoading}
+						onRemove={removeAdminSkill}
+						publications={publications}
+						users={users}
+						onPublicationSaved={() => void refetchPublicationSettings()}
+					/>
 				)}
 			</main>
 		</div>
