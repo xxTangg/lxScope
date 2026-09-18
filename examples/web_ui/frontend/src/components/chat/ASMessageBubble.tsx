@@ -22,7 +22,7 @@ import {
 	Loader2,
 	TriangleAlert,
 } from 'lucide-react';
-import * as mime from 'mime-types';
+import mime from 'mime';
 import { memo, useEffect, useRef, useState } from 'react';
 
 import { renderToolCall } from './tool-renderers';
@@ -437,11 +437,7 @@ function isParsedFileText(block: ExtendedContentBlock): block is TextBlock {
 
 function ParsedFileAttachment({ block }: { block: TextBlock }) {
 	const filename = parsedFileName(block.text) ?? 'file';
-	const extension = (
-		mime.extension(mime.lookup(filename) || 'application/octet-stream') ||
-		filename.split('.').pop() ||
-		'file'
-	).toUpperCase();
+	const extension = (filename.split('.').pop() || 'file').toUpperCase();
 
 	return (
 		<Attachment>
@@ -813,7 +809,7 @@ export function ASBlock({ block, downloadContext, ...props }: ASBlockProps) {
 								<AttachmentTitle>{block.name}</AttachmentTitle>
 								<AttachmentDescription>
 									{(
-										mime.extension(block.source.media_type) || 'bin'
+										mime.getExtension(block.source.media_type) || 'bin'
 									).toUpperCase()}
 								</AttachmentDescription>
 							</AttachmentContent>
@@ -829,7 +825,7 @@ export function ASBlock({ block, downloadContext, ...props }: ASBlockProps) {
 								<AttachmentTitle>{block.name}</AttachmentTitle>
 								<AttachmentDescription>
 									{(
-										mime.extension(block.source.media_type) || 'bin'
+										mime.getExtension(block.source.media_type) || 'bin'
 									).toUpperCase()}
 								</AttachmentDescription>
 							</AttachmentContent>
@@ -846,7 +842,7 @@ export function ASBlock({ block, downloadContext, ...props }: ASBlockProps) {
 								<AttachmentTitle>{block.name}</AttachmentTitle>
 								<AttachmentDescription>
 									{(
-										mime.extension(block.source.media_type) || 'bin'
+										mime.getExtension(block.source.media_type) || 'bin'
 									).toUpperCase()}
 								</AttachmentDescription>
 							</AttachmentContent>
