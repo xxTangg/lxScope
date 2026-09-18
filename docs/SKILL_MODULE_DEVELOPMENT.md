@@ -163,12 +163,40 @@ DELETE /admin/skills/{skill_id}
 
 没有修改 `src/agentscope` 的工作区实现、toolkit 实现或技能加载器。
 
+### 3.6 AgentScope 2.0 的应用层调用约定
+
+当前项目使用 AgentScope 2.0 的内置 `Skill` viewer。应用层约定如下：
+
+```text
+工作区同步完成
+    ↓
+AgentScope 构造 toolkit
+    ↓
+模型看到 Skill 名称和描述
+    ↓
+模型调用 Skill(skill="精确名称")
+    ↓
+Skill viewer 返回 SKILL.md 正文
+    ↓
+模型再读取或执行 Skill 引用的脚本和资源
+```
+
+`Read`、`Bash` 和 `PowerShell` 可以继续用于 Skill 引用的辅助文件和脚本，但不应替代 `Skill` 工具读取 Skill 根目录的 `SKILL.md`。应用层通过 `SkillUsageMiddleware` 将这条约定追加到会话系统提示，并记录以下诊断事件：
+
+- `skill.reconcile.started` / `skill.reconcile.completed`：工作区同步及前后数量；
+- `skill.exposed`：Skill 已进入本轮 Agent 可用上下文；
+- `skill.invoked`：模型调用了内置 `Skill` 工具；
+- `skill.completed`：Skill viewer 返回的最终状态。
+
+这些观测只记录状态、数量、耗时和受控标识，不记录 Skill Markdown 正文、Prompt 或模型完整输出。该约定位于 `examples/agent_service`，不修改 `src/agentscope` 的核心 Skill loader、Workspace 或 Toolkit。
+
 ## 4. 关键接口与文件职责
 
 | 模块 | 职责 |
 | --- | --- |
 | `examples/agent_service/admin_api.py` | 发布范围、用户范围、删除清理、管理员资源接口 |
 | `examples/agent_service/main.py` | 应用层会话前置技能校准、工作区与 Hub 连接 |
+| `examples/agent_service/skill_observability.py` | 应用层 Skill 调用协议、同步摘要和运行时诊断 |
 | `examples/web_ui/frontend/src/pages/admin/skills.tsx` | 管理员技能管理界面 |
 | `examples/web_ui/frontend/src/pages/skill/index.tsx` | 技能中心及管理员已安装技能列表 |
 | `examples/web_ui/frontend/src/pages/chat/ChatViewport.tsx` | 当前会话技能面板的数据连接与只读展示 |
