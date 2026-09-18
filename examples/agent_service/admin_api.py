@@ -1106,6 +1106,41 @@ class AdminService:
             ]
             await self._save_resource_publications(resources)
 
+    async def remove_installed_mcp(
+        self,
+        mcp_id: str,
+        actor: AuthUser,
+    ) -> None:
+        """Remove an administrator MCP and withdraw its publication."""
+
+        source = await self._storage.get_mcp(actor.id, mcp_id)
+        if source is None:
+            raise _error("resource_not_found", "The administrator MCP was not found.", 404)
+
+        accounts = await self._auth.list_accounts()
+        resources = await self._resource_publications()
+        publication_id = self._resource_publication_id("mcp", mcp_id)
+        publication = next(
+            (item for item in resources if item.get("id") == publication_id),
+            None,
+        )
+
+        async with self._mutation_lock():
+            if publication is not None:
+                withdrawn = {
+                    **publication,
+                    "scope": "none",
+                    "user_ids": [],
+                    "enabled": False,
+                }
+                await self._sync_resource_publication(withdrawn, accounts)
+
+            await self._storage.delete_mcp(actor.id, mcp_id)
+            resources = [
+                item for item in resources if item.get("id") != publication_id
+            ]
+            await self._save_resource_publications(resources)
+
     async def _remove_skill_from_workspaces(
         self,
         skill_names: set[str],
@@ -2943,6 +2978,15 @@ async def remove_installed_skill(
     service: AdminService = Depends(get_admin_service),
 ) -> None:
     await service.remove_installed_skill(skill_id, actor)
+
+
+@admin_router.delete("/mcps/{mcp_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_installed_mcp(
+    mcp_id: str,
+    actor: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> None:
+    await service.remove_installed_mcp(mcp_id, actor)
 
 
 @admin_router.get("/overview")

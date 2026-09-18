@@ -320,4 +320,8 @@ export const adminApi = {
 		client.delete(`/admin/skills/${encodeURIComponent(skillId)}`, undefined, {
 			headers: idempotencyHeaders(),
 		}),
+	removeMcp: (mcpId: string) =>
+		client.delete(`/admin/mcps/${encodeURIComponent(mcpId)}`, undefined, {
+			headers: idempotencyHeaders(),
+		}),
 };

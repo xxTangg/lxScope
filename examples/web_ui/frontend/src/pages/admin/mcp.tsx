@@ -1,10 +1,12 @@
-import { Plug, Save, Settings2 } from 'lucide-react';
+import { CheckCircle2, EyeOff, Plug, Settings2, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { AdminHeader } from './shared';
+import { UserScopePicker } from './skills';
 import { adminApi, mcpApi } from '@/api';
 import type { AdminUser, MCPView, PublicationScope, ResourcePublication } from '@/api';
-import { AdminHeader } from './shared';
+import { DeleteDialog } from '@/components/dialog/DeleteDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -37,11 +39,13 @@ function McpPublishRow({
 	publication,
 	users,
 	onSaved,
+	onRemove,
 }: {
 	mcp: MCPView;
 	publication?: ResourcePublication;
 	users: AdminUser[];
 	onSaved: () => void;
+	onRemove: () => void;
 }) {
 	const { t } = useTranslation();
 	const [scope, setScope] = useState<PublicationScope>(publication?.scope ?? 'none');
@@ -53,8 +57,8 @@ function McpPublishRow({
 		setUserIds(publication?.user_ids ?? []);
 	}, [publication]);
 
-	const save = async (nextScope = scope) => {
-		if (nextScope === 'selected' && userIds.length === 0) return;
+	const save = async (nextScope = scope, nextUserIds = userIds) => {
+		if (nextScope === 'selected' && nextUserIds.length === 0) return;
 		setSaving(true);
 		try {
 			await adminApi.publishResource({
@@ -69,7 +73,7 @@ function McpPublishRow({
 				icon_url: mcp.icon_url,
 				version: mcp.version,
 				scope: nextScope,
-				user_ids: userIds,
+				user_ids: nextScope === 'selected' ? nextUserIds : [],
 			});
 			onSaved();
 		} finally {
@@ -94,32 +98,45 @@ function McpPublishRow({
 						value={scope}
 						onChange={(next) => {
 							setScope(next);
-							if (next !== 'selected') void save(next);
+							if (next !== 'selected') {
+								setUserIds([]);
+								void save(next, []);
+							}
 						}}
 					/>
 					{scope === 'selected' && (
-						<Button size="sm" disabled={saving || userIds.length === 0} onClick={() => void save()}>
-							{saving ? <Spinner /> : <Save className="size-3.5" />}
-							{t('admin.savePublication')}
-						</Button>
+						<>
+							<UserScopePicker users={users} userIds={userIds} onChange={setUserIds} />
+							<Button size="sm" disabled={saving || userIds.length === 0} onClick={() => void save()}>
+								{saving ? <Spinner /> : <CheckCircle2 className="size-3.5" />}
+								{t('admin.savePublication')}
+							</Button>
+						</>
 					)}
 				</div>
-				{scope === 'selected' && (
-					<select
-						multiple
-						value={userIds}
-						onChange={(event) =>
-							setUserIds(Array.from(event.target.selectedOptions, (option) => option.value))
-						}
-						className="min-h-24 w-full rounded-md border border-input bg-background p-2 text-sm"
+				<div className="flex items-center justify-between gap-2">
+					<div
+						className={`flex items-center gap-1 text-xs ${scope === 'none' ? 'text-muted-foreground' : 'text-emerald-600 dark:text-emerald-400'}`}
 					>
-						{users.map((user) => (
-							<option key={user.id} value={user.id}>
-								{user.username}
-							</option>
-						))}
-					</select>
-				)}
+						{scope === 'none' ? <EyeOff className="size-3.5" /> : <CheckCircle2 className="size-3.5" />}
+						{scope === 'all'
+							? t('admin.mcpVisibleToAllBadge')
+							: scope === 'selected'
+								? t('admin.selectedUsersBadge', { count: userIds.length })
+								: t('admin.hiddenMcpBadge')}
+					</div>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						title={t('admin.removeInstalledMcp')}
+						onClick={(event) => {
+							event.stopPropagation();
+							onRemove();
+						}}
+					>
+						<Trash2 />
+					</Button>
+				</div>
 			</CardContent>
 		</Card>
 	);
@@ -132,6 +149,7 @@ export function AdminMcpPage() {
 	const [publications, setPublications] = useState<ResourcePublication[]>([]);
 	const [users, setUsers] = useState<AdminUser[]>([]);
 	const [loading, setLoading] = useState(true);
+	const [removeTarget, setRemoveTarget] = useState<MCPView | null>(null);
 
 	const refetch = async () => {
 		setLoading(true);
@@ -157,6 +175,13 @@ export function AdminMcpPage() {
 		() => new Map(publications.map((publication) => [publication.source_id, publication])),
 		[publications],
 	);
+
+	const removeInstalledMcp = async () => {
+		if (!removeTarget) return;
+		await adminApi.removeMcp(removeTarget.id);
+		setRemoveTarget(null);
+		await refetch();
+	};
 
 	return (
 		<>
@@ -185,10 +210,23 @@ export function AdminMcpPage() {
 							publication={publicationBySource.get(mcp.id)}
 							users={users}
 							onSaved={() => void refetch()}
+							onRemove={() => setRemoveTarget(mcp)}
 						/>
 					))}
 				</div>
 			)}
+			<DeleteDialog
+				open={removeTarget !== null}
+				onOpenChange={(open) => {
+					if (!open) setRemoveTarget(null);
+				}}
+				title={t('admin.removeInstalledMcp')}
+				description={t('admin.removeInstalledMcpDescription', {
+					name: removeTarget?.display_name || removeTarget?.name || '',
+				})}
+				confirmLabel={t('admin.removeMcp')}
+				onConfirm={removeInstalledMcp}
+			/>
 		</>
 	);
 }
