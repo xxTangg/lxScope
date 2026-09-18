@@ -48,6 +48,7 @@ from auth import AuthUser, load_auth_from_env
 from longxin_admin.credential_policy import AdminManagedCredentialPolicy
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
 from longxin_admin.upgrade import UpgradeService, upgrade_router
+from task import AgentScopeTaskExecutor, TaskService, TaskStore, task_router
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
 playwright_browsers_path = os.getenv(
@@ -260,6 +261,10 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
     download_secret=os.getenv("AGENTSCOPE_DOWNLOAD_SECRET"),
 )
 
+# Task is an application-level module.  It owns its repository and execution
+# port so the generic AgentScope application factory remains unchanged.
+app.state.task_store = TaskStore()
+
 
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
@@ -333,6 +338,7 @@ app.include_router(resource_router)
 app.include_router(sales_hub_router)
 app.include_router(plan_billing_router)
 app.include_router(upgrade_router)
+app.include_router(task_router)
 app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal
@@ -346,12 +352,20 @@ async def _application_lifespan(app_instance):
     async with _base_lifespan(app_instance):
         await app_instance.state.admin_service.ensure_default_builtin_publications()
         await _ensure_siliconflow_credential(auth.admin_user_ids)
+        app_instance.state.task_service = TaskService(
+            app_instance.state.task_store,
+            agentscope_executor=AgentScopeTaskExecutor(
+                chat_service=app_instance.state.chat_service,
+                storage=storage,
+            ),
+        )
         recharge_sync_task = asyncio.create_task(
             _sales_hub_recharge_sync_loop(app_instance.state.admin_service),
         )
         try:
             yield
         finally:
+            await app_instance.state.task_service.shutdown()
             recharge_sync_task.cancel()
             await asyncio.gather(recharge_sync_task, return_exceptions=True)
 

@@ -41,6 +41,7 @@ import { KnowledgePage } from '@/pages/knowledge';
 import { LoginPage } from '@/pages/login';
 import { SchedulePage } from '@/pages/schedule';
 import { SetupPage } from '@/pages/setup';
+import { TaskPage } from '@/pages/task';
 
 function SetupPageRoute() {
 	const navigate = useNavigate();
@@ -101,6 +102,7 @@ const router = createBrowserRouter([
 						element: <ChatPage />,
 					},
 					{ path: '/schedule', element: <SchedulePage /> },
+					{ path: '/task/:taskId?', element: <TaskPage /> },
 					{ path: '/channel', element: <ChannelPage /> },
 					{
 						path: '/credential',

@@ -17,3 +17,17 @@ export type { AuthUser, LoginResponse } from './auth';
 export { adminApi } from './admin';
 export * from './admin';
 export { publishedApi } from './published';
+export { taskApi } from './task';
+export type {
+	CreateTaskRequest,
+	NodeRunRecord,
+	NodeRunStatus,
+	RunStatus,
+	TaskContext,
+	TaskNode,
+	TaskRecord,
+	TaskRunRecord,
+	TaskRunRequest,
+	TaskStatus,
+	UpdateTaskRequest,
+} from './task';

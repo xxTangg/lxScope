@@ -3,6 +3,7 @@ import {
 	BotMessageSquare,
 	Cable,
 	Calendars,
+	ClipboardList,
 	Compass,
 	KeyRound,
 	Languages,
@@ -93,6 +94,16 @@ export function AppSidebar() {
 									className="justify-center"
 								>
 									<BotMessageSquare />
+								</SidebarMenuButton>
+							</SidebarMenuItem>
+							<SidebarMenuItem>
+								<SidebarMenuButton
+									tooltip={{ children: t('common.tasks'), hidden: false }}
+									isActive={location.pathname.startsWith('/task')}
+									onClick={() => navigate('/task')}
+									className="justify-center"
+								>
+									<ClipboardList />
 								</SidebarMenuButton>
 							</SidebarMenuItem>
 							{user?.role === 'admin' && (
