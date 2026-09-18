@@ -30,7 +30,11 @@ export function usePublishedResources(kind: ResourceKind) {
 			if (document.visibilityState === 'visible') void refetch({ silent: true });
 		};
 		window.addEventListener('focus', refresh);
-		const timer = window.setInterval(refresh, 15_000);
+		// Publication changes are application data, not an AgentScope
+		// configuration change. Poll frequently enough that an admin's scope
+		// update reaches an already-open chat without a page reload or process
+		// restart, while keeping the read-only endpoint inexpensive.
+		const timer = window.setInterval(refresh, 3_000);
 		return () => {
 			window.removeEventListener('focus', refresh);
 			window.clearInterval(timer);

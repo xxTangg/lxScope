@@ -44,9 +44,9 @@ Agent 工作区 skills/ 文件
 
 ### 2.3 前端面板和模型实际工具列表是两套数据
 
-前端右侧“当前技能”面板读取 `/workspace/skill`；模型在后端组装 toolkit 时也读取工作区技能。
+前端右侧“当前技能”面板展示 `/resources/published?kind=skill` 返回的当前用户可见目录；模型在后端组装 toolkit 时读取会话工作区技能。工作区中的 Markdown 只用于补充详情内容，不再决定面板是否展示该技能。
 
-如果前端仅仅过滤列表，模型仍可能读到工作区中的旧文件。因此必须在模型 toolkit 组装前完成一次工作区范围校准。
+这样可以避免管理员刚发布技能时，用户库已有记录但旧会话工作区还没有解压文件，导致“技能中心能看到、当前技能面板看不到”的问题。面板是只读展示，技能的安装、发布、隐藏和删除统一由管理员界面负责。
 
 ### 2.4 全体可见、指定用户和当前用户的含义容易混淆
 
@@ -121,10 +121,12 @@ DELETE /admin/skills/{skill_id}
 会话面板不再对管理员角色直接放开全部技能，而是统一使用当前用户的发布结果：
 
 ```text
-当前工作区技能 ∩ 当前用户已发布技能 = 会话面板可见技能
+当前用户 /resources/published?kind=skill 结果 = 会话面板可见技能
 ```
 
-发布目录通过焦点恢复和约 15 秒间隔刷新，避免管理员修改范围后用户页面长期停留在旧数据。
+右侧面板不提供增加和删除按钮。管理员对范围的编辑只能在管理员页面完成，避免用户直接修改会话工作区后绕过发布范围。
+
+发布目录通过焦点恢复和约 3 秒间隔刷新，避免管理员修改范围后已打开的用户页面长期停留在旧数据。
 
 ### 3.4 会话前置工作区校准
 
@@ -169,7 +171,7 @@ DELETE /admin/skills/{skill_id}
 | `examples/agent_service/main.py` | 应用层会话前置技能校准、工作区与 Hub 连接 |
 | `examples/web_ui/frontend/src/pages/admin/skills.tsx` | 管理员技能管理界面 |
 | `examples/web_ui/frontend/src/pages/skill/index.tsx` | 技能中心及管理员已安装技能列表 |
-| `examples/web_ui/frontend/src/pages/chat/ChatViewport.tsx` | 当前会话技能面板和自动装载触发 |
+| `examples/web_ui/frontend/src/pages/chat/ChatViewport.tsx` | 当前会话技能面板的数据连接与只读展示 |
 | `examples/web_ui/frontend/src/hooks/usePublishedResources.ts` | 发布目录刷新与轮询 |
 | `examples/web_ui/frontend/src/hooks/useWorkspace.ts` | 当前工作区技能读取、安装、删除 |
 | `examples/web_ui/frontend/src/api/admin.ts` | 管理员发布、删除 API 客户端 |
@@ -180,7 +182,7 @@ DELETE /admin/skills/{skill_id}
 
 ### 5.1 发布后的生效时机
 
-- 已打开页面：发布目录通常在焦点恢复或下一次轮询后更新；
+- 已打开页面：发布目录通常在焦点恢复或约 3 秒内的下一次轮询后更新；
 - 当前会话：下一次会话运行前会进行工作区校准；
 - 正在执行中的模型回合：不会被强制中断，仍可能使用本回合开始时已经组装的 toolkit；
 - 历史消息：不会被回写或删除，历史回答中的技能名称仍会保留。
@@ -267,7 +269,7 @@ pnpm --dir examples/web_ui build:frontend
 
 ## 8. 当前限制与后续建议
 
-1. 当前会话同步是“会话运行前校准”，不是 WebSocket 级别的即时推送。
+1. 当前页面同步是“焦点恢复/约 3 秒轮询”，不是 WebSocket 级别的即时推送；模型侧则在每次会话运行前校准。
 2. 正在执行的模型回合不会被取消；如有强制撤销需求，需要增加运行中断机制。
 3. 前端用户列表请求上限为 100，用户规模超过 100 时应补充分页或服务端搜索。
 4. 如果技能已经在旧版本中被删除、且发布目录也没有留下记录，系统无法仅凭目录判断它是否是用户自行上传的技能；后续可以增加删除墓碑或技能来源标记。
