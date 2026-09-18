@@ -421,6 +421,41 @@ function workspaceFilePaths(text: string): string[] {
 	return [...paths];
 }
 
+// Non-native model attachments (notably PDF uploads for DeepSeek V4) are
+// sent to the model as extracted text blocks with a file marker. Keep that
+// text in the message payload, but render the user bubble as a compact file
+// card instead of printing the entire extracted document.
+const PARSED_FILE_TEXT = /^\[File:\s*([^\]\r\n]+)\]\r?\n/;
+
+function parsedFileName(text: string): string | null {
+	return text.match(PARSED_FILE_TEXT)?.[1]?.trim() || null;
+}
+
+function isParsedFileText(block: ExtendedContentBlock): block is TextBlock {
+	return block.type === 'text' && parsedFileName(block.text) !== null;
+}
+
+function ParsedFileAttachment({ block }: { block: TextBlock }) {
+	const filename = parsedFileName(block.text) ?? 'file';
+	const extension = (
+		mime.extension(mime.lookup(filename) || 'application/octet-stream') ||
+		filename.split('.').pop() ||
+		'file'
+	).toUpperCase();
+
+	return (
+		<Attachment>
+			<AttachmentMedia variant="icon">
+				<FileText />
+			</AttachmentMedia>
+			<AttachmentContent>
+				<AttachmentTitle title={filename}>{filename}</AttachmentTitle>
+				<AttachmentDescription>{extension}</AttachmentDescription>
+			</AttachmentContent>
+		</Attachment>
+	);
+}
+
 function WorkspaceFileDownloads({
 	text,
 	context,
@@ -551,6 +586,12 @@ function ASMessageBubbleComponent({ message, agentId, sessionId }: MessageBubble
 			primaryBlocks = nonDataBlocks.slice(finalTextIndex);
 		}
 	}
+	const parsedAttachmentBlocks = isUser
+		? primaryBlocks.filter(isParsedFileText)
+		: [];
+	const renderedPrimaryBlocks = parsedAttachmentBlocks.length
+		? primaryBlocks.filter((block) => !isParsedFileText(block))
+		: primaryBlocks;
 
 	// What the copy button hands over — the prose of the message, without
 	// the tool calls and attachments around it.
@@ -594,13 +635,20 @@ function ASMessageBubbleComponent({ message, agentId, sessionId }: MessageBubble
 						</BubbleContent>
 					</Bubble>
 				)}
-				{primaryBlocks.map((block, index) => (
+				{renderedPrimaryBlocks.map((block, index) => (
 					<Bubble key={index} variant={isUser ? 'muted' : 'ghost'}>
 						<BubbleContent>
 							<ASBlock block={block} downloadContext={downloadContext} />
 						</BubbleContent>
 					</Bubble>
 				))}
+				{parsedAttachmentBlocks.length > 0 && (
+					<AttachmentGroup className="max-w-full">
+						{parsedAttachmentBlocks.map((block) => (
+							<ParsedFileAttachment key={block.id} block={block} />
+						))}
+					</AttachmentGroup>
+				)}
 				{message.finished_reason === ReplyFinishedReason.ERROR && (
 					<Alert
 						variant="destructive"
