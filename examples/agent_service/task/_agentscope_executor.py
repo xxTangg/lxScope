@@ -1,29 +1,60 @@
 # -*- coding: utf-8 -*-
-"""Minimal adapter from Task nodes to the existing AgentScope ChatService."""
+"""AgentScope adapters for the typed Task step implementations."""
 
-from typing import TYPE_CHECKING
+import inspect
+import json
+from collections.abc import AsyncGenerator
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
-from ._models import ExecutionContext, TaskNode
+from ._executor import StepExecutionResult
+from ._models import (
+    AgentStepConfig,
+    ExecutionContext,
+    PythonStepConfig,
+    StepType,
+    TaskNode,
+    TaskToolSchema,
+    ToolStepConfig,
+)
 
 if TYPE_CHECKING:
+    from agentscope.app._service._access import ResourceAccessService
     from agentscope.app.storage import StorageBase
-    from agentscope.app._service import ChatService
 
 
 class AgentScopeTaskExecutor:
-    """Reuse the existing chat execution path without changing AgentScope.
+    """Execute Task steps through AgentScope's existing runtime seams.
 
-    The adapter intentionally depends on the application service boundary,
-    not on Task models inside the AgentScope package.  The task engine can be
-    tested with :class:`PreviewTaskExecutor` and a future executor can be
-    added without changing its API or persistence model.
+    Agent steps use the configured AgentScope model directly. Tool steps
+    assemble the same Toolkit used by ChatService, including workspace tools
+    and MCP tools, then apply the selected session's PermissionContext before
+    invoking one tool. Python steps run through the selected Workspace
+    backend, so local and sandboxed deployments share the same boundary.
     """
 
-    def __init__(self, chat_service: "ChatService", storage: "StorageBase") -> None:
-        """Bind the existing chat service and message store."""
+    def __init__(
+        self,
+        *,
+        storage: "StorageBase",
+        resource_access_service: "ResourceAccessService",
+        workspace_manager: Any | None = None,
+        scheduler_manager: Any | None = None,
+        background_task_manager: Any | None = None,
+        message_bus: Any | None = None,
+        extra_agent_tools: Any | None = None,
+        sub_agent_templates: dict[str, Any] | None = None,
+    ) -> None:
+        """Bind AgentScope storage, runtime services and access policy."""
 
-        self._chat_service = chat_service
         self._storage = storage
+        self._access = resource_access_service
+        self._workspace_manager = workspace_manager
+        self._scheduler_manager = scheduler_manager
+        self._background_task_manager = background_task_manager
+        self._message_bus = message_bus
+        self._extra_agent_tools = extra_agent_tools
+        self._sub_agent_templates = sub_agent_templates
 
     async def execute_node(
         self,
@@ -31,61 +62,583 @@ class AgentScopeTaskExecutor:
         node: TaskNode,
         previous_output: str,
         context: ExecutionContext,
-    ) -> str:
-        """Run a node through ChatService and read its persisted reply."""
+    ) -> StepExecutionResult:
+        """Dispatch one typed step without coupling TaskService to AgentScope."""
+
+        if node.type == StepType.AGENT:
+            return await self._execute_agent_step(
+                node=node,
+                previous_output=previous_output,
+                context=context,
+            )
+        if node.type == StepType.TOOL:
+            return await self._execute_tool_step(
+                node=node,
+                previous_output=previous_output,
+                context=context,
+            )
+        if node.type == StepType.PYTHON:
+            return await self._execute_python_step(
+                node=node,
+                previous_output=previous_output,
+                context=context,
+            )
+        raise RuntimeError(f"Unsupported Task step type: {node.type}.")
+
+    async def list_tools(self, context: ExecutionContext) -> list[TaskToolSchema]:
+        """Return the currently available Toolkit/MCP tools for the session."""
+
+        toolkit = await self._build_toolkit(context)
+        schemas = await toolkit.get_tool_schemas(
+            groups=[group.name for group in toolkit.tool_groups],
+        )
+        result: list[TaskToolSchema] = []
+        for schema in schemas:
+            function = schema.get("function", {})
+            tool = await toolkit.get_tool(function.get("name", ""))
+            if tool is None:
+                continue
+            result.append(
+                TaskToolSchema(
+                    name=tool.name,
+                    description=tool.description,
+                    input_schema=tool.input_schema,
+                    is_mcp=tool.is_mcp,
+                    is_read_only=tool.is_read_only,
+                ),
+            )
+        return result
+
+    async def write_artifact(
+        self,
+        *,
+        path: str,
+        data: bytes,
+        context: ExecutionContext,
+    ) -> int:
+        """Store Task-generated bytes through the selected Workspace backend."""
+
+        session = await self._get_session(context)
+        workspace = await self._get_workspace(context, session)
+        backend = workspace.get_backend()
+        target = backend.abspath(path, cwd=workspace.workdir)
+        await backend.write_file(target, data)
+        entry = await backend.stat(target)
+        return int(entry.size_bytes) if entry and entry.size_bytes is not None else len(data)
+
+    async def read_artifact(
+        self,
+        *,
+        path: str,
+        context: ExecutionContext,
+    ) -> bytes:
+        """Read a Task artifact through the selected Workspace backend."""
+
+        session = await self._get_session(context)
+        workspace = await self._get_workspace(context, session)
+        backend = workspace.get_backend()
+        target = backend.abspath(path, cwd=workspace.workdir)
+        return await backend.read_file(target)
+
+    async def _get_workspace(self, context: ExecutionContext, session: Any) -> Any:
+        """Resolve the public Workspace boundary for one Task context."""
+
+        if self._workspace_manager is None:
+            raise RuntimeError("AgentScope workspace runtime is unavailable.")
+        return await self._workspace_manager.get_workspace(
+            context.user_id,
+            context.agent_id,
+            context.session_id,
+            session.config.workspace_id,
+        )
+    async def _execute_agent_step(
+        self,
+        *,
+        node: TaskNode,
+        previous_output: str,
+        context: ExecutionContext,
+    ) -> StepExecutionResult:
+        """Run one AgentStep with the selected session model."""
 
         if not context.agent_id or not context.session_id:
             raise RuntimeError(
                 "An AgentScope task run needs both agent_id and session_id "
                 "in its execution context.",
             )
-        # Keep the AgentScope message type behind this optional adapter.  The
-        # task domain and preview executor remain importable on their own.
-        from agentscope.message import UserMsg
-
-        before, _ = await self._storage.list_messages(
+        session = await self._storage.get_session(
             context.user_id,
+            context.agent_id,
             context.session_id,
-            limit=200,
         )
-        before_ids = {message.id for message in before}
-        prompt = node.prompt
-        if previous_output.strip():
+        if session is None or session.config.chat_model_config is None:
+            raise RuntimeError(
+                "The selected session does not have a configured chat model.",
+            )
+        agent = await self._storage.get_agent(
+            context.user_id,
+            context.agent_id,
+        )
+        if agent is None:
+            raise RuntimeError("The selected AgentScope agent does not exist.")
+
+        from agentscope.app._service._model import get_model
+        from agentscope.message import AssistantMsg, SystemMsg, UserMsg, Usage
+        from agentscope.types import ReplyFinishedReason
+
+        config = node.config
+        if not isinstance(config, AgentStepConfig):
+            raise RuntimeError("AgentStep is missing its AgentStepConfig.")
+        prompt = config.prompt
+        history_text = _format_execution_history(context.history)
+        if history_text:
+            prompt = f"{prompt}\n\n前序节点完整结果（按执行顺序）：\n{history_text}"
+        elif previous_output.strip():
             prompt = f"{prompt}\n\n上一节点输出：\n{previous_output}"
 
-        await self._chat_service.run(
-            user_id=context.user_id,
-            session_id=context.session_id,
-            agent_id=context.agent_id,
-            input_msg=UserMsg(name="user", content=prompt),
+        task_metadata = {
+            "scope": "task",
+            "visibility": "internal",
+            "task_id": context.task_id,
+            "run_id": context.run_id,
+            "node_id": node.id,
+            "step_type": StepType.AGENT.value,
+        }
+        input_message = UserMsg(
+            name="user",
+            content=prompt,
+            metadata=task_metadata,
         )
-
-        after, _ = await self._storage.list_messages(
+        await self._storage.upsert_message(
             context.user_id,
             context.session_id,
-            limit=200,
+            input_message,
         )
-        new_assistant_messages = [
-            message
-            for message in after
-            if message.id not in before_ids and message.role == "assistant"
-        ]
-        if not new_assistant_messages:
-            raise RuntimeError(
-                "AgentScope completed without a persisted assistant result.",
+
+        model_messages = [input_message]
+        system_prompt = agent.data.system_prompt.strip()
+        if system_prompt:
+            model_messages.insert(
+                0,
+                SystemMsg(
+                    name=agent.data.name,
+                    content=system_prompt,
+                ),
             )
-        return _message_text(new_assistant_messages[-1])
+        model = await get_model(
+            context.user_id,
+            session.config.chat_model_config,
+            self._access,
+        )
+        response = await _collect_response(
+            await model(messages=model_messages),
+        )
+        output = _response_text(response.content)
+
+        usage = None
+        if response.usage is not None:
+            usage = Usage(
+                input_tokens=int(response.usage.input_tokens),
+                output_tokens=int(response.usage.output_tokens),
+                cache_input_tokens=int(response.usage.cache_input_tokens),
+                cache_creation_input_tokens=int(
+                    response.usage.cache_creation_input_tokens,
+                ),
+            )
+        await self._storage.upsert_message(
+            context.user_id,
+            context.session_id,
+            AssistantMsg(
+                name=context.agent_id,
+                content=response.content,
+                metadata=task_metadata,
+                finished_at=datetime.now().isoformat(),
+                finished_reason=ReplyFinishedReason.COMPLETED,
+                usage=usage,
+            ),
+        )
+        return StepExecutionResult(
+            text=output,
+            result={"content": response.content},
+            metadata={"step_type": StepType.AGENT.value},
+        )
+
+    async def _execute_tool_step(
+        self,
+        *,
+        node: TaskNode,
+        previous_output: str,
+        context: ExecutionContext,
+    ) -> StepExecutionResult:
+        """Call one permitted AgentScope Toolkit or MCP tool."""
+
+        config = node.config
+        if not isinstance(config, ToolStepConfig):
+            raise RuntimeError("ToolStep is missing its ToolStepConfig.")
+        toolkit = await self._build_toolkit(context)
+        tool = await toolkit.get_tool(config.tool_name)
+        if tool is None:
+            raise RuntimeError(
+                f"Tool {config.tool_name!r} is not available in this session.",
+            )
+        arguments = _resolve_previous_output(config.arguments, previous_output)
+
+        import jsonschema
+        from agentscope.permission import PermissionBehavior, PermissionEngine
+
+        try:
+            jsonschema.validate(arguments, tool.input_schema)
+        except jsonschema.ValidationError as error:
+            raise RuntimeError(
+                f"Invalid arguments for tool {tool.name!r}: {error.message}",
+            ) from error
+
+        decision = await PermissionEngine(
+            (await self._get_session(context)).state.permission_context,
+        ).check_permission(tool, arguments)
+        if decision.behavior != PermissionBehavior.ALLOW:
+            message = decision.message or (
+                f"Permission {decision.behavior.value} for tool {tool.name!r}."
+            )
+            raise RuntimeError(message)
+        if tool.is_external_tool:
+            raise RuntimeError(
+                f"Tool {tool.name!r} requires an interactive external "
+                "execution confirmation and cannot run in a background Task.",
+            )
+        if tool.is_state_injected:
+            raise RuntimeError(
+                f"Tool {tool.name!r} requires AgentState and is not supported "
+                "as a direct Task ToolStep.",
+            )
+
+        raw_result = await tool(**arguments)
+        chunks = []
+        if isinstance(raw_result, AsyncGenerator):
+            async for chunk in raw_result:
+                chunks.append(chunk)
+        else:
+            chunks.append(raw_result)
+        text = _tool_chunks_text(chunks)
+        return StepExecutionResult(
+            text=text,
+            result={
+                "tool": tool.name,
+                "arguments": arguments,
+                "chunks": [
+                    chunk.model_dump(mode="json")
+                    if hasattr(chunk, "model_dump")
+                    else str(chunk)
+                    for chunk in chunks
+                ],
+            },
+            metadata={
+                "step_type": StepType.TOOL.value,
+                "tool_name": tool.name,
+                "is_mcp": tool.is_mcp,
+            },
+        )
+
+    async def _execute_python_step(
+        self,
+        *,
+        node: TaskNode,
+        previous_output: str,
+        context: ExecutionContext,
+    ) -> StepExecutionResult:
+        """Run Python inside the session's AgentScope workspace backend."""
+
+        config = node.config
+        if not isinstance(config, PythonStepConfig):
+            raise RuntimeError("PythonStep is missing its PythonStepConfig.")
+        session = await self._get_session(context)
+        if self._workspace_manager is None:
+            raise RuntimeError("AgentScope workspace runtime is unavailable.")
+        workspace = await self._workspace_manager.get_workspace(
+            context.user_id,
+            context.agent_id,
+            context.session_id,
+            session.config.workspace_id,
+        )
+        backend = workspace.get_backend()
+        python_command = getattr(workspace, "_python_command", "python3")
+        wrapped_code = (
+            "previous_output = "
+            + repr(previous_output)
+            + "\n"
+            + config.code
+        )
+        result = await backend.exec_shell(
+            [python_command, "-c", wrapped_code],
+            cwd=workspace.workdir,
+            timeout=config.timeout_seconds,
+        )
+        stdout = result.stdout.decode("utf-8", "replace").strip()
+        stderr = result.stderr.decode("utf-8", "replace").strip()
+        if not result.ok():
+            detail = stderr or stdout or f"exit code {result.exit_code}"
+            raise RuntimeError(f"PythonStep failed: {detail}")
+        output = stdout or "PythonStep 执行成功，未输出文本。"
+        return StepExecutionResult(
+            text=output,
+            result={
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": result.exit_code,
+            },
+            metadata={
+                "step_type": StepType.PYTHON.value,
+                "timeout_seconds": config.timeout_seconds,
+            },
+        )
+
+    async def _get_session(self, context: ExecutionContext) -> Any:
+        """Load and validate the session referenced by a Task run."""
+
+        if not context.agent_id or not context.session_id:
+            raise RuntimeError(
+                "ToolStep and PythonStep require agent_id and session_id.",
+            )
+        session = await self._storage.get_session(
+            context.user_id,
+            context.agent_id,
+            context.session_id,
+        )
+        if session is None:
+            raise RuntimeError("The selected AgentScope session does not exist.")
+        return session
+
+    async def _refresh_mcp_connections(
+        self,
+        workspace: Any,
+        context: ExecutionContext,
+    ) -> None:
+        """Repair stale stateful MCP sessions before building a Task Toolkit.
+
+        The workspace owns the configured MCP records, but this application
+        adapter owns the Task request boundary. A cached client may still say
+        it is connected after its AnyIO stream has been closed. Probe it using
+        AgentScope's public MCPClient API; if that fails, close and reconnect
+        the same stored client before Toolkit assembles its MCP tools.
+        """
+        clients = await workspace.list_mcps(
+            agent_id=context.agent_id,
+            session_id=context.session_id,
+        )
+        for client in clients:
+            if not client.is_stateful:
+                continue
+            try:
+                await client.list_tools()
+                continue
+            except Exception:
+                # The cached session is stale or was never connected. The
+                # public close/connect lifecycle resets its private stream
+                # state without changing the Agentscope core implementation.
+                if client.is_connected:
+                    await client.close(ignore_errors=True)
+                await client.connect()
+                await client.list_tools()
+
+    async def _build_toolkit(self, context: ExecutionContext) -> Any:
+        """Assemble AgentScope's standard Toolkit for the Task context."""
+
+        if any(
+            dependency is None
+            for dependency in (
+                self._workspace_manager,
+                self._scheduler_manager,
+                self._background_task_manager,
+                self._message_bus,
+            )
+        ):
+            raise RuntimeError(
+                "AgentScope Toolkit runtime is not configured for Task steps.",
+            )
+        session = await self._get_session(context)
+        if context.agent_id is None:
+            raise RuntimeError("Task context is missing agent_id.")
+        agent = await self._storage.get_agent(
+            context.user_id,
+            context.agent_id,
+        )
+        if agent is None:
+            raise RuntimeError("The selected AgentScope agent does not exist.")
+
+        from agentscope.app._service._toolkit import get_toolkit
+
+        workspace = await self._workspace_manager.get_workspace(
+            context.user_id,
+            context.agent_id,
+            context.session_id,
+            session.config.workspace_id,
+        )
+        await self._refresh_mcp_connections(workspace, context)
+        return await get_toolkit(
+            storage=self._storage,
+            workspace=workspace,
+            workspace_manager=self._workspace_manager,
+            scheduler_manager=self._scheduler_manager,
+            background_task_manager=self._background_task_manager,
+            message_bus=self._message_bus,
+            middlewares=[],
+            user_id=context.user_id,
+            agent_record=agent,
+            session_record=session,
+            resource_access_service=self._access,
+            extra_factory=self._extra_agent_tools,
+            sub_agent_templates=self._sub_agent_templates,
+        )
 
 
-def _message_text(message: object) -> str:
-    """Extract text blocks without coupling Task to a concrete Msg subtype."""
+def _format_execution_history(history: list[dict[str, Any]]) -> str:
+    """Serialize bounded prior Task results for an AgentStep."""
 
-    blocks = getattr(message, "content", [])
-    text = "\n".join(
-        str(getattr(block, "text", ""))
-        for block in blocks
+    if not history:
+        return ""
+    records: list[dict[str, Any]] = []
+    for item in history[-8:]:
+        output = str(item.get("output", ""))
+        if len(output) > 6_000:
+            output = f"{output[:6_000]}…"
+        records.append(
+            {
+                "node_id": item.get("node_id"),
+                "name": item.get("name"),
+                "type": item.get("type"),
+                "output": output,
+            },
+        )
+    return json.dumps(records, ensure_ascii=False, indent=2)
+
+
+def _resolve_previous_output(value: Any, previous_output: str) -> Any:
+    """Allow ToolStep arguments to consume the previous step output."""
+
+    if isinstance(value, str):
+        return value.replace("{{previous_output}}", previous_output)
+    if isinstance(value, list):
+        return [_resolve_previous_output(item, previous_output) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _resolve_previous_output(item, previous_output)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _tool_chunks_text(chunks: list[Any]) -> str:
+    """Extract readable text from AgentScope ToolChunk results."""
+
+    texts: list[str] = []
+    for chunk in chunks:
+        state = getattr(getattr(chunk, "state", None), "value", None)
+        block_texts = [
+            str(getattr(block, "text", "")).strip()
+            for block in getattr(chunk, "content", [])
+            if getattr(block, "type", None) == "text"
+            and str(getattr(block, "text", "")).strip()
+        ]
+        texts.extend(block_texts)
+        if state in {"error", "denied", "interrupted"}:
+            raise RuntimeError("\n".join(block_texts) or "AgentScope tool failed.")
+    if texts:
+        return "\n\n".join(texts).strip()
+    payload = [
+        chunk.model_dump(mode="json")
+        if hasattr(chunk, "model_dump")
+        else str(chunk)
+        for chunk in chunks
+    ]
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _collect_response(result: object) -> object:
+    """Merge AgentScope deltas without appending the final full response twice."""
+
+    while inspect.isawaitable(result):
+        result = await result
+    if not isinstance(result, AsyncGenerator):
+        return result
+
+    accumulated = None
+    async for chunk in result:
+        # AgentScope's final chunk is already the complete response.
+        if chunk.is_last:
+            if chunk.content:
+                return chunk
+            return accumulated or chunk
+
+        # Only non-final chunks are incremental deltas.
+        if accumulated is None:
+            accumulated = chunk
+        else:
+            accumulated.append_chat_response(chunk)
+
+    if accumulated is None:
+        raise RuntimeError("AgentScope model returned no response.")
+    return accumulated
+
+def _response_text(content: list[object]) -> str:
+    """Extract the text that becomes the next step's context."""
+
+    texts = [
+        str(getattr(block, "text", "")).strip()
+        for block in content
         if getattr(block, "type", None) == "text"
-    ).strip()
-    if not text:
-        raise RuntimeError("AgentScope returned an assistant message without text.")
-    return text
+        and str(getattr(block, "text", "")).strip()
+    ]
+    output = "\n\n".join(texts).strip()
+    if output:
+        return output
+    types = ", ".join(
+        sorted({str(getattr(block, "type", "unknown")) for block in content}),
+    ) or "none"
+    raise RuntimeError(
+        "AgentScope returned no text or tool output for the Task node "
+        f"(content types: {types}).",
+    )
+
+
+def _messages_text(messages: list[object]) -> str:
+    """Extract text from persisted assistant or tool messages."""
+
+    assistant_texts: list[str] = []
+    tool_texts: list[str] = []
+    block_types: set[str] = set()
+    for message in messages:
+        role = getattr(message, "role", None)
+        for block in getattr(message, "content", []):
+            block_type = getattr(block, "type", "unknown")
+            block_types.add(str(block_type))
+            if block_type == "text":
+                text = str(getattr(block, "text", "")).strip()
+                if text and role == "assistant":
+                    assistant_texts.append(text)
+            elif block_type == "tool_result":
+                tool_text = _tool_result_text(getattr(block, "output", ""))
+                if tool_text:
+                    tool_texts.append(tool_text)
+
+    text = "\n\n".join(assistant_texts[-1:] or tool_texts[-1:]).strip()
+    if text:
+        return text
+    types = ", ".join(sorted(block_types)) or "none"
+    raise RuntimeError(
+        "AgentScope returned no text or tool output for the Task node "
+        f"(content types: {types}).",
+    )
+
+
+def _tool_result_text(output: object) -> str:
+    """Extract readable text from a persisted ToolResultBlock output."""
+
+    if isinstance(output, str):
+        return output.strip()
+    if isinstance(output, list):
+        return "\n".join(
+            str(getattr(block, "text", "")).strip()
+            for block in output
+            if getattr(block, "type", None) == "text"
+            and str(getattr(block, "text", "")).strip()
+        ).strip()
+    return str(output).strip() if output else ""

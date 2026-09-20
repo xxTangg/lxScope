@@ -1,0 +1,100 @@
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:53902 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:53490 - "GET /tasks/runs/dc75a21dd6de45378055c72fa8091061 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:42296 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:45962 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:49204 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:41846 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:56344 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:47722 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:47610 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:55434 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:41176 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | INFO:     127.0.0.1:38018 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | WARNING:  StatReload detected changes in 'task/_models.py'. Reloading...
+agentscope-1  | INFO:     Shutting down
+agentscope-1  | INFO:     Waiting for application shutdown.
+agentscope-1  | 2026-09-18 02:54:41,763 | INFO    | _scheduler_manager:__aexit__:140 - SchedulerManager shutting down APScheduler
+agentscope-1  | 2026-09-18 02:54:41,764 | INFO    | _scheduler_manager:__aexit__:145 - SchedulerManager APScheduler shut down
+agentscope-1  | 2026-09-18 02:54:41,764 | INFO    | _background_task_manager:__aexit__:457 - Shutting down BackgroundTaskManager: cancelling 0 task(s).
+agentscope-1  | 2026-09-18 02:54:41,777 | WARNING | _mcp_client:close:403 - Error closing MCP 'browser-use': Attempted to exit cancel scope in a different task than it was entered in
+agentscope-1  | 2026-09-18 02:54:41,777 | INFO    | _mcp_client:close:413 - MCP closed: browser-use
+agentscope-1  | INFO:     Application shutdown complete.
+agentscope-1  | INFO:     Finished server process [289]
+agentscope-1  | WARNING:  StatReload detected changes in 'task/_planner.py'. Reloading...
+agentscope-1  | INFO:     Started server process [820]
+agentscope-1  | INFO:     Waiting for application startup.
+agentscope-1  | 2026-09-18 02:55:05,600 | INFO    | _scheduler_manager:__aenter__:117 - SchedulerManager starting APScheduler
+agentscope-1  | 2026-09-18 02:55:05,606 | INFO    | _scheduler_manager:__aenter__:132 - SchedulerManager APScheduler started
+agentscope-1  | INFO:     Application startup complete.
+agentscope-1  | INFO:     192.168.0.1:56812 - "OPTIONS /tasks/344a4887317b44a6a097c7a41d3ee430 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:56812 - "OPTIONS /auth/me HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36634 - "OPTIONS /auth/me HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:56812 - "GET /auth/me HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36634 - "GET /auth/me HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36634 - "OPTIONS /agent/ HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:56812 - "OPTIONS /tasks/ HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36650 - "OPTIONS /agent/ HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36656 - "OPTIONS /tasks/ HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36650 - "GET /agent/ HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36670 - "GET /tasks/ HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36656 - "GET /agent/ HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36650 - "GET /tasks/ HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36650 - "OPTIONS /sessions/?agent_id=726d2d9e83214522a398885ab83450b0 HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36656 - "OPTIONS /tasks/tools?agent_id=726d2d9e83214522a398885ab83450b0&session_id=c16ec64d43c84874bdcabae6e743841d HTTP/1.1" 200 OK
+agentscope-1  | INFO:     192.168.0.1:36656 - "GET /sessions/?agent_id=726d2d9e83214522a398885ab83450b0 HTTP/1.1" 200 OK
+agentscope-1  | 2026-09-18 02:55:07,504 | INFO    | _local_workspace:initialize:208 - Skill '客户方案' (hash: 86fdfb82...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,512 | INFO    | _local_workspace:initialize:208 - Skill '数据汇报' (hash: 9e51f612...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,519 | INFO    | _local_workspace:initialize:208 - Skill '领导简报' (hash: c4cbe5df...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,528 | INFO    | _local_workspace:initialize:208 - Skill '述职演示' (hash: fe5c37f5...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,535 | INFO    | _local_workspace:initialize:208 - Skill '演示内容审阅' (hash: 95bde6d1...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,543 | INFO    | _local_workspace:initialize:208 - Skill '项目立项' (hash: 09b5f981...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,549 | INFO    | _local_workspace:initialize:208 - Skill '研究汇报' (hash: 112043bd...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,556 | INFO    | _local_workspace:initialize:208 - Skill '路线图与计划' (hash: aad8f6ab...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,562 | INFO    | _local_workspace:initialize:208 - Skill '方案对比' (hash: 83cfc2e7...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,569 | INFO    | _local_workspace:initialize:208 - Skill '演讲叙事' (hash: 017be9a9...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,575 | INFO    | _local_workspace:initialize:208 - Skill '培训课件' (hash: ce96c04e...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:07,581 | INFO    | _local_workspace:initialize:208 - Skill '工作汇报' (hash: 920b8773...) already exists, skipping
+agentscope-1  | 2026-09-18 02:55:08,312 | INFO    | _mcp_client:connect:358 - MCP connected: browser-use
+agentscope-1  | INFO:     192.168.0.1:36656 - "GET /tasks/tools?agent_id=726d2d9e83214522a398885ab83450b0&session_id=c16ec64d43c84874bdcabae6e743841d&workspace_id=936b86a46b8f463dbffca0576f2c3030 HTTP/1.1" 200 OK
+agentscope-1  | ERROR:    Exception in ASGI application
+agentscope-1  | Traceback (most recent call last):
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/uvicorn/protocols/http/h11_impl.py", line 411, in run_asgi
+agentscope-1  |     result = await app(  # type: ignore[func-returns-value]
+agentscope-1  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+agentscope-1  |     return await self.app(scope, receive, send)
+agentscope-1  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/fastapi/applications.py", line 1163, in __call__
+agentscope-1  |     await super().__call__(scope, receive, send)
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/starlette/applications.py", line 96, in __call__
+agentscope-1  |     await self.middleware_stack(scope, receive, send)
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+agentscope-1  |     raise exc
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+agentscope-1  |     await self.app(scope, receive, _send)
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/starlette/middleware/base.py", line 192, in __call__
+agentscope-1  |     async with create_collapsing_task_group() as task_group:
+agentscope-1  |   File "/usr/lib/python3.11/contextlib.py", line 211, in __aexit__
+agentscope-1  |     await anext(self.gen)
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/starlette/_utils.py", line 93, in create_collapsing_task_group
+agentscope-1  |     raise exc from exc.__cause__ or context
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/anyio/_core/_tasks.py", line 325, in _run_coro
+agentscope-1  |     with self._cancel_scope:
+agentscope-1  |   File "/opt/venv/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 472, in __exit__
+agentscope-1  |     raise RuntimeError(
+agentscope-1  | RuntimeError: Attempted to exit a cancel scope that isn't the current tasks's current cancel scope
+agentscope-1  | INFO:     192.168.0.1:36676 - "DELETE /tasks/344a4887317b44a6a097c7a41d3ee430 HTTP/1.1" 204 No Content
+agentscope-1  | INFO:     127.0.0.1:36400 - "GET /docs HTTP/1.1" 200 OK
+agentscope-1  | WARNING:  StatReload detected changes in 'task/_agentscope_planner.py'. Reloading...
+agentscope-1  | INFO:     Shutting down
+agentscope-1  | INFO:     Waiting for connections to close. (CTRL+C to force quit)
+agentscope-1  | INFO:     Waiting for background tasks to complete. (CTRL+C to force quit)

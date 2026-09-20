@@ -19,7 +19,27 @@ export function useWorkspace(agentId: string | null, sessionId: string | null) {
 		setLoading(true);
 		setError(null);
 		try {
-			setMcps(await workspaceApi.mcp.list(agentId, sessionId));
+			const statuses = await workspaceApi.mcp.list(agentId, sessionId);
+			const recoveredStatuses = await Promise.all(
+				statuses.map(async (status) => {
+					if (status.is_healthy) return status;
+					try {
+						// The generic workspace route may be holding a stale
+						// stateful client. Re-probe only unhealthy results so a
+						// normal refresh does not spawn a second MCP process.
+						return await workspaceApi.mcp.probe(
+							agentId,
+							sessionId,
+							status.name,
+						);
+					} catch {
+						// Keep the core error when the independent probe also
+						// fails; it is the most actionable diagnostic available.
+						return status;
+					}
+				}),
+			);
+			setMcps(recoveredStatuses);
 		} catch (e) {
 			setError(e as Error);
 		} finally {

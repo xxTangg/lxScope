@@ -32,11 +32,25 @@ function statusLabel(status: RunStatus | null | undefined): string {
 	}
 }
 
+function taskStatusLabel(task: TaskRecord): string {
+	if (task.generation_status === 'generating') return '节点生成中';
+	if (task.generation_status === 'failed') return '生成失败';
+	if (task.status === 'draft') return '待生成';
+	return statusLabel(task.last_run_status);
+}
+
 function statusClass(status: RunStatus | null | undefined): string {
 	if (status === 'succeeded') return 'bg-emerald-100 text-emerald-700';
 	if (status === 'failed' || status === 'timed_out') return 'bg-red-100 text-red-700';
 	if (status === 'running' || status === 'queued') return 'bg-amber-100 text-amber-700';
 	return 'bg-muted text-muted-foreground';
+}
+
+function taskStatusClass(task: TaskRecord): string {
+	if (task.generation_status === 'failed') return 'bg-red-100 text-red-700';
+	if (task.generation_status === 'generating') return 'bg-amber-100 text-amber-700';
+	if (task.status === 'draft') return 'bg-muted text-muted-foreground';
+	return statusClass(task.last_run_status);
 }
 
 function formatDate(value: string): string {
@@ -107,8 +121,8 @@ export function TaskSidebar({
 										</div>
 									</div>
 									<div className="mt-3 flex items-center justify-between gap-2">
-										<Badge className={statusClass(task.last_run_status)}>
-											{statusLabel(task.last_run_status)}
+										<Badge className={taskStatusClass(task)}>
+											{taskStatusLabel(task)}
 										</Badge>
 										<span className="text-[11px] text-muted-foreground">
 											{task.nodes.length} 个节点 · {formatDate(task.updated_at)}
