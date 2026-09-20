@@ -21,6 +21,9 @@ export { taskApi } from './task';
 export type {
 	CreateTaskRequest,
 	AgentStepConfig,
+	TaskArtifactConfig,
+	TaskArtifactFormat,
+	TaskArtifactRecord,
 	GenerateTaskRequest,
 	NodeRunRecord,
 	NodeRunStatus,
@@ -31,6 +34,7 @@ export type {
 	TaskContext,
 	TaskNode,
 	TaskRecord,
+	TaskRunEvent,
 	TaskRunRecord,
 	TaskRunRequest,
 	TaskStatus,

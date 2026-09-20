@@ -11,6 +11,7 @@ export type RunStatus =
 	| 'timed_out';
 export type NodeRunStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'canceled';
 export type TaskStepType = 'agent' | 'tool' | 'python';
+export type TaskArtifactFormat = 'markdown' | 'docx' | 'xlsx';
 
 export interface AgentStepConfig {
 	type: 'agent';
@@ -33,6 +34,24 @@ export interface PythonStepConfig {
 
 export type TaskStepConfig = AgentStepConfig | ToolStepConfig | PythonStepConfig;
 
+export interface TaskArtifactConfig {
+	format: TaskArtifactFormat;
+	filename?: string | null;
+}
+
+export interface TaskArtifactRecord {
+	id: string;
+	run_id: string;
+	task_id: string;
+	node_id: string;
+	name: string;
+	format: TaskArtifactFormat;
+	media_type: string;
+	path: string;
+	size_bytes: number;
+	preview_text: string;
+	created_at: string;
+}
 export interface TaskNode {
 	id: string;
 	name: string;
@@ -40,6 +59,7 @@ export interface TaskNode {
 	type: TaskStepType;
 	config: TaskStepConfig;
 	order: number;
+	artifact?: TaskArtifactConfig | null;
 }
 
 export interface TaskContext {
@@ -93,6 +113,16 @@ export interface TaskToolSchema {
 	is_read_only: boolean;
 }
 
+export interface TaskRunEvent {
+	id: string;
+	type: string;
+	task_id: string;
+	run_id: string;
+	node_id?: string | null;
+	sequence: number;
+	payload: Record<string, unknown>;
+	created_at: string;
+}
 export interface TaskRunRecord {
 	id: string;
 	task_id: string;
@@ -103,6 +133,7 @@ export interface TaskRunRecord {
 	input: string;
 	final_output: string;
 	final_summary: string;
+	artifacts: TaskArtifactRecord[];
 	status: RunStatus;
 	error?: string | null;
 	context: TaskContext;
@@ -166,4 +197,51 @@ export const taskApi = {
 	cancelRun: (runId: string) => client.post<TaskRunRecord>(`/tasks/runs/${runId}/cancel`),
 
 	retryRun: (runId: string) => client.post<TaskRunRecord>(`/tasks/runs/${runId}/retry`),
+
+	getArtifactContent: async (runId: string, artifactId: string, download = false) => {
+		const response = await client.stream(
+			`/tasks/runs/${runId}/artifacts/${artifactId}/content`,
+			{
+				method: 'GET',
+				params: { download: String(download) },
+			},
+		);
+		return response.blob();
+	},
+	streamRunEvents: async function* (
+		runId: string,
+		signal?: AbortSignal,
+	): AsyncGenerator<TaskRunEvent> {
+		const res = await client.stream(`/tasks/runs/${runId}/events`, {
+			method: 'GET',
+			signal,
+		});
+		const reader = res.body?.getReader();
+		if (!reader) return;
+
+		const decoder = new TextDecoder();
+		let buffer = '';
+
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+				const frames = buffer.split(/\n\n/);
+				buffer = frames.pop() ?? '';
+
+				for (const frame of frames) {
+					const data = frame
+						.split(/\n/)
+						.filter((line) => line.startsWith('data:'))
+						.map((line) => line.slice(5).trim())
+						.join('\n');
+					if (data) yield JSON.parse(data) as TaskRunEvent;
+				}
+			}
+		} finally {
+			reader.releaseLock();
+		}
+	},
 };

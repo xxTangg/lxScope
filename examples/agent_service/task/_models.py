@@ -67,6 +67,36 @@ class StepType(StrEnum):
     PYTHON = "python"
 
 
+class ArtifactFormat(StrEnum):
+    """File formats a final Task node can materialize."""
+
+    MARKDOWN = "markdown"
+    DOCX = "docx"
+    XLSX = "xlsx"
+
+
+class ArtifactConfig(BaseModel):
+    """Output-file settings owned by a Task node."""
+
+    format: ArtifactFormat
+    filename: str | None = Field(default=None, max_length=120)
+
+
+class TaskArtifactRecord(BaseModel):
+    """Metadata for one file materialized in the run's Workspace."""
+
+    id: str = Field(default_factory=_generate_id)
+    run_id: str
+    task_id: str
+    node_id: str
+    name: str
+    format: ArtifactFormat
+    media_type: str
+    path: str
+    size_bytes: int = Field(ge=0)
+    preview_text: str = ""
+    created_at: datetime = Field(default_factory=_utc_now)
+
 class AgentStepConfig(BaseModel):
     """Configuration for one AgentScope model step."""
 
@@ -112,6 +142,7 @@ class TaskNode(BaseModel):
     type: StepType = StepType.AGENT
     config: StepConfig
     order: int = Field(default=0, ge=0)
+    artifact: ArtifactConfig | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -248,6 +279,7 @@ class TaskRunRecord(BaseModel):
     input: str = ""
     final_output: str = ""
     final_summary: str = ""
+    artifacts: list[TaskArtifactRecord] = Field(default_factory=list)
     status: RunStatus = RunStatus.QUEUED
     error: str | None = None
     context: TaskContext = Field(default_factory=TaskContext)
@@ -276,6 +308,7 @@ class TaskPlanNode(BaseModel):
     prompt: str = Field(default="", max_length=20_000)
     type: StepType = StepType.AGENT
     config: StepConfig | None = None
+    artifact: ArtifactConfig | None = None
 
     @model_validator(mode="before")
     @classmethod

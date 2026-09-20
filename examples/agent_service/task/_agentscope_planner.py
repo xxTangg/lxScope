@@ -47,8 +47,24 @@ _PLANNER_PROMPT = """你是一个通用任务流程规划器。
 
 当前会话可用工具清单：
 {tools}
+
+Agentscope 原生任务清单（必须先以此为计划骨架）：
+{native_tasks}
 """
 
+
+_NATIVE_TASK_SYSTEM_PROMPT = """你是任务规划阶段的 Agentscope 原生任务清单助手。
+
+请根据用户目标调用原生 TaskCreate 工具创建一个最小、按依赖顺序排列的任务清单。
+要求：
+1. 复杂目标拆成 2 到 8 个可执行任务；简单目标不要凑步骤；
+2. 每个任务都必须有清晰的 subject 和 description；
+3. 需要先获取数据再处理时，先创建数据获取任务，再创建处理任务；
+4. 需要多个数据来源时，明确任务之间的依赖；
+5. 必须实际调用 TaskCreate，不要只用文字回复计划；
+6. 不要调用 MCP、浏览器或业务工具，只创建任务清单；
+7. 创建完成后即可结束，不要输出长篇解释。
+"""
 
 class AgentScopeTaskPlanner:
     """Generate Task drafts with the selected AgentScope session model.
@@ -106,10 +122,19 @@ class AgentScopeTaskPlanner:
             session.config.chat_model_config,
             self._access,
         )
+        native_tasks = await _create_native_task_list(
+            model=model,
+            goal=goal.strip(),
+        )
         plan_prompt = _PLANNER_PROMPT.format(
             goal=goal.strip(),
             title=(current_title or "").strip() or "（空）",
             tools=_format_tools(tool_schemas or []),
+            native_tasks=json.dumps(
+                native_tasks,
+                ensure_ascii=False,
+                indent=2,
+            ),
         )
         response = await model.generate_structured_output(
             messages=[
@@ -143,6 +168,46 @@ class AgentScopeTaskPlanner:
             )
         return repaired
 
+
+async def _create_native_task_list(*, model: object, goal: str) -> list[dict]:
+    """Create the planning skeleton through Agentscope native task tools.
+
+    The temporary state is intentionally owned by the Task adapter. Native
+    TaskCreate writes into AgentState.tasks_context; the persisted Task graph
+    is created only after the structured TaskPlanDraft passes validation.
+    """
+
+    from agentscope.agent import Agent
+    from agentscope.message import UserMsg
+    from agentscope.state import AgentState
+    from agentscope.tool import TaskCreate, TaskGet, TaskList, TaskUpdate, Toolkit
+
+    state = AgentState()
+    planner = Agent(
+        name="task-native-planner",
+        system_prompt=_NATIVE_TASK_SYSTEM_PROMPT,
+        model=model,
+        toolkit=Toolkit(
+            tools=[TaskCreate(), TaskList(), TaskGet(), TaskUpdate()],
+        ),
+        state=state,
+    )
+    await planner.reply(
+        UserMsg(
+            name="task-goal",
+            content=(
+                "请为以下用户目标创建 Agentscope 原生任务清单：\n\n"
+                + goal
+            ),
+        ),
+    )
+
+    tasks = state.tasks_context.tasks
+    if not tasks:
+        raise ValueError(
+            "Agentscope 原生 TaskCreate 未生成任务清单，无法生成 Task 节点。",
+        )
+    return [task.model_dump(mode="json") for task in tasks]
 
 def _format_tools(tool_schemas: list[TaskToolSchema]) -> str:
     """Format available tools without exposing unrelated runtime details."""

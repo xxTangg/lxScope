@@ -4,6 +4,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
@@ -14,6 +15,7 @@ from ._models import (
     CreateTaskRequest,
     GenerateTaskRequest,
     TaskContext,
+    TaskArtifactRecord,
     TaskRecord,
     TaskRunRecord,
     TaskRunRequest,
@@ -143,6 +145,65 @@ async def get_run(
         raise _not_found("Run", run_id)
     return run
 
+
+@task_router.get(
+    "/runs/{run_id}/artifacts",
+    response_model=list[TaskArtifactRecord],
+    summary="List task run artifacts",
+)
+async def list_run_artifacts(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> list[TaskArtifactRecord]:
+    """Return artifact metadata associated with one owned run."""
+
+    artifacts = await task_service.list_artifacts(user_id, run_id)
+    if artifacts is None:
+        raise _not_found("Run", run_id)
+    return artifacts
+
+
+@task_router.get(
+    "/runs/{run_id}/artifacts/{artifact_id}/content",
+    summary="Read or download a task artifact",
+)
+async def read_run_artifact(
+    run_id: str,
+    artifact_id: str,
+    download: bool = False,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> Response:
+    """Stream an artifact from the Workspace through the Task boundary."""
+
+    try:
+        result = await task_service.read_artifact(
+            user_id,
+            run_id,
+            artifact_id,
+        )
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+    if result is None:
+        raise _not_found("Artifact", artifact_id)
+    artifact, data = result
+    disposition = "attachment" if download else "inline"
+    # RFC 5987 keeps non-ASCII filenames valid in HTTP response headers.
+    fallback_name = artifact.name.encode("ascii", "ignore").decode("ascii")
+    fallback_name = fallback_name.replace('"', "_") or f"artifact-{artifact.id}"
+    content_disposition = (
+        f'{disposition}; filename="{fallback_name}"; '
+        f"filename*=UTF-8''{quote(artifact.name, safe='')}"
+    )
+    return Response(
+        content=data,
+        media_type=artifact.media_type,
+        headers={"Content-Disposition": content_disposition},
+    )
 
 @task_router.get(
     "/runs/{run_id}/events",

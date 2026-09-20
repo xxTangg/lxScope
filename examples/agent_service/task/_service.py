@@ -4,13 +4,22 @@
 import asyncio
 from datetime import datetime, timezone
 
-from ._executor import PreviewTaskExecutor, StepExecutionResult, TaskExecutor
+from ._artifact_spec import ArtifactSpec, artifact_spec_prompt, parse_agent_spec, spec_from_markdown
+from ._artifacts import GeneratedArtifact, generate_artifact
+from ._executor import (
+    PreviewTaskExecutor,
+    StepExecutionResult,
+    TaskArtifactWriter,
+    TaskExecutor,
+)
 from ._models import (
+    AgentStepConfig,
     CreateTaskRequest,
     ExecutionContext,
     NodeRunRecord,
     NodeRunStatus,
     RunStatus,
+    TaskArtifactRecord,
     TaskContext,
     TaskEventRecord,
     TaskGenerationStatus,
@@ -19,6 +28,7 @@ from ._models import (
     TaskToolSchema,
     TaskRunRecord,
     TaskRunRequest,
+    StepType,
     TaskStatus,
     UpdateTaskRequest,
 )
@@ -51,11 +61,19 @@ class TaskService:
         agentscope_executor: TaskExecutor | None = None,
         preview_executor: TaskExecutor | None = None,
         planner: TaskPlanner | None = None,
+        artifact_writer: TaskArtifactWriter | None = None,
     ) -> None:
         """Bind repository and execution adapters."""
 
         self._store = store
         self._agentscope_executor = agentscope_executor
+        candidate = artifact_writer or agentscope_executor
+        self._artifact_writer = (
+            candidate
+            if callable(getattr(candidate, "write_artifact", None))
+            and callable(getattr(candidate, "read_artifact", None))
+            else None
+        )
         self._preview_executor = preview_executor or PreviewTaskExecutor()
         self._planner = planner or PreviewTaskPlanner()
         self._active_runs: dict[str, asyncio.Task[None]] = {}
@@ -136,6 +154,7 @@ class TaskService:
                     type=node.type,
                     config=node.config,
                     order=index,
+                    artifact=node.artifact,
                 )
                 for index, node in enumerate(draft.nodes)
             ]
@@ -351,6 +370,47 @@ class TaskService:
             TaskRunRequest(input=run.input, context=run.context),
         )
 
+    async def list_artifacts(
+        self,
+        user_id: str,
+        run_id: str,
+    ) -> list[TaskArtifactRecord] | None:
+        """Return artifact metadata for one owned run."""
+
+        run = await self._store.get_run(user_id, run_id)
+        return None if run is None else run.artifacts
+
+    async def read_artifact(
+        self,
+        user_id: str,
+        run_id: str,
+        artifact_id: str,
+    ) -> tuple[TaskArtifactRecord, bytes] | None:
+        """Read one owned artifact through the Task storage adapter."""
+
+        run = await self._store.get_run(user_id, run_id)
+        if run is None:
+            return None
+        artifact = next(
+            (item for item in run.artifacts if item.id == artifact_id),
+            None,
+        )
+        if artifact is None:
+            return None
+        if self._artifact_writer is None:
+            raise RuntimeError("Task artifact Workspace storage is unavailable.")
+        context = ExecutionContext(
+            **run.context.model_dump(),
+            user_id=run.user_id,
+            task_id=run.task_id,
+            run_id=run.id,
+            task_revision=run.task_revision,
+        )
+        data = await self._artifact_writer.read_artifact(
+            path=artifact.path,
+            context=context,
+        )
+        return artifact, data
     async def list_events(self, user_id: str, run_id: str) -> list[TaskEventRecord]:
         """Replay lifecycle events for a run."""
 
@@ -444,6 +504,49 @@ class TaskService:
                     },
                 )
 
+            artifacts: list[TaskArtifactRecord] = []
+            artifact_node = _artifact_node(run.nodes)
+            if artifact_node is not None:
+                artifact_config = artifact_node.artifact
+                if artifact_config is None:  # pragma: no cover
+                    raise RuntimeError("Artifact configuration is missing.")
+                artifact_context = ExecutionContext(
+                    **run.context.model_dump(),
+                    user_id=run.user_id,
+                    task_id=run.task_id,
+                    run_id=run.id,
+                    task_revision=run.task_revision,
+                    history=execution_history,
+                )
+                artifact_spec = await self._build_artifact_spec(
+                    output=previous_output,
+                    context=artifact_context,
+                    format=artifact_config.format.value,
+                )
+                generated = generate_artifact(
+                    output=previous_output,
+                    config=artifact_config,
+                    default_stem=f"task-{run.id}",
+                    spec=artifact_spec,
+                )
+                artifact = await self._store_artifact(
+                    run=run,
+                    node=artifact_node,
+                    generated=generated,
+                    context=artifact_context,
+                )
+                artifacts.append(artifact)
+                run = await self._store.update_run(
+                    run.user_id,
+                    run.id,
+                    artifacts=artifacts,
+                )
+                await self._emit(
+                    run,
+                    "artifact.created",
+                    node_id=artifact_node.id,
+                    payload=artifact.model_dump(mode="json"),
+                )
             run = await self._store.update_run(
                 run.user_id,
                 run.id,
@@ -500,6 +603,73 @@ class TaskService:
             await self._mark_task_run_status(current)
             await self._emit(current, "run.failed", payload={"message": message})
 
+    async def _build_artifact_spec(
+        self,
+        *,
+        output: str,
+        context: ExecutionContext,
+        format: str,
+    ) -> ArtifactSpec:
+        """Use the bound AgentScope model to shape Office output when available."""
+
+        fallback = spec_from_markdown(output)
+        if format not in {"docx", "xlsx"}:
+            return fallback
+        if not (self._agentscope_executor and context.agent_id and context.session_id):
+            return fallback
+        prompt = artifact_spec_prompt(output)
+        planner = TaskNode(
+            id=f"artifact-spec-{context.run_id}",
+            name="规划文件结构",
+            prompt=prompt,
+            type=StepType.AGENT,
+            config=AgentStepConfig(prompt=prompt),
+            order=999,
+        )
+        try:
+            result = await self._agentscope_executor.execute_node(
+                node=planner,
+                previous_output="",
+                context=context,
+            )
+            normalized = _normalize_execution_result(result)
+            return parse_agent_spec(normalized.text, output)
+        except Exception:  # pylint: disable=broad-except
+            # Artifact planning is an enhancement; the deterministic fallback
+            # keeps the Task result available when a model call is unavailable.
+            return fallback
+
+    async def _store_artifact(
+        self,
+        *,
+        run: TaskRunRecord,
+        node: TaskNode,
+        generated: GeneratedArtifact,
+        context: ExecutionContext,
+    ) -> TaskArtifactRecord:
+        """Write generated bytes and return the persisted Task metadata."""
+
+        if self._artifact_writer is None:
+            raise RuntimeError(
+                "生成文件产物需要绑定 AgentScope 会话和 Workspace。"
+            )
+        path = f"artifacts/{run.id}/{generated.name}"
+        size_bytes = await self._artifact_writer.write_artifact(
+            path=path,
+            data=generated.data,
+            context=context,
+        )
+        return TaskArtifactRecord(
+            run_id=run.id,
+            task_id=run.task_id,
+            node_id=node.id,
+            name=generated.name,
+            format=generated.format,
+            media_type=generated.media_type,
+            path=path,
+            size_bytes=size_bytes,
+            preview_text=generated.preview_text,
+        )
     def _select_executor(self, context: TaskContext) -> TaskExecutor:
         """Use AgentScope only when a real Chat/Session context is attached."""
 
@@ -575,3 +745,13 @@ def _normalize_execution_result(
     if isinstance(value, StepExecutionResult):
         return value
     return StepExecutionResult(text=str(value))
+
+def _artifact_node(nodes: list[TaskNode]) -> TaskNode | None:
+    """Return the only final-node artifact configuration, if present."""
+
+    configured = [node for node in nodes if node.artifact is not None]
+    if not configured:
+        return None
+    if len(configured) != 1 or configured[0].id != nodes[-1].id:
+        raise RuntimeError("文件产物只能配置在最后一个 Task 节点。")
+    return configured[0]

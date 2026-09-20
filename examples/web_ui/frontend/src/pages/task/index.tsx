@@ -138,6 +138,24 @@ export function TaskPage() {
 		setExecutionSessionId(sessions[0]?.session.id ?? null);
 	}, [executionAgentId, executionSessionId, sessions, sessionsLoading]);
 
+	const restoreRequestRef = React.useRef(0);
+
+	const restoreLatestRun = React.useCallback(async (task: TaskRecord) => {
+		const requestId = ++restoreRequestRef.current;
+		setCurrentRun(null);
+		setIsRunning(false);
+		if (!task.last_run_id) return;
+
+		try {
+			const run = await taskApi.getRun(task.last_run_id);
+			if (requestId !== restoreRequestRef.current || run.task_id !== task.id) return;
+			setCurrentRun(run);
+			setIsRunning(!TERMINAL_RUN_STATUSES.has(run.status));
+		} catch {
+			// Keep the task page usable when an old run is unavailable.
+		}
+	}, []);
+
 	const loadTasks = React.useCallback(async () => {
 		setIsLoading(true);
 		setError(null);
@@ -149,7 +167,13 @@ export function TaskPage() {
 			setDraft(selected ? toDraft(selected) : null);
 			setExecutionAgentId(selected?.source_context.agent_id ?? undefined);
 			setExecutionSessionId(selected?.source_context.session_id ?? undefined);
-			setCurrentRun(null);
+			if (selected) {
+				void restoreLatestRun(selected);
+			} else {
+				restoreRequestRef.current += 1;
+				setCurrentRun(null);
+				setIsRunning(false);
+			}
 			setIsDirty(false);
 			if (selected && selected.id !== taskId) navigate(`/task/${selected.id}`, { replace: true });
 		} catch (requestError) {
@@ -157,41 +181,66 @@ export function TaskPage() {
 		} finally {
 			setIsLoading(false);
 		}
-	}, [navigate, taskId]);
+	}, [navigate, restoreLatestRun, taskId]);
 
 	React.useEffect(() => {
 		void loadTasks();
 	}, [loadTasks]);
 
-	React.useEffect(() => {
-		if (!currentRun || TERMINAL_RUN_STATUSES.has(currentRun.status)) return undefined;
+	const currentRunId = currentRun?.id ?? null;
+	const shouldStreamCurrentRun =
+		Boolean(currentRunId) && !TERMINAL_RUN_STATUSES.has(currentRun?.status ?? 'queued');
 
+	React.useEffect(() => {
+		if (!currentRunId || !shouldStreamCurrentRun) return undefined;
+
+		const controller = new AbortController();
 		let disposed = false;
-		const timer = window.setInterval(() => {
-			void taskApi
-				.getRun(currentRun.id)
-				.then((latest) => {
+
+		const syncRun = (latest: TaskRunRecord) => {
+			setCurrentRun(latest);
+			setIsRunning(!TERMINAL_RUN_STATUSES.has(latest.status));
+			setTasks((previous) =>
+				previous.map((task) =>
+					task.id === latest.task_id
+						? {
+								...task,
+								last_run_id: latest.id,
+								last_run_status: latest.status,
+							}
+						: task,
+				),
+			);
+		};
+
+		void (async () => {
+			try {
+				for await (const event of taskApi.streamRunEvents(currentRunId, controller.signal)) {
+					if (disposed || event.run_id !== currentRunId) return;
+					const latest = await taskApi.getRun(currentRunId);
 					if (disposed) return;
-					setCurrentRun(latest);
-					setIsRunning(!TERMINAL_RUN_STATUSES.has(latest.status));
-				})
-				.catch((requestError) => {
-					if (!disposed) setError(errorMessage(requestError));
-				});
-		}, 700);
+					syncRun(latest);
+					if (TERMINAL_RUN_STATUSES.has(latest.status)) break;
+				}
+			} catch (requestError) {
+				if (!disposed && !controller.signal.aborted) {
+					setError(errorMessage(requestError));
+				}
+			}
+		})();
 
 		return () => {
 			disposed = true;
-			window.clearInterval(timer);
+			controller.abort();
 		};
-	}, [currentRun]);
+	}, [currentRunId, shouldStreamCurrentRun]);
 
 	const selectTask = (task: TaskRecord) => {
 		setSelectedTaskId(task.id);
 		setDraft(toDraft(task));
 		setExecutionAgentId(task.source_context.agent_id ?? undefined);
 		setExecutionSessionId(task.source_context.session_id ?? undefined);
-		setCurrentRun(null);
+		void restoreLatestRun(task);
 		setRunInput('');
 		setIsDirty(false);
 		setError(null);
@@ -337,6 +386,13 @@ export function TaskPage() {
 		try {
 			const run = await taskApi.retryRun(currentRun.id);
 			setCurrentRun(run);
+			setTasks((previous) =>
+				previous.map((task) =>
+					task.id === run.task_id
+						? { ...task, last_run_id: run.id, last_run_status: run.status }
+						: task,
+				),
+			);
 		} catch (requestError) {
 			setIsRunning(false);
 			setError(errorMessage(requestError));

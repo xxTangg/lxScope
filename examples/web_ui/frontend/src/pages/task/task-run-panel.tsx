@@ -1,6 +1,9 @@
-import { Check, CircleAlert, Loader2, Play, RotateCcw, Square } from 'lucide-react';
+import { Check, CircleAlert, Download, Eye, Loader2, Play, RotateCcw, Square } from 'lucide-react';
 
-import type { NodeRunRecord, RunStatus, TaskNode, TaskRunRecord, TaskStepType } from '@/api';
+import * as React from 'react';
+
+import { taskApi } from '@/api';
+import type { NodeRunRecord, RunStatus, TaskArtifactRecord, TaskNode, TaskRunRecord, TaskStepType } from '@/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
@@ -81,7 +84,49 @@ function isTerminal(status: RunStatus): boolean {
 	return ['succeeded', 'failed', 'canceled', 'timed_out'].includes(status);
 }
 
-export function TaskRunPanel({ run, onCancel, onRetry }: TaskRunPanelProps) {
+function artifactFormatLabel(artifact: TaskArtifactRecord): string {
+	if (artifact.format === 'markdown') return 'Markdown';
+	if (artifact.format === 'docx') return 'Word';
+	return 'Excel';
+}
+
+function artifactSizeLabel(size: number): string {
+	if (size < 1024) return `${size} B`;
+	if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}export function TaskRunPanel({ run, onCancel, onRetry }: TaskRunPanelProps) {
+	const [previewArtifact, setPreviewArtifact] = React.useState<TaskArtifactRecord | null>(null);
+	const [artifactBusyId, setArtifactBusyId] = React.useState<string | null>(null);
+
+	React.useEffect(() => {
+		setPreviewArtifact(null);
+	}, [run?.id]);
+
+	const previewArtifactContent = async (artifact: TaskArtifactRecord) => {
+		setArtifactBusyId(artifact.id);
+		try {
+			const blob = await taskApi.getArtifactContent(run!.id, artifact.id);
+			const text = await blob.text();
+			setPreviewArtifact({ ...artifact, preview_text: text });
+		} finally {
+			setArtifactBusyId(null);
+		}
+	};
+
+	const downloadArtifact = async (artifact: TaskArtifactRecord) => {
+		setArtifactBusyId(artifact.id);
+		try {
+			const blob = await taskApi.getArtifactContent(run!.id, artifact.id, true);
+			const url = URL.createObjectURL(blob);
+			const anchor = document.createElement('a');
+			anchor.href = url;
+			anchor.download = artifact.name;
+			anchor.click();
+			URL.revokeObjectURL(url);
+		} finally {
+			setArtifactBusyId(null);
+		}
+	};
 	if (!run) {
 		return (
 			<section className="flex min-h-0 flex-1 flex-col border-l border-border/70 bg-muted/20 p-6">
@@ -181,7 +226,58 @@ export function TaskRunPanel({ run, onCancel, onRetry }: TaskRunPanelProps) {
 					</div>
 				)}
 			</div>
-
+			{run.artifacts?.length > 0 && (
+				<div className="mt-5 rounded-2xl border border-border bg-card p-4">
+					<div className="mb-3 flex items-center justify-between gap-2">
+						<div>
+							<div className="text-sm font-semibold">文件产物</div>
+							<div className="mt-1 text-xs text-muted-foreground">
+								已保存到当前 Workspace，并关联到本次 Run
+							</div>
+						</div>
+						<span className="text-xs text-muted-foreground">{run.artifacts.length} 个文件</span>
+					</div>
+					<div className="space-y-2">
+						{run.artifacts.map((artifact) => (
+							<div key={artifact.id} className="rounded-xl border border-border/70 bg-background/70 p-3">
+								<div className="flex items-center gap-2">
+									<div className="min-w-0 flex-1">
+										<div className="truncate text-sm font-medium">{artifact.name}</div>
+										<div className="mt-1 text-xs text-muted-foreground">
+											{artifactFormatLabel(artifact)} · {artifactSizeLabel(artifact.size_bytes)}
+										</div>
+									</div>
+									{artifact.preview_text && (
+										<Button
+											variant="ghost"
+											size="sm"
+											disabled={artifactBusyId === artifact.id}
+											onClick={() => void previewArtifactContent(artifact)}
+										>
+											<Eye />
+											预览
+										</Button>
+									)}
+									<Button
+										variant="outline"
+										size="sm"
+										disabled={artifactBusyId === artifact.id}
+										onClick={() => void downloadArtifact(artifact)}
+									>
+										<Download />
+										下载
+									</Button>
+								</div>
+								{previewArtifact?.id === artifact.id && (
+									<pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-3 text-xs leading-5">
+										{previewArtifact.preview_text}
+									</pre>
+								)}
+							</div>
+						))}
+					</div>
+				</div>
+			)}
 			{!isTerminal(run.status) ? (
 				<div className="border-t border-border/70 px-6 py-4">
 					<Button variant="outline" size="sm" onClick={onCancel}>

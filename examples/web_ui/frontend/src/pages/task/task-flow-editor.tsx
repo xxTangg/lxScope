@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, Bot, Code2, GripVertical, Plus, Trash2, Wrench } from 'lucide-react';
 import * as React from 'react';
 
-import type { TaskNode, TaskStepType, TaskToolSchema } from '@/api';
+import type { TaskArtifactFormat, TaskNode, TaskStepType, TaskToolSchema } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -41,7 +41,11 @@ function normalizeNode(node: TaskNode, index: number): TaskNode {
 }
 
 function normalizeNodes(nodes: TaskNode[]): TaskNode[] {
-	return nodes.map(normalizeNode);
+	const normalized = nodes.map(normalizeNode);
+	return normalized.map((node, index) => ({
+		...node,
+		artifact: index === normalized.length - 1 ? node.artifact ?? null : null,
+	}));
 }
 
 function stepIcon(type: TaskStepType) {
@@ -320,8 +324,60 @@ export function TaskFlowEditor({
 														className="h-8 w-24 bg-card text-sm"
 													/>
 												</label>
-											</div>
-										)}
+
+															</div>
+														)}
+
+						{index === nodes.length - 1 && (
+							<div className="space-y-3 rounded-xl border border-dashed border-primary/30 bg-primary/[0.03] p-3">
+								<div className="text-xs font-medium text-foreground">最终文件产物（可选）</div>
+								<div className="grid gap-3 sm:grid-cols-2">
+									<label className="space-y-1.5 text-xs text-muted-foreground">
+										<span>文件格式</span>
+										<select
+											value={node.artifact?.format ?? ''}
+											onChange={(event) => {
+												const format = event.target.value as TaskArtifactFormat;
+												updateNode(index, {
+													artifact: format
+														? { format, filename: node.artifact?.filename ?? null }
+														: null,
+												});
+											}}
+											disabled={disabled}
+											className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:border-ring focus:ring-3 focus:ring-ring/50 disabled:opacity-50"
+										>
+											<option value="">不生成文件</option>
+											<option value="markdown">Markdown（.md）</option>
+											<option value="docx">Word（.docx）</option>
+											<option value="xlsx">Excel（.xlsx）</option>
+										</select>
+									</label>
+									{node.artifact && (
+										<label className="space-y-1.5 text-xs text-muted-foreground">
+											<span>文件名（可选）</span>
+											<Input
+												value={node.artifact.filename ?? ''}
+												onChange={(event) =>
+													updateNode(index, {
+														artifact: {
+															...node.artifact!,
+															filename: event.target.value,
+														},
+													})
+												}
+												disabled={disabled}
+												placeholder="例如：北京出行建议"
+												className="h-8 bg-card text-sm"
+											/>
+										</label>
+									)}
+								</div>
+								<div className="text-[11px] leading-5 text-muted-foreground">
+									执行完成后，最后一个节点的输出会保存到当前 Workspace，并关联到本次 Run。
+								</div>
+							</div>
+						)}
 									</div>
 									<div className="flex shrink-0 items-center gap-1">
 										<Button

@@ -8,9 +8,16 @@ the core task domain does not depend on ChatService internals.
 
 from ._agentscope_executor import AgentScopeTaskExecutor
 from ._agentscope_planner import AgentScopeTaskPlanner
-from ._executor import PreviewTaskExecutor, StepExecutionResult, TaskExecutor
+from ._executor import (
+    PreviewTaskExecutor,
+    StepExecutionResult,
+    TaskArtifactWriter,
+    TaskExecutor,
+)
 from ._models import (
     AgentStepConfig,
+    ArtifactConfig,
+    ArtifactFormat,
     CreateTaskRequest,
     ExecutionContext,
     GenerateTaskRequest,
@@ -19,6 +26,7 @@ from ._models import (
     StepConfig,
     StepType,
     TaskEventRecord,
+    TaskArtifactRecord,
     TaskGenerationStatus,
     TaskNode,
     TaskPlanDraft,
@@ -41,6 +49,8 @@ __all__ = [
     "AgentScopeTaskExecutor",
     "AgentScopeTaskPlanner",
     "AgentStepConfig",
+    "ArtifactConfig",
+    "ArtifactFormat",
     "CreateTaskRequest",
     "ExecutionContext",
     "GenerateTaskRequest",
@@ -51,6 +61,8 @@ __all__ = [
     "StepExecutionResult",
     "StepType",
     "TaskEventRecord",
+    "TaskArtifactRecord",
+    "TaskArtifactWriter",
     "TaskGenerationStatus",
     "TaskExecutor",
     "TaskNode",

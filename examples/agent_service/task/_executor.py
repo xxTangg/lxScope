@@ -35,6 +35,26 @@ class TaskExecutor(Protocol):
         """Execute a single step and return its text for the next step."""
 
 
+class TaskArtifactWriter(Protocol):
+    """Port for storing and reading Task artifacts in a Workspace."""
+
+    async def write_artifact(
+        self,
+        *,
+        path: str,
+        data: bytes,
+        context: ExecutionContext,
+    ) -> int:
+        """Write one artifact and return its stored size in bytes."""
+
+    async def read_artifact(
+        self,
+        *,
+        path: str,
+        context: ExecutionContext,
+    ) -> bytes:
+        """Read one previously stored artifact."""
+
 class PreviewTaskExecutor:
     """Local adapter used when no AgentScope session is attached.
 
