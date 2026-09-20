@@ -5,6 +5,8 @@ import { toast } from 'sonner';
 
 import { NewTaskDialog } from './new-task-dialog';
 import { TaskFlowEditor } from './task-flow-editor';
+import { TaskKnowledgeGraph } from './task-knowledge-graph';
+import { TaskKnowledgeSelector } from './task-knowledge-selector';
 import { TaskOverview } from './task-overview';
 import { TaskRunPanel } from './task-run-panel';
 import { TaskSidebar } from './task-sidebar';
@@ -29,6 +31,7 @@ interface TaskDraft {
 	title: string;
 	goal: string;
 	nodes: TaskNode[];
+	knowledge_base_ids: string[];
 	generation_status: TaskRecord['generation_status'];
 	generation_error?: string | null;
 }
@@ -46,6 +49,9 @@ function toDraft(task: TaskRecord): TaskDraft {
 		title: task.title,
 		goal: task.goal,
 		nodes: task.nodes.map((node) => ({ ...node })),
+		knowledge_base_ids: Array.isArray(task.knowledge_base_ids)
+			? [...task.knowledge_base_ids]
+			: [],
 		generation_status: task.generation_status,
 		generation_error: task.generation_error,
 	};
@@ -57,6 +63,47 @@ function errorMessage(error: unknown): string {
 
 function normalizeNodes(nodes: TaskNode[]): TaskNode[] {
 	return nodes.map((node, index) => ({ ...node, order: index }));
+}
+
+type ResizePane = 'sidebar' | 'results';
+
+interface ResizeHandleProps {
+	label: string;
+	onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
+	onNudge: (delta: number) => void;
+}
+
+function ResizeHandle({ label, onPointerDown, onNudge }: ResizeHandleProps) {
+	return (
+		<div
+			className="group relative z-10 flex w-2 shrink-0 cursor-col-resize items-center justify-center touch-none focus-visible:outline-none"
+			role="separator"
+			aria-label={label}
+			aria-orientation="vertical"
+			tabIndex={0}
+			title={`${label}，拖动或使用键盘左右方向键调整`}
+			onPointerDown={(event) => {
+				event.preventDefault();
+				onPointerDown(event);
+			}}
+			onKeyDown={(event) => {
+				if (event.key === 'ArrowLeft') {
+					event.preventDefault();
+					onNudge(-16);
+				}
+				if (event.key === 'ArrowRight') {
+					event.preventDefault();
+					onNudge(16);
+				}
+			}}
+		>
+			<div className="h-12 w-1 rounded-full bg-border transition-colors group-hover:bg-primary/60 group-focus-visible:bg-primary" />
+		</div>
+	);
+}
+
+function clamp(value: number, min: number, max: number): number {
+	return Math.min(max, Math.max(min, value));
 }
 
 export function TaskPage() {
@@ -81,8 +128,53 @@ export function TaskPage() {
 	const [isGenerating, setIsGenerating] = React.useState(false);
 	const [newTaskOpen, setNewTaskOpen] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
+	const [sidebarWidth, setSidebarWidth] = React.useState(280);
+	const [resultWidth, setResultWidth] = React.useState(420);
+	const [resizingPane, setResizingPane] = React.useState<ResizePane | null>(null);
+	const resizeStartRef = React.useRef<{ pane: ResizePane; x: number; width: number } | null>(
+		null,
+	);
 	const { agents } = useAgents();
 	const { sessions, loading: sessionsLoading } = useSessions(executionAgentId ?? null);
+
+	const beginResize = (pane: ResizePane, event: React.PointerEvent<HTMLDivElement>) => {
+		resizeStartRef.current = {
+			pane,
+			x: event.clientX,
+			width: pane === 'sidebar' ? sidebarWidth : resultWidth,
+		};
+		setResizingPane(pane);
+	};
+
+	React.useEffect(() => {
+		if (!resizingPane) return undefined;
+
+		const handlePointerMove = (event: PointerEvent) => {
+			const start = resizeStartRef.current;
+			if (!start || start.pane !== resizingPane) return;
+			const delta = event.clientX - start.x;
+			if (resizingPane === 'sidebar') {
+				setSidebarWidth(clamp(start.width + delta, 220, 420));
+			} else {
+				// The results divider sits on the results panel's left edge.
+				// Moving it left makes the results panel wider.
+				setResultWidth(clamp(start.width - delta, 320, 640));
+			}
+		};
+		const finishResize = () => {
+			resizeStartRef.current = null;
+			setResizingPane(null);
+		};
+
+		window.addEventListener('pointermove', handlePointerMove);
+		window.addEventListener('pointerup', finishResize);
+		window.addEventListener('pointercancel', finishResize);
+		return () => {
+			window.removeEventListener('pointermove', handlePointerMove);
+			window.removeEventListener('pointerup', finishResize);
+			window.removeEventListener('pointercancel', finishResize);
+		};
+	}, [resizingPane]);
 
 	React.useEffect(() => {
 		if (executionAgentId === undefined && agents[0]) setExecutionAgentId(agents[0].id);
@@ -315,6 +407,7 @@ export function TaskPage() {
 				title: draft.title.trim() || '未命名任务',
 				goal: draft.goal,
 				nodes: normalizeNodes(draft.nodes),
+				knowledge_base_ids: draft.knowledge_base_ids,
 				source_context: buildExecutionContext(),
 			});
 			setTasks((previous) => previous.map((task) => (task.id === saved.id ? saved : task)));
@@ -438,14 +531,22 @@ export function TaskPage() {
 	}
 
 	return (
-		<div className="flex size-full gap-2 p-2">
+		<div
+			className={`flex size-full min-w-0 gap-2 p-2 ${resizingPane ? 'select-none' : ''}`}
+		>
 			<TaskSidebar
 				tasks={tasks}
 				selectedTaskId={selectedTaskId}
+				width={sidebarWidth}
 				onSelect={selectTask}
 				onCreate={() => setNewTaskOpen(true)}
 				onDelete={(task) => void handleDelete(task)}
 				disabled={isSaving || isRunning || isGenerating}
+			/>
+			<ResizeHandle
+				label="调整我的任务宽度"
+				onPointerDown={(event) => beginResize('sidebar', event)}
+				onNudge={(delta) => setSidebarWidth((value) => clamp(value + delta, 220, 420))}
 			/>
 
 			<main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[22px] bg-card shadow-panel">
@@ -516,8 +617,8 @@ export function TaskPage() {
 							</div>
 						)}
 
-						<div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)] overflow-hidden border-t border-border/70">
-							<section className="min-h-0 overflow-y-auto px-6 py-5">
+						<div className="flex min-h-0 min-w-0 flex-1 overflow-hidden border-t border-border/70">
+							<section className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5">
 								<TaskOverview
 										nodes={draft.nodes}
 										run={currentRun}
@@ -608,6 +709,16 @@ export function TaskPage() {
 											: '未绑定时仍可手动编排和预览执行；自动生成节点前，请先选择 Agent 和会话。'}
 									</div>
 								</div>
+								<TaskKnowledgeSelector
+									selectedIds={draft.knowledge_base_ids}
+									disabled={isSaving || isRunning || isGenerating}
+									onChange={(knowledge_base_ids) => updateDraft({ knowledge_base_ids })}
+								/>
+								<TaskKnowledgeGraph
+									taskId={draft.id}
+									selectedIds={draft.knowledge_base_ids}
+									disabled={isSaving || isRunning || isGenerating}
+								/>
 								<TaskFlowEditor
 									nodes={draft.nodes}
 									tools={availableTools}
@@ -615,8 +726,14 @@ export function TaskPage() {
 									disabled={isSaving || isRunning}
 								/>
 							</section>
+							<ResizeHandle
+								label="调整执行结果宽度"
+								onPointerDown={(event) => beginResize('results', event)}
+								onNudge={(delta) => setResultWidth((value) => clamp(value - delta, 320, 640))}
+							/>
 							<TaskRunPanel
 								run={currentRun}
+								width={resultWidth}
 								onCancel={() => void handleCancel()}
 								onRetry={() => void handleRetry()}
 							/>

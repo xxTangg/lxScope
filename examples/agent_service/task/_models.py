@@ -143,6 +143,9 @@ class TaskNode(BaseModel):
     config: StepConfig
     order: int = Field(default=0, ge=0)
     artifact: ArtifactConfig | None = None
+    knowledge_graph_enabled: bool = False
+    knowledge_base_mode: Literal["inherit", "override", "disabled"] = "inherit"
+    knowledge_base_ids: list[str] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="before")
     @classmethod
@@ -210,6 +213,62 @@ class TaskToolSchema(BaseModel):
     is_read_only: bool = False
 
 
+class TaskKnowledgeBaseOption(BaseModel):
+    """Minimal knowledge-base projection used by the Task editor."""
+
+    id: str
+    name: str
+    description: str = ""
+    document_count: int = 0
+    chunk_count: int = 0
+    ready_document_count: int = 0
+
+
+class TaskKnowledgeGraphResponse(BaseModel):
+    """Bounded graph payload scoped to one Task's selected knowledge bases."""
+
+    task_id: str
+    knowledge_base_ids: list[str] = Field(default_factory=list)
+    extraction_enabled: bool = False
+    status: str = "empty"
+    error: str | None = None
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+    node_count: int = 0
+    edge_count: int = 0
+    version: int = 0
+    mode: str = "stored"
+    matched_chunk_count: int = 0
+    extracted_chunk_count: int = 0
+
+
+class TaskKnowledgeGraphRebuildResponse(BaseModel):
+    """Result of on-demand entity/relation extraction for a Task."""
+
+    task_id: str
+    knowledge_base_ids: list[str] = Field(default_factory=list)
+    extraction_enabled: bool = False
+    status: str = "empty"
+    documents: int = 0
+    skipped: int = 0
+    reused: int = 0
+    error: str | None = None
+
+
+class TaskKnowledgeGraphRequest(BaseModel):
+    """Optional preview selection for Task graph operations."""
+
+    knowledge_base_ids: list[str] | None = Field(default=None, max_length=16)
+    force_extract: bool = False
+
+
+class TaskStepKnowledgeGraphRequest(BaseModel):
+    """Optional controls for a Step-scoped, on-demand graph view."""
+
+    query: str | None = Field(default=None, max_length=8_000)
+    force_extract: bool = False
+
+
 class ExecutionContext(TaskContext):
     """Execution identity passed to a TaskExecutor adapter."""
 
@@ -228,6 +287,7 @@ class TaskRecord(BaseModel):
     title: str = Field(default="未命名任务", min_length=1, max_length=160)
     goal: str = Field(default="", max_length=20_000)
     nodes: list[TaskNode] = Field(default_factory=list)
+    knowledge_base_ids: list[str] = Field(default_factory=list, max_length=16)
     intent: str | None = Field(default=None, max_length=2_000)
     title_source: str = Field(default="auto", pattern="^(auto|user)$")
     revision: int = Field(default=1, ge=1)
@@ -276,6 +336,7 @@ class TaskRunRecord(BaseModel):
     task_revision: int
     nodes: list[TaskNode]
     node_runs: list[NodeRunRecord]
+    knowledge_base_ids: list[str] = Field(default_factory=list, max_length=16)
     input: str = ""
     final_output: str = ""
     final_summary: str = ""
@@ -351,6 +412,7 @@ class CreateTaskRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=20_000)
     nodes: list[TaskNode] = Field(default_factory=list, max_length=8)
     source_context: TaskContext = Field(default_factory=TaskContext)
+    knowledge_base_ids: list[str] = Field(default_factory=list, max_length=16)
 
 
 class UpdateTaskRequest(BaseModel):
@@ -360,6 +422,7 @@ class UpdateTaskRequest(BaseModel):
     goal: str | None = Field(default=None, max_length=20_000)
     nodes: list[TaskNode] | None = Field(default=None, max_length=8)
     source_context: TaskContext | None = None
+    knowledge_base_ids: list[str] | None = Field(default=None, max_length=16)
 
 
 class GenerateTaskRequest(BaseModel):

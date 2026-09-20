@@ -28,6 +28,11 @@ from ._models import (
     TaskEventRecord,
     TaskArtifactRecord,
     TaskGenerationStatus,
+    TaskKnowledgeBaseOption,
+    TaskKnowledgeGraphRequest,
+    TaskKnowledgeGraphRebuildResponse,
+    TaskKnowledgeGraphResponse,
+    TaskStepKnowledgeGraphRequest,
     TaskNode,
     TaskPlanDraft,
     TaskPlanNode,
@@ -40,6 +45,7 @@ from ._models import (
     UpdateTaskRequest,
 )
 from ._planner import PreviewTaskPlanner, TaskPlanner
+from ._knowledge import TaskKnowledgeGateway
 from ._router import task_router
 from ._service import TaskService
 from ._redis_store import RedisTaskStore
@@ -64,6 +70,11 @@ __all__ = [
     "TaskArtifactRecord",
     "TaskArtifactWriter",
     "TaskGenerationStatus",
+    "TaskKnowledgeBaseOption",
+    "TaskKnowledgeGraphRequest",
+    "TaskKnowledgeGraphRebuildResponse",
+    "TaskKnowledgeGraphResponse",
+    "TaskStepKnowledgeGraphRequest",
     "TaskExecutor",
     "TaskNode",
     "TaskPlanDraft",
@@ -74,6 +85,7 @@ __all__ = [
     "TaskStatus",
     "TaskToolSchema",
     "TaskService",
+    "TaskKnowledgeGateway",
     "TaskStore",
     "TaskStoreProtocol",
     "RedisTaskStore",

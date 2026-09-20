@@ -16,12 +16,18 @@ from ._models import (
     GenerateTaskRequest,
     TaskContext,
     TaskArtifactRecord,
+    TaskKnowledgeBaseOption,
+    TaskKnowledgeGraphRequest,
+    TaskKnowledgeGraphRebuildResponse,
+    TaskKnowledgeGraphResponse,
     TaskRecord,
     TaskRunRecord,
     TaskRunRequest,
+    TaskStepKnowledgeGraphRequest,
     TaskToolSchema,
     UpdateTaskRequest,
 )
+from ._knowledge import TaskKnowledgeGateway
 from ._service import TaskService
 
 
@@ -44,6 +50,41 @@ async def _get_task_service(request: Request) -> TaskService:
     return task_service
 
 
+def _get_task_knowledge_gateway(request: Request) -> TaskKnowledgeGateway:
+    """Resolve the optional Task-to-AgentScope knowledge adapter."""
+
+    knowledge_base_service = getattr(
+        request.app.state,
+        "knowledge_base_service",
+        None,
+    )
+    if knowledge_base_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Knowledge base service is not configured.",
+        )
+    cached = getattr(request.app.state, "task_knowledge_gateway", None)
+    if isinstance(cached, TaskKnowledgeGateway):
+        return cached
+    gateway = TaskKnowledgeGateway(
+        knowledge_base_service,
+        request.app.state,
+    )
+    request.app.state.task_knowledge_gateway = gateway
+    return gateway
+
+
+def _maybe_get_task_knowledge_gateway(request: Request) -> TaskKnowledgeGateway | None:
+    """Keep Task execution backward-compatible when KB is disabled."""
+
+    try:
+        return _get_task_knowledge_gateway(request)
+    except HTTPException as error:
+        if error.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+            return None
+        raise
+
+
 def _not_found(resource: str, resource_id: str) -> HTTPException:
     """Build the consistent not-found error used by all Task routes."""
 
@@ -61,6 +102,21 @@ async def list_tasks(
     """List active reusable tasks for the current user."""
 
     return await task_service.list_tasks(user_id)
+
+
+@task_router.get(
+    "/knowledge-bases",
+    response_model=list[TaskKnowledgeBaseOption],
+    summary="List knowledge bases available to Tasks",
+)
+async def list_task_knowledge_bases(
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+) -> list[TaskKnowledgeBaseOption]:
+    """Expose a Task-scoped KB selector without coupling the UI to core APIs."""
+
+    gateway = _get_task_knowledge_gateway(request)
+    return await gateway.list_knowledge_bases(user_id)
 
 
 @task_router.post(
@@ -144,6 +200,72 @@ async def get_run(
     if run is None:
         raise _not_found("Run", run_id)
     return run
+
+
+@task_router.post(
+    "/runs/{run_id}/nodes/{node_id}/knowledge-graph",
+    response_model=TaskKnowledgeGraphResponse,
+    summary="Generate a Step-scoped knowledge graph",
+)
+async def get_step_knowledge_graph(
+    run_id: str,
+    node_id: str,
+    body: TaskStepKnowledgeGraphRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskKnowledgeGraphResponse:
+    """Generate a graph only when a configured Task step asks for it."""
+
+    run = await task_service.get_run(user_id, run_id)
+    if run is None:
+        raise _not_found("Run", run_id)
+    node = next((item for item in run.nodes if item.id == node_id), None)
+    if node is None:
+        raise _not_found("Task node", node_id)
+    if not node.knowledge_graph_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="当前任务节点未开启知识图谱展示。",
+        )
+
+    node_run = next(
+        (item for item in run.node_runs if item.node_id == node_id),
+        None,
+    )
+    if node_run is None:
+        raise _not_found("Task node run", node_id)
+    selected_ids = (
+        node.knowledge_base_ids
+        if node.knowledge_base_mode == "override"
+        else run.knowledge_base_ids
+    )
+    if node.knowledge_base_mode == "disabled":
+        selected_ids = []
+    query = body.query or "\n".join(
+        item
+        for item in (
+            node.name,
+            node.prompt,
+            node_run.input,
+            node_run.output,
+        )
+        if item and item.strip()
+    )
+    gateway = _get_task_knowledge_gateway(request)
+    try:
+        graph = await gateway.get_context_graph(
+            user_id,
+            selected_ids,
+            query,
+            force_extract=body.force_extract,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+    return TaskKnowledgeGraphResponse(task_id=run.task_id, **graph)
 
 
 @task_router.get(
@@ -256,6 +378,77 @@ async def stream_run_events(
     )
 
 
+@task_router.get(
+    "/{task_id}/knowledge-graph",
+    response_model=TaskKnowledgeGraphResponse,
+    summary="Read the selected knowledge graph for a Task",
+)
+async def get_task_knowledge_graph(
+    task_id: str,
+    request: Request,
+    query: str | None = None,
+    knowledge_base_ids: str | None = None,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskKnowledgeGraphResponse:
+    """Read a bounded merged graph for the Task's selected KBs."""
+
+    task = await task_service.get_task(user_id, task_id)
+    if task is None:
+        raise _not_found("Task", task_id)
+    selected_ids = (
+        [item for item in knowledge_base_ids.split(",") if item]
+        if knowledge_base_ids is not None
+        else task.knowledge_base_ids
+    )
+    gateway = _get_task_knowledge_gateway(request)
+    try:
+        graph = await gateway.get_graph(
+            user_id,
+            selected_ids,
+            query=query,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+    return TaskKnowledgeGraphResponse(task_id=task_id, **graph)
+
+
+@task_router.post(
+    "/{task_id}/knowledge-graph/rebuild",
+    response_model=TaskKnowledgeGraphRebuildResponse,
+    summary="Extract entities and relations for a Task KB",
+)
+async def rebuild_task_knowledge_graph(
+    task_id: str,
+    body: TaskKnowledgeGraphRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskKnowledgeGraphRebuildResponse:
+    """Run the Task-owned, on-demand graph extraction adapter."""
+
+    task = await task_service.get_task(user_id, task_id)
+    if task is None:
+        raise _not_found("Task", task_id)
+    selected_ids = body.knowledge_base_ids or task.knowledge_base_ids
+    gateway = _get_task_knowledge_gateway(request)
+    try:
+        result = await gateway.rebuild_graph(
+            user_id,
+            selected_ids,
+            force_extract=body.force_extract,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+    return TaskKnowledgeGraphRebuildResponse(task_id=task_id, **result)
+
+
 @task_router.get("/{task_id}", response_model=TaskRecord, summary="Get a task")
 async def get_task(
     task_id: str,
@@ -327,13 +520,19 @@ async def list_runs(
 )
 async def create_run(
     task_id: str,
+    request: Request,
     body: TaskRunRequest,
     user_id: str = Depends(get_current_user_id),
     task_service: TaskService = Depends(_get_task_service),
 ) -> TaskRunRecord:
     """Queue one execution of the saved task definition."""
 
-    run = await task_service.create_run(user_id, task_id, body)
+    run = await task_service.create_run(
+        user_id,
+        task_id,
+        body,
+        _maybe_get_task_knowledge_gateway(request),
+    )
     if run is None:
         raise _not_found("Task", task_id)
     return run
@@ -365,12 +564,17 @@ async def cancel_run(
 )
 async def retry_run(
     run_id: str,
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     task_service: TaskService = Depends(_get_task_service),
 ) -> TaskRunRecord:
     """Create a fresh run without mutating the previous result."""
 
-    run = await task_service.retry_run(user_id, run_id)
+    run = await task_service.retry_run(
+        user_id,
+        run_id,
+        _maybe_get_task_knowledge_gateway(request),
+    )
     if run is None:
         raise _not_found("Run", run_id)
     return run

@@ -60,6 +60,9 @@ export interface TaskNode {
 	config: TaskStepConfig;
 	order: number;
 	artifact?: TaskArtifactConfig | null;
+	knowledge_graph_enabled?: boolean;
+	knowledge_base_mode?: 'inherit' | 'override' | 'disabled';
+	knowledge_base_ids?: string[];
 }
 
 export interface TaskContext {
@@ -75,6 +78,7 @@ export interface TaskRecord {
 	title: string;
 	goal: string;
 	nodes: TaskNode[];
+	knowledge_base_ids?: string[] | null;
 	intent?: string | null;
 	title_source: 'auto' | 'user';
 	revision: number;
@@ -130,6 +134,7 @@ export interface TaskRunRecord {
 	task_revision: number;
 	nodes: TaskNode[];
 	node_runs: NodeRunRecord[];
+	knowledge_base_ids?: string[] | null;
 	input: string;
 	final_output: string;
 	final_summary: string;
@@ -147,6 +152,7 @@ export interface CreateTaskRequest {
 	goal: string;
 	nodes?: TaskNode[];
 	source_context?: TaskContext;
+	knowledge_base_ids?: string[];
 }
 
 export interface UpdateTaskRequest {
@@ -154,6 +160,66 @@ export interface UpdateTaskRequest {
 	goal?: string;
 	nodes?: TaskNode[];
 	source_context?: TaskContext;
+	knowledge_base_ids?: string[];
+}
+
+export interface TaskKnowledgeBaseOption {
+	id: string;
+	name: string;
+	description: string;
+	document_count: number;
+	chunk_count: number;
+	ready_document_count: number;
+}
+
+export interface TaskKnowledgeGraphNode {
+	id: string;
+	label: string;
+	type: string;
+	properties: Record<string, unknown>;
+	aliases: string[];
+	source_refs: Array<{
+		document_id: string;
+		chunk_index?: number | null;
+		filename?: string | null;
+		metadata: Record<string, unknown>;
+	}>;
+}
+
+export interface TaskKnowledgeGraphEdge {
+	id: string;
+	source: string;
+	target: string;
+	label: string;
+	properties: Record<string, unknown>;
+	source_refs: TaskKnowledgeGraphNode['source_refs'];
+}
+
+export interface TaskKnowledgeGraphResponse {
+	task_id: string;
+	knowledge_base_ids: string[];
+	extraction_enabled: boolean;
+	status: 'empty' | 'disabled' | 'building' | 'ready' | 'error' | string;
+	error?: string | null;
+	nodes: TaskKnowledgeGraphNode[];
+	edges: TaskKnowledgeGraphEdge[];
+	node_count: number;
+	edge_count: number;
+	version: number;
+	mode?: 'stored' | 'llm' | 'hybrid' | 'empty' | string;
+	matched_chunk_count?: number;
+	extracted_chunk_count?: number;
+}
+
+export interface TaskKnowledgeGraphRebuildResponse {
+	task_id: string;
+	knowledge_base_ids: string[];
+	extraction_enabled: boolean;
+	status: string;
+	documents: number;
+	skipped: number;
+	reused?: number;
+	error?: string | null;
 }
 
 export interface TaskRunRequest {
@@ -167,6 +233,9 @@ export interface GenerateTaskRequest {
 
 export const taskApi = {
 	list: () => client.get<TaskRecord[]>('/tasks/'),
+
+	listKnowledgeBases: () =>
+		client.get<TaskKnowledgeBaseOption[]>('/tasks/knowledge-bases'),
 
 	get: (taskId: string) => client.get<TaskRecord>(`/tasks/${taskId}`),
 
@@ -184,6 +253,43 @@ export const taskApi = {
 
 	update: (taskId: string, body: UpdateTaskRequest) =>
 		client.patch<TaskRecord>(`/tasks/${taskId}`, body),
+
+	getKnowledgeGraph: (
+		taskId: string,
+		params: { knowledge_base_ids?: string[]; query?: string } = {},
+	) =>
+		client.get<TaskKnowledgeGraphResponse>(
+			`/tasks/${taskId}/knowledge-graph`,
+			{
+				...(params.knowledge_base_ids?.length
+					? { knowledge_base_ids: params.knowledge_base_ids.join(',') }
+					: {}),
+				...(params.query ? { query: params.query } : {}),
+			},
+		),
+
+	rebuildKnowledgeGraph: (
+		taskId: string,
+		knowledge_base_ids?: string[],
+		force_extract = false,
+	) =>
+		client.post<TaskKnowledgeGraphRebuildResponse>(
+			`/tasks/${taskId}/knowledge-graph/rebuild`,
+			{
+				...(knowledge_base_ids?.length ? { knowledge_base_ids } : {}),
+				force_extract,
+			},
+		),
+
+	getStepKnowledgeGraph: (
+		runId: string,
+		nodeId: string,
+		options: { query?: string; force_extract?: boolean } = {},
+	) =>
+		client.post<TaskKnowledgeGraphResponse>(
+			`/tasks/runs/${runId}/nodes/${nodeId}/knowledge-graph`,
+			options,
+		),
 
 	delete: (taskId: string) => client.delete(`/tasks/${taskId}`),
 

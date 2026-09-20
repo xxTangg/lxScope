@@ -1,7 +1,7 @@
 import { Check, CircleAlert, Download, Eye, Loader2, Play, RotateCcw, Square } from 'lucide-react';
-
 import * as React from 'react';
 
+import { TaskKnowledgeGraph } from './task-knowledge-graph';
 import { taskApi } from '@/api';
 import type { NodeRunRecord, RunStatus, TaskArtifactRecord, TaskNode, TaskRunRecord, TaskStepType } from '@/api';
 import { Badge } from '@/components/ui/badge';
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 
 interface TaskRunPanelProps {
 	run: TaskRunRecord | null;
+	width?: number;
 	onCancel: () => void;
 	onRetry: () => void;
 }
@@ -94,7 +95,9 @@ function artifactSizeLabel(size: number): string {
 	if (size < 1024) return `${size} B`;
 	if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
 	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}export function TaskRunPanel({ run, onCancel, onRetry }: TaskRunPanelProps) {
+}
+
+export function TaskRunPanel({ run, width = 420, onCancel, onRetry }: TaskRunPanelProps) {
 	const [previewArtifact, setPreviewArtifact] = React.useState<TaskArtifactRecord | null>(null);
 	const [artifactBusyId, setArtifactBusyId] = React.useState<string | null>(null);
 
@@ -129,7 +132,10 @@ function artifactSizeLabel(size: number): string {
 	};
 	if (!run) {
 		return (
-			<section className="flex min-h-0 flex-1 flex-col border-l border-border/70 bg-muted/20 p-6">
+			<section
+				className="flex min-h-0 min-w-0 shrink-0 flex-col border-l border-border/70 bg-muted/20 p-6"
+				style={{ width: `${width}px` }}
+			>
 				<div className="text-base font-semibold">执行结果</div>
 				<div className="flex flex-1 flex-col items-center justify-center text-center text-muted-foreground">
 					<div className="mb-3 flex size-12 items-center justify-center rounded-2xl bg-card shadow-sm">
@@ -145,7 +151,10 @@ function artifactSizeLabel(size: number): string {
 	}
 
 	return (
-		<section className="flex min-h-0 flex-1 flex-col border-l border-border/70 bg-muted/20">
+		<section
+			className="flex min-h-0 min-w-0 shrink-0 flex-col border-l border-border/70 bg-muted/20"
+			style={{ width: `${width}px` }}
+		>
 			<div className="flex items-center justify-between gap-3 px-6 pt-6 pb-4">
 				<div>
 					<div className="text-base font-semibold">执行结果</div>
@@ -196,6 +205,16 @@ function artifactSizeLabel(size: number): string {
 									</summary>
 									<div className="mt-2 whitespace-pre-wrap leading-6">{node.output}</div>
 								</details>
+							)}
+							{definition?.knowledge_graph_enabled && (
+								<TaskKnowledgeGraph
+									taskId={run.task_id}
+									selectedIds={run.knowledge_base_ids ?? []}
+									runId={run.id}
+									nodeId={node.node_id}
+									compact
+									disabled={node.status === 'pending'}
+								/>
 							)}
 							{node.error && (
 								<div className="mt-3 rounded-xl bg-red-50 p-3 text-sm leading-6 text-red-700">

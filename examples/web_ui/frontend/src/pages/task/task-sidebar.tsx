@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 interface TaskSidebarProps {
 	tasks: TaskRecord[];
 	selectedTaskId: string | null;
+	width?: number;
 	onSelect: (task: TaskRecord) => void;
 	onCreate: () => void;
 	onDelete: (task: TaskRecord) => void;
@@ -63,13 +64,17 @@ function formatDate(value: string): string {
 export function TaskSidebar({
 	tasks,
 	selectedTaskId,
+	width = 280,
 	onSelect,
 	onCreate,
 	onDelete,
 	disabled = false,
 }: TaskSidebarProps) {
 	return (
-		<aside className="flex w-[280px] shrink-0 flex-col overflow-hidden rounded-[22px] bg-card shadow-panel">
+		<aside
+			className="flex min-w-[220px] max-w-[420px] shrink-0 flex-col overflow-hidden rounded-[22px] bg-card shadow-panel"
+			style={{ width: `${width}px` }}
+		>
 			<div className="flex items-center justify-between px-5 pt-5 pb-4">
 				<div>
 					<div className="text-lg font-semibold">我的任务</div>

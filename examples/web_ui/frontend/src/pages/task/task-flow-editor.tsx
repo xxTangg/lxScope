@@ -202,6 +202,20 @@ export function TaskFlowEditor({
 										<div className="text-[11px] text-muted-foreground">
 											{STEP_LABELS[node.type]}
 										</div>
+										<label className="flex items-center gap-2 text-xs text-muted-foreground">
+											<input
+												type="checkbox"
+												checked={node.knowledge_graph_enabled ?? false}
+								onChange={(event) =>
+									updateNode(index, {
+										knowledge_graph_enabled: event.target.checked,
+									})
+								}
+												disabled={disabled}
+												className="size-3.5 accent-primary"
+											/>
+											<span>允许在此步骤按需生成知识图谱</span>
+										</label>
 
 										{agentConfig && (
 											<Textarea
