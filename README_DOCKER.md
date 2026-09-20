@@ -63,6 +63,13 @@ SILICONFLOW_EMBEDDING_DIMENSIONS=1024
 # 可选：Redis 密码
 REDIS_PASSWORD=
 
+# lxScope 应用业务持久化。AgentScope Core 仍然使用 RedisStorage。
+POSTGRES_DB=lxscope
+POSTGRES_USER=lxscope
+POSTGRES_PASSWORD=change-me
+LXSCOPE_DATABASE_URL=postgresql+asyncpg://lxscope:change-me@postgres:5432/lxscope
+LXSCOPE_TASK_STORE_BACKEND=postgres
+
 # 管理员升级与备份。确认部署目录后再填写两个 target 路径。
 LONGXIN_DATA_DIR=/app/longxin-data
 LONGXIN_APP_TARGET_DIR=
@@ -95,6 +102,7 @@ docker compose ps
 
 正常情况下，以下服务应处于 `Up` 或 `healthy` 状态：
 
+- `postgres`：lxScope 应用业务数据持久化
 - `redis`：账号、会话等数据存储
 - `agentscope`：后端 API
 - `web-ui`：龙信助手前端
@@ -144,6 +152,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 - 将项目源码挂载到 `agentscope` 容器，并启用 Python 热重载；
 - 使用 Vite 开发服务器运行 Web UI，并启用前端 HMR；
 - 继续使用原来的 Redis、工作区、文件和 Qdrant 数据卷。
+- 额外使用 `postgres-data` 保存 lxScope 应用业务数据。
 
 只有修改 `pyproject.toml`、Python 依赖或 `examples/web_ui/package.json`、
 `pnpm-lock.yaml` 等依赖配置时，才需要重新构建对应镜像：
@@ -155,6 +164,10 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build age
 # 修改前端依赖
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build web-ui
 ```
+
+已有部署如果还没有把 Redis 中的 Task 数据迁移到 PostgreSQL，应先将
+`LXSCOPE_TASK_STORE_BACKEND` 保持为 `redis`；完成迁移后再改为 `postgres`。
+应用启动时会自动执行 `examples/agent_service/migrations` 下的正向迁移。
 
 ## 5. 检查与排错
 
@@ -221,6 +234,7 @@ docker stats
 Compose 使用以下 Docker 数据卷：
 
 - `redis-data`：注册账号、会话及 Redis 数据
+- `postgres-data`：lxScope 应用业务数据（租户、Task、订单、审计等）
 - `agentscope-workspaces`：用户工作区
 - `agentscope-blobs`：上传和生成的文件
 - `qdrant-data`：向量数据库数据
