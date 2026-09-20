@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from pydantic import BaseModel, Field, ValidationError
 
 from agentscope.app.storage import MCPRecord, SkillRecord
+from agentscope.mcp import MCPClient
 from auth import AuthUser, JWTAuthService
 from longxin_admin.distributed_lock import DistributedLease
 from longxin_admin.plan_billing.catalog import (
@@ -874,6 +875,25 @@ class AdminService:
             return set(publication.get("user_ids", [])) & active_ids
         return set()
 
+    @staticmethod
+    def _copy_mcp_record(source: MCPRecord, user_id: str) -> MCPRecord:
+        """Create a storage-safe copy of an installed MCP record.
+
+        ``MCPClient`` owns private runtime connection state.  A deep copy of
+        a client that has been used by a workspace can therefore reach an
+        async generator and fail during publication.  Rebuild the client
+        from its public, serializable configuration instead; this preserves
+        the desired MCP configuration without sharing a live connection
+        between users.
+        """
+
+        record_data = source.model_dump(mode="json", exclude={"name"})
+        record_data["user_id"] = user_id
+        record_data["client"] = MCPClient.model_validate(
+            source.client.model_dump(mode="json"),
+        )
+        return MCPRecord.model_validate(record_data)
+
     async def _sync_resource_publication(
         self,
         publication: dict[str, Any],
@@ -910,8 +930,13 @@ class AdminService:
 
         if source is not None and kind in {"mcp", "skill"}:
             for user_id in targets:
-                copied = source.model_copy(deep=True)
-                copied.user_id = user_id
+                copied = (
+                    self._copy_mcp_record(source, user_id)
+                    if kind == "mcp"
+                    else source.model_copy(deep=True)
+                )
+                if kind == "skill":
+                    copied.user_id = user_id
                 copied.enabled = True
                 if kind == "mcp":
                     existing = await self._storage.get_mcp_by_name(

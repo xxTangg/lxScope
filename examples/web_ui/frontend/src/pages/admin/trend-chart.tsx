@@ -53,7 +53,7 @@ export function TrendChart({ rows, series, emptyText }: TrendChartProps) {
 			</div>
 			<div className="flex min-w-0 items-stretch">
 				<Axis max={leftMax} side="left" />
-				<div className="min-w-0 flex-1 overflow-x-auto">
+				<div className="trend-chart-scroll min-w-0 flex-1 overflow-x-scroll">
 					<div className="relative min-w-[640px]">
 						<div className="pointer-events-none absolute inset-x-0 top-10 bottom-9">
 							{ticks(leftMax).map((value, index) => <div key={value} className="absolute inset-x-0 border-t border-dashed border-muted-foreground/20" style={{ top: `${index * 25}%` }} />)}

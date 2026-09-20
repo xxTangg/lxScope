@@ -253,3 +253,29 @@ svg.lucide {
 		@apply font-sans;
 	}
 }
+
+/* Keep analytical chart navigation discoverable even when the browser uses
+   overlay scrollbars that normally fade out when the pointer leaves. */
+.trend-chart-scroll {
+	scrollbar-color: var(--muted-foreground) var(--muted);
+	scrollbar-width: auto;
+}
+
+.trend-chart-scroll::-webkit-scrollbar {
+	height: 12px;
+}
+
+.trend-chart-scroll::-webkit-scrollbar-track {
+	background: var(--muted);
+	border-radius: 999px;
+}
+
+.trend-chart-scroll::-webkit-scrollbar-thumb {
+	background: var(--muted-foreground);
+	border: 2px solid var(--muted);
+	border-radius: 999px;
+}
+
+.trend-chart-scroll::-webkit-scrollbar-thumb:hover {
+	background: var(--foreground);
+}
