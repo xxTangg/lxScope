@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 
 import { NewTaskDialog } from './new-task-dialog';
 import { TaskFlowEditor } from './task-flow-editor';
+import { TaskOverview } from './task-overview';
 import { TaskRunPanel } from './task-run-panel';
 import { TaskSidebar } from './task-sidebar';
 import type {
@@ -517,6 +518,12 @@ export function TaskPage() {
 
 						<div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)] overflow-hidden border-t border-border/70">
 							<section className="min-h-0 overflow-y-auto px-6 py-5">
+								<TaskOverview
+										nodes={draft.nodes}
+										run={currentRun}
+										generationStatus={draft.generation_status}
+										isDirty={isDirty}
+									/>
 								<div className="mb-5 rounded-2xl bg-muted/50 p-4">
 									<div className="mb-2 flex items-center justify-between gap-3">
 										<div className="text-xs font-medium text-muted-foreground">任务目标</div>
