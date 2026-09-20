@@ -85,6 +85,7 @@ async def enqueue_run_trigger(
     | UserInterruptEvent
     | Msg
     | None = None,
+    skill_names: list[str] | None = None,
 ) -> None:
     """Enqueue a typed run trigger and signal dispatchers.
 
@@ -122,6 +123,8 @@ async def enqueue_run_trigger(
             should be ``None``) for ``wake``.  The function calls
             ``model_dump(mode="json")`` internally — callers pass the
             event object, not a pre-serialised dict.
+        skill_names (`list[str] | None`, optional):
+            Skill names to expose when the queued run is assembled.
     """
     await bus.queue_push(
         MessageBusKeys.wakeup_queue(),
@@ -131,6 +134,7 @@ async def enqueue_run_trigger(
             "agent_id": agent_id,
             "kind": kind,
             "input": inputs.model_dump(mode="json") if inputs else None,
+            "skill_names": skill_names,
         },
     )
     await bus.publish(MessageBusKeys.wakeup_signal(), {})

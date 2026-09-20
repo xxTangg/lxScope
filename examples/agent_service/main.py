@@ -54,15 +54,6 @@ from auth import AuthUser, load_auth_from_env
 from longxin_admin.credential_policy import AdminManagedCredentialPolicy
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
 from longxin_admin.upgrade import UpgradeService, upgrade_router
-from mcp_management import management_mcp_router
-from task import (
-    AgentScopeTaskExecutor,
-    AgentScopeTaskPlanner,
-    RedisTaskStore,
-    TaskService,
-    TaskStore,
-    task_router,
-)
 from skill_analytics_api import skill_analytics_router
 from skill_observability import (
     SkillReconcileSummary,
@@ -85,6 +76,17 @@ from project_observability import (
     observability_router,
 )
 from observability_analytics_api import observability_analytics_router
+from mcp_management import management_mcp_router
+from persistence import ApplicationDatabase
+from task import (
+    AgentScopeTaskExecutor,
+    AgentScopeTaskPlanner,
+    PostgresTaskStore,
+    RedisTaskStore,
+    TaskService,
+    TaskStore,
+    task_router,
+)
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
 playwright_browsers_path = os.getenv(
@@ -124,6 +126,7 @@ storage = RedisStorage(
 skill_observation_sink: SkillObservationSink = NullSkillObservationSink()
 skill_observation_store: PostgresSkillObservationStore | None = None
 project_observability_store: PostgresProjectObservabilityStore | None = None
+application_database: ApplicationDatabase | None = None
 project_observability = ProjectObservability()
 
 # Product-owned office skills are seeded into every new workspace. They do
@@ -621,8 +624,8 @@ app.include_router(sales_hub_router)
 app.include_router(plan_billing_router)
 app.include_router(upgrade_router)
 app.include_router(task_router)
-app.include_router(management_mcp_router)
 app.include_router(observability_router)
+app.include_router(management_mcp_router)
 app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal
@@ -634,16 +637,47 @@ _base_lifespan = app.router.lifespan_context
 @asynccontextmanager
 async def _application_lifespan(app_instance):
     global skill_observation_sink, skill_observation_store
-    global project_observability_store
+    global project_observability_store, application_database
 
     # Configure the application-owned observability layer before the
     # AgentScope lifespan creates the ChatService and its runtime agents.
     # The integration uses only public extension points.
     project_observability.configure()
 
+    task_store_backend = os.getenv(
+        "LXSCOPE_TASK_STORE_BACKEND",
+        "redis",
+    ).strip().lower()
+    application_database_url = os.getenv(
+        "LXSCOPE_DATABASE_URL",
+        "",
+    ).strip()
+    local_application_database: ApplicationDatabase | None = None
+    if application_database_url:
+        local_application_database = ApplicationDatabase(application_database_url)
+        try:
+            await local_application_database.initialize()
+            application_database = local_application_database
+            logger.info(
+                "lxscope.persistence.database_ready backend=postgres "
+                "schema=longxin_app",
+            )
+        except Exception:
+            logger.exception("lxscope.persistence.database_unavailable")
+            await local_application_database.close()
+            local_application_database = None
+            application_database = None
+            if task_store_backend == "postgres":
+                raise
+    elif task_store_backend == "postgres":
+        raise RuntimeError(
+            "LXSCOPE_TASK_STORE_BACKEND=postgres requires LXSCOPE_DATABASE_URL.",
+        )
+
     project_url = (
         os.getenv("PROJECT_OBSERVABILITY_DATABASE_URL", "").strip()
         or os.getenv("SKILL_OBSERVABILITY_DATABASE_URL", "").strip()
+        or application_database_url
     )
     local_project_store: PostgresProjectObservabilityStore | None = None
     if project_url:
@@ -669,7 +703,10 @@ async def _application_lifespan(app_instance):
     # The database is deliberately opt-in.  A failed optional observability
     # backend falls back to stdout diagnostics and must not prevent the
     # business service from starting.
-    configured_url = os.getenv("SKILL_OBSERVABILITY_DATABASE_URL", "").strip()
+    configured_url = (
+        os.getenv("SKILL_OBSERVABILITY_DATABASE_URL", "").strip()
+        or application_database_url
+    )
     local_store: PostgresSkillObservationStore | None = None
     local_sink: SkillObservationSink = NullSkillObservationSink()
     if configured_url:
@@ -697,11 +734,29 @@ async def _application_lifespan(app_instance):
         async with _base_lifespan(app_instance):
             await app_instance.state.admin_service.ensure_default_builtin_publications()
             await _ensure_siliconflow_credential(auth.admin_user_ids)
-            # Share AgentScope's managed Redis connection, but keep Task data
-            # in its own lxscope:task namespace rather than extending
-            # StorageBase. The Task executor remains the h-branch adapter,
-            # which preserves MCP refresh/lifecycle handling.
-            app_instance.state.task_store = RedisTaskStore(storage.get_client())
+            if (
+                task_store_backend == "postgres"
+                and local_application_database is not None
+            ):
+                app_instance.state.task_store = PostgresTaskStore(
+                    local_application_database.engine,
+                    tenant_code=os.getenv("LXSCOPE_TENANT_CODE", "default"),
+                    tenant_name=os.getenv(
+                        "LXSCOPE_TENANT_NAME",
+                        "Default Tenant",
+                    ),
+                    tenant_id=os.getenv("LXSCOPE_TENANT_ID") or None,
+                )
+                await app_instance.state.task_store.initialize()
+                logger.info(
+                    "lxscope.persistence.task_store_ready backend=postgres",
+                )
+            else:
+                # Keep AgentScope Core on its managed Redis Storage and use a
+                # separate namespace for the application Task store.
+                app_instance.state.task_store = RedisTaskStore(
+                    storage.get_client(),
+                )
             app_instance.state.task_service = TaskService(
                 app_instance.state.task_store,
                 agentscope_executor=AgentScopeTaskExecutor(
@@ -741,6 +796,9 @@ async def _application_lifespan(app_instance):
         project_observability_store = None
         if local_store is not None:
             await local_store.close()
+        if local_application_database is not None:
+            await local_application_database.close()
+        application_database = None
         project_observability.shutdown()
         skill_observation_store = None
         skill_observation_sink = NullSkillObservationSink()

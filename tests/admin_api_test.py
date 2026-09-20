@@ -15,6 +15,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import httpx
 
+from agentscope.app.storage import MCPRecord
+from agentscope.mcp import MCPClient, StdioMCPConfig
+
 SERVICE_DIR = Path(__file__).parents[1] / "examples" / "agent_service"
 sys.path.insert(0, str(SERVICE_DIR))
 
@@ -325,6 +328,24 @@ class AdminApiTest(IsolatedAsyncioTestCase):
         member_headers = {"Authorization": f"Bearer {member_login['access_token']}"}
         response = self.client.get("/admin/overview", headers=member_headers)
         self.assertEqual(response.status_code, 403)
+
+    def test_mcp_publication_copy_rebuilds_runtime_client(self) -> None:
+        async def runtime_stream():
+            yield 1
+
+        client = MCPClient(
+            name="browser-use",
+            is_stateful=True,
+            mcp_config=StdioMCPConfig(command="npx"),
+        )
+        client._client = runtime_stream()
+        source = MCPRecord(user_id="admin-id", client=client)
+
+        copied = AdminService._copy_mcp_record(source, "member-id")
+
+        self.assertEqual(copied.user_id, "member-id")
+        self.assertEqual(copied.client.name, source.client.name)
+        self.assertIsNot(copied.client, source.client)
 
     def test_reset_password_expires_and_audit_is_queryable(self) -> None:
         login = self._login("admin", "admin-password")

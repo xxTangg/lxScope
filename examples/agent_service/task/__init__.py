@@ -46,6 +46,7 @@ from ._models import (
 )
 from ._planner import PreviewTaskPlanner, TaskPlanner
 from ._knowledge import TaskKnowledgeGateway
+from ._postgres_store import PostgresTaskStore
 from ._router import task_router
 from ._service import TaskService
 from ._redis_store import RedisTaskStore
@@ -89,6 +90,7 @@ __all__ = [
     "TaskStore",
     "TaskStoreProtocol",
     "RedisTaskStore",
+    "PostgresTaskStore",
     "TaskPlanner",
     "ToolStepConfig",
     "PreviewTaskPlanner",

@@ -206,6 +206,7 @@ class WakeupDispatcher:
                 agent_id=agent_id,
                 kind=kind,
                 raw_input=payload.get("input"),
+                skill_names=payload.get("skill_names"),
             )
 
     async def _dispatch_one(
@@ -215,6 +216,7 @@ class WakeupDispatcher:
         agent_id: str,
         kind: str,
         raw_input: dict | None,
+        skill_names: list[str] | None,
     ) -> None:
         """Dispatch a single trigger entry by its ``kind``.
 
@@ -230,6 +232,8 @@ class WakeupDispatcher:
             raw_input (`dict | None`):
                 Serialised input event for ``resume`` triggers, else
                 ``None``.
+            skill_names (`list[str] | None`):
+                Skill names to expose when the queued run is assembled.
         """
         is_resume = kind == MessageBusKeys.WAKEUP_KIND_RESUME
         is_message = kind == MessageBusKeys.WAKEUP_KIND_MESSAGE
@@ -289,6 +293,7 @@ class WakeupDispatcher:
                 agent_id,
                 kind,
                 input_msg,
+                skill_names,
             )
             return
 
@@ -335,6 +340,7 @@ class WakeupDispatcher:
                     session_id=session_id,
                     agent_id=agent_id,
                     input_msg=input_msg,
+                    skill_names=skill_names,
                 ),
                 session_id=session_id,
                 name=f"{kind}-run:{session_id}",
@@ -350,6 +356,7 @@ class WakeupDispatcher:
                 agent_id,
                 kind,
                 input_msg,
+                skill_names,
             )
 
     def _schedule_retry(
@@ -363,6 +370,7 @@ class WakeupDispatcher:
         | UserInterruptEvent
         | Msg
         | None,
+        skill_names: list[str] | None,
     ) -> None:
         """Re-enqueue an input-carrying (``resume``/``message``) trigger
         after a short backoff.
@@ -383,6 +391,8 @@ class WakeupDispatcher:
                 The trigger kind to re-enqueue (``resume`` / ``message``).
             input_msg:
                 The parsed input to redeliver.
+            skill_names (`list[str] | None`):
+                Skill names to expose when the retried run is assembled.
         """
 
         async def _retry() -> None:
@@ -395,6 +405,7 @@ class WakeupDispatcher:
                     agent_id=agent_id,
                     kind=kind,  # type: ignore[arg-type]  # resume | message
                     inputs=input_msg,
+                    skill_names=skill_names,
                 )
             except asyncio.CancelledError:
                 pass

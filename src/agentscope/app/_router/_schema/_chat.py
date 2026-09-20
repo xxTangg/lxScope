@@ -28,6 +28,14 @@ class ChatRequest(BaseModel):
         description="The input message(s), or agent event, or None.",
     )
 
+    skill_names: list[str] | None = Field(
+        default=None,
+        description=(
+            "Skill names available to this chat turn. ``None`` keeps all "
+            "workspace skills available; an empty list disables them."
+        ),
+    )
+
 
 class ChatTriggerResponse(BaseModel):
     """Response body for the fire-and-forget chat trigger.

@@ -468,6 +468,8 @@ export interface ChatRequest {
 	agent_id: string;
 	session_id: string;
 	input: Msg | Msg[] | UserConfirmResultEvent | ExternalExecutionResultEvent | null;
+	/** Skill names exposed while assembling this chat turn. */
+	skill_names?: string[];
 }
 
 export interface ListChatAttachmentContentTypesResponse {

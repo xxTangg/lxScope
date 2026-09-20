@@ -1,9 +1,24 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lxscope}
+      POSTGRES_USER: ${POSTGRES_USER:-lxscope}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     command:
@@ -39,12 +54,23 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     ports:
       - "${AGENTSCOPE_API_PORT:-8001}:8000"
     environment:
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # lxScope application-owned persistence. AgentScope Core continues to
+      # use RedisStorage; only application Task data uses PostgreSQL here.
+      LXSCOPE_DATABASE_URL: ${LXSCOPE_DATABASE_URL:-postgresql+asyncpg://lxscope:change-me@postgres:5432/lxscope}
+      # Keep existing Redis task data visible until it is explicitly migrated
+      # by setting LXSCOPE_TASK_STORE_BACKEND=postgres.
+      LXSCOPE_TASK_STORE_BACKEND: ${LXSCOPE_TASK_STORE_BACKEND:-redis}
+      LXSCOPE_TENANT_CODE: ${LXSCOPE_TENANT_CODE:-default}
+      LXSCOPE_TENANT_NAME: ${LXSCOPE_TENANT_NAME:-Default Tenant}
+      LXSCOPE_TENANT_ID: ${LXSCOPE_TENANT_ID:-}
       # Project-level observability. Metrics are exposed at
       # /observability/metrics for authenticated administrators.
       LXSCOPE_OBSERVABILITY_ENABLED: ${LXSCOPE_OBSERVABILITY_ENABLED:-true}
@@ -141,6 +167,7 @@ services:
       start_period: 10s
 
 volumes:
+  postgres-data:
   redis-data:
   agentscope-workspaces:
   agentscope-blobs:

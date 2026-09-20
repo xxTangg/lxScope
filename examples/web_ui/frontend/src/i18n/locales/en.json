@@ -707,7 +707,10 @@
 			"pickFolder": "Choose folder",
 			"pickAnother": "Choose another",
 			"fileCount": "{{count}} files",
-			"selected": "Selected"
+			"selected": "Selected",
+			"selectedCount": "{{selected}} of {{total}} skills selected for this chat",
+			"selectAll": "Select all",
+			"clearAll": "Clear"
 		},
 		"knowledge": {
 			"title": "Knowledge Bases",
