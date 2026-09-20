@@ -334,21 +334,29 @@ function Metric({
   );
 }
 
-function Overview({ onNavigate }: { onNavigate: (view: View) => void }) {
+function Overview({
+  onNavigate,
+  refreshToken,
+}: {
+  onNavigate: (view: View) => void;
+  refreshToken: number;
+}) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState('');
   const load = useCallback(
-    () =>
-      api<Dashboard>('/api/v1/dashboard')
+    () => {
+      setError('');
+      return api<Dashboard>('/api/v1/dashboard')
         .then(setData)
-        .catch((reason) => setError(reason instanceof Error ? reason.message : '读取失败')),
+        .catch((reason) => setError(reason instanceof Error ? reason.message : '读取失败'));
+    },
     [],
   );
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, refreshToken]);
   if (error)
     return (
       <Panel title="经营总览">
@@ -548,7 +556,7 @@ function Overview({ onNavigate }: { onNavigate: (view: View) => void }) {
   );
 }
 
-function Customers() {
+function Customers({ refreshToken }: { refreshToken: number }) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selected, setSelected] = useState<Customer | null>(null);
   const [name, setName] = useState('');
@@ -580,10 +588,19 @@ function Customers() {
   const [usage, setUsage] = useState<
     Array<{ poolTokens: number; totalRecharged: number; appVersion: string; reportedAt: number }>
   >([]);
-  const load = () =>
-    api<Customer[]>('/api/v1/customers')
-      .then(setCustomers)
+  const load = useCallback(() => {
+    setError('');
+    return api<Customer[]>('/api/v1/customers')
+      .then((nextCustomers) => {
+        setCustomers(nextCustomers);
+        setSelected((current) => {
+          if (!current) return current;
+          const refreshed = nextCustomers.find((customer) => customer.id === current.id);
+          return refreshed ? { ...refreshed, apiToken: current.apiToken } : current;
+        });
+      })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '读取失败'));
+  }, []);
   const loadDetail = useCallback(async (customerId: string) => {
     try {
       const [nextOrders, nextUsage] = await Promise.all([
@@ -596,15 +613,20 @@ function Customers() {
       setError(reason instanceof Error ? reason.message : '客户详情读取失败');
     }
   }, []);
+  const selectedId = selected?.id;
+  const refresh = useCallback(() => {
+    return Promise.all([load(), selectedId ? loadDetail(selectedId) : Promise.resolve()]).then(
+      () => undefined,
+    );
+  }, [load, loadDetail, selectedId]);
   useEffect(() => {
-    void load();
-  }, []);
+    void refresh();
+  }, [refresh, refreshToken]);
   function selectCustomer(customer: Customer) {
     setSelected(customer);
     setToken('');
     setTokenKind('api');
     setResetResult('');
-    void loadDetail(customer.id);
   }
   async function create() {
     try {
@@ -745,7 +767,7 @@ function Customers() {
         title="客户系统"
         subtitle="每一行是一套已交付的龙信 AI 助手系统；点开客户可管理充值码、订单和上报流水。最近来源 IP 用于核对客户实际出口地址。"
       >
-        <button className="ghost-button" onClick={load}>
+        <button className="ghost-button" onClick={refresh}>
           <RefreshCw size={15} />
           刷新
         </button>
@@ -1191,7 +1213,7 @@ function Customers() {
   );
 }
 
-function Requests() {
+function Requests({ refreshToken }: { refreshToken: number }) {
   const [orders, setOrders] = useState<
     Array<{
       id: string;
@@ -1205,15 +1227,17 @@ function Requests() {
   >([]);
   const [error, setError] = useState('');
   const load = useCallback(
-    () =>
-      api<typeof orders>('/api/v1/recharge-requests?status=pending')
+    () => {
+      setError('');
+      return api<typeof orders>('/api/v1/recharge-requests?status=pending')
         .then(setOrders)
-        .catch((reason) => setError(reason instanceof Error ? reason.message : '读取失败')),
+        .catch((reason) => setError(reason instanceof Error ? reason.message : '读取失败'));
+    },
     [],
   );
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshToken]);
   async function process(
     id: string,
     action: 'approve' | 'reject',
@@ -1308,7 +1332,7 @@ function Requests() {
   );
 }
 
-function Reconciliation() {
+function Reconciliation({ refreshToken }: { refreshToken: number }) {
   const [rows, setRows] = useState<
     Array<{
       name: string;
@@ -1317,11 +1341,14 @@ function Reconciliation() {
       consumedTokens: number | null;
     }>
   >([]);
-  useEffect(() => {
-    api<typeof rows>('/api/v1/reconciliation')
+  const load = useCallback(() => {
+    return api<typeof rows>('/api/v1/reconciliation')
       .then(setRows)
       .catch(() => undefined);
   }, []);
+  useEffect(() => {
+    void load();
+  }, [load, refreshToken]);
   return (
     <div className="page-content">
       <PageHeading
@@ -1358,15 +1385,18 @@ function Reconciliation() {
     </div>
   );
 }
-function Alerts() {
+function Alerts({ refreshToken }: { refreshToken: number }) {
   const [rows, setRows] = useState<
     Array<{ name: string; poolTokens: number; daysLeft: number | null }>
   >([]);
-  useEffect(() => {
-    api<typeof rows>('/api/v1/alerts')
+  const load = useCallback(() => {
+    return api<typeof rows>('/api/v1/alerts')
       .then(setRows)
       .catch(() => undefined);
   }, []);
+  useEffect(() => {
+    void load();
+  }, [load, refreshToken]);
   return (
     <div className="page-content">
       <PageHeading
@@ -1404,7 +1434,7 @@ function Alerts() {
   );
 }
 
-function Upgrades() {
+function Upgrades({ refreshToken }: { refreshToken: number }) {
   const [releases, setReleases] = useState<{ app: ReleaseMeta; core: ReleaseMeta }>({
     app: null,
     core: null,
@@ -1430,7 +1460,7 @@ function Upgrades() {
   );
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshToken]);
   async function uploadRelease(type: ReleaseType) {
     const file = files[type];
     if (!file || !versions[type]) return setMessage('请选择升级包并填写版本号');
@@ -1604,17 +1634,20 @@ function Upgrades() {
   );
 }
 
-function PublicKey() {
+function PublicKey({ refreshToken }: { refreshToken: number }) {
   const [key, setKey] = useState('');
   const [fingerprint, setFingerprint] = useState('');
-  useEffect(() => {
-    api<{ publicKeyPem: string; publicKeyFingerprint?: string }>('/api/v1/public-key')
+  const load = useCallback(() => {
+    return api<{ publicKeyPem: string; publicKeyFingerprint?: string }>('/api/v1/public-key')
       .then((result) => {
         setKey(result.publicKeyPem);
         setFingerprint(result.publicKeyFingerprint ?? '');
       })
       .catch(() => undefined);
   }, []);
+  useEffect(() => {
+    void load();
+  }, [load, refreshToken]);
   return (
     <div className="page-content">
       <PageHeading
@@ -1636,7 +1669,7 @@ function PublicKey() {
   );
 }
 
-function Settings() {
+function Settings({ refreshToken }: { refreshToken: number }) {
   const [rate, setRate] = useState('41841');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -1644,11 +1677,14 @@ function Settings() {
   const [audit, setAudit] = useState<
     Array<{ at: number; actor: string; method: string; path: string }>
   >([]);
-  useEffect(() => {
-    api<{ tokenExchangeRate: number }>('/api/v1/settings')
+  const load = useCallback(() => {
+    return api<{ tokenExchangeRate: number }>('/api/v1/settings')
       .then((result) => setRate(String(result.tokenExchangeRate)))
       .catch(() => undefined);
   }, []);
+  useEffect(() => {
+    void load();
+  }, [load, refreshToken]);
   async function saveRate() {
     try {
       await api('/api/v1/settings', {
@@ -1890,6 +1926,7 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
 export default function App() {
   const [staff, setStaff] = useState<Staff | null>(null);
   const [view, setView] = useState<View>('overview');
+  const [refreshToken, setRefreshToken] = useState(0);
   const [checking, setChecking] = useState(true);
   useEffect(() => {
     api<{ authenticated: boolean; staff: Staff | null }>('/api/v1/auth/me')
@@ -1952,18 +1989,30 @@ export default function App() {
           <span className="breadcrumb">
             运营工作台 <ChevronRight size={14} /> {current.label}
           </span>
-          <span className="secure-badge">
-            <ShieldCheck size={14} /> 安全连接
-          </span>
+          <div className="topbar-actions">
+            <button
+              className="ghost-button topbar-refresh"
+              type="button"
+              title="刷新当前页面数据"
+              aria-label="刷新当前页面数据"
+              onClick={() => setRefreshToken((value) => value + 1)}
+            >
+              <RefreshCw size={15} />
+              刷新数据
+            </button>
+            <span className="secure-badge">
+              <ShieldCheck size={14} /> 安全连接
+            </span>
+          </div>
         </div>
-        {view === 'overview' && <Overview onNavigate={setView} />}
-        {view === 'customers' && <Customers />}
-        {view === 'requests' && <Requests />}
-        {view === 'reconciliation' && <Reconciliation />}
-        {view === 'alerts' && <Alerts />}
-        {view === 'upgrades' && <Upgrades />}
-        {view === 'publickey' && <PublicKey />}
-        {view === 'settings' && <Settings />}
+        {view === 'overview' && <Overview onNavigate={setView} refreshToken={refreshToken} />}
+        {view === 'customers' && <Customers refreshToken={refreshToken} />}
+        {view === 'requests' && <Requests refreshToken={refreshToken} />}
+        {view === 'reconciliation' && <Reconciliation refreshToken={refreshToken} />}
+        {view === 'alerts' && <Alerts refreshToken={refreshToken} />}
+        {view === 'upgrades' && <Upgrades refreshToken={refreshToken} />}
+        {view === 'publickey' && <PublicKey refreshToken={refreshToken} />}
+        {view === 'settings' && <Settings refreshToken={refreshToken} />}
       </main>
     </div>
   );

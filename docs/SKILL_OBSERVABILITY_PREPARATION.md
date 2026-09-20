@@ -1,5 +1,7 @@
 # Skill 模块可观测性编写前置准备与设计边界
 
+> 本文是 Skill 作为单个业务能力的专项观测设计，不是 lxScope 项目级可观测性的总定义。项目级范围、数据关联和接入边界见 [PROJECT_OBSERVABILITY.md](./PROJECT_OBSERVABILITY.md)。
+
 > 状态：前置设计文档
 >
 > 目的：在 Skill 功能验证通过后，为可观测性编码明确观测范围、已有组件、接入位置、解耦边界和验收标准。

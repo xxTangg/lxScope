@@ -46,13 +46,24 @@ export function MetricCard({
 	label,
 	value,
 	Icon,
+	onClick,
 }: {
 	label: string;
 	value: string | number;
 	Icon: LucideIcon;
+	onClick?: () => void;
 }) {
+	const interactive = Boolean(onClick);
 	return (
-		<Card>
+		<Card
+			className={interactive ? 'cursor-pointer transition-colors hover:border-primary/50 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50' : undefined}
+			role={interactive ? 'button' : undefined}
+			tabIndex={interactive ? 0 : undefined}
+			onClick={onClick}
+			onKeyDown={(event) => {
+				if (interactive && (event.key === 'Enter' || event.key === ' ')) onClick?.();
+			}}
+		>
 			<CardContent className="flex items-center justify-between">
 				<div>
 					<div className="text-xs text-muted-foreground">{label}</div>

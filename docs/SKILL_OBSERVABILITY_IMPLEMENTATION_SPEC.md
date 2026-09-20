@@ -1,8 +1,10 @@
 # Skill 模块可观测性正式编码规格
 
+> 本文只描述 Skill 专项事件和历史分析。Skill、MCP、RAG、模型和 Tool 的统一项目级观测由 [PROJECT_OBSERVABILITY.md](./PROJECT_OBSERVABILITY.md) 定义。
+
 > 状态：基于当前代码的增量实施规格
 >
-> 当前基线：应用层调用约定、同步摘要日志、Skill 调用诊断和真实会话输入测试已经进入代码；相关专项测试已在工作区依赖环境通过，完整项目测试、请求/Trace 关联、OpenTelemetry Metrics 和管理审计仍需继续补齐。
+> 当前基线：用户 Token 使用聚合、应用层调用约定、同步摘要日志、Skill 调用诊断、可选 PostgreSQL 事件表、管理员查询 API 和可观测性分析页已经进入代码；相关专项测试和前端生产构建已通过，真实 PostgreSQL 联调、请求/Trace 关联、OpenTelemetry Metrics 和管理审计仍需继续补齐。
 >
 > 原则：复用 AgentScope 现有 Skill viewer、Middleware、Workspace、日志和 OpenTelemetry 能力；改动集中在 `examples/agent_service` 产品业务层，不修改 AgentScope 核心 Skill loader。
 
@@ -12,7 +14,10 @@
 
 1. 应用层明确要求模型在使用 Skill 前先调用内置 `Skill` 工具；
 2. 测试确认 `Skill` 工具和 Skill 指令已进入会话；
-3. 记录 Skill 同步成功或失败、加载数量和耗时，便于诊断。
+3. 记录 Skill 同步成功或失败、加载数量和耗时，便于诊断；
+4. 在现有用户 Token 使用记录基础上，增加管理员按周期查看每个用户 Token 消费的分析能力。
+
+本次增量同时增加一张应用层 PostgreSQL 观测事件表，为后续“用户设置 → 分析 → Skill”页面提供历史数据来源；MCP 暂不写入这张表。
 
 在此基础上，保留后续接入 request ID、Trace、Metrics 和管理审计的扩展边界。
 
@@ -31,6 +36,12 @@
 | 同步入口接入 | `_sync_current_user_skills` 返回同步摘要，并在开始和结束时输出诊断 | `examples/agent_service/main.py` | 已完成 |
 | Session 关联 | `longterm_memory_factory` 将 `session_id` 传给同步摘要 | `examples/agent_service/main.py` | 已完成 |
 | Middleware 注入 | 会话创建时加入 `SkillUsageMiddleware` | `examples/agent_service/main.py` | 已完成 |
+| PostgreSQL 观测事件表 | 以追加事件保存 `reconcile`、`exposed`、`invoked`、`completed` 的状态、数量和耗时 | `examples/agent_service/skill_observability_store.py`、`migrations/0001_skill_observability_events.sql` | 已完成 |
+| 事件写入解耦 | 通过 `SkillObservationSink` 注入，未配置 PostgreSQL 时使用 no-op，写入失败不阻塞 Skill 主流程 | `examples/agent_service/skill_observability_store.py` | 已完成 |
+| 用户 Token 使用聚合 | 复用现有 Redis 消息中的模型 usage，按用户、周期统计输入、输出、总 Token、消息数和会话数 | `examples/agent_service/auth.py`、`token_usage_analytics.py` | 已完成 |
+| Skill 分析查询 API | 管理员按时间范围查询事件聚合、使用链路、同步耗时和高频 Skill | `examples/agent_service/skill_analytics_api.py`、`skill_observability_store.py` | 已完成 |
+| 可观测性前端可视化 | 账号菜单增加“分析”入口，优先展示每个用户 Token 消费，同时展示 Skill 趋势、生命周期、成功/失败和最近同步快照 | `examples/web_ui/frontend/src/pages/admin/analytics.tsx` | 已完成 |
+| 用户 Skill 失败诊断 | 按同步、暴露、调用、执行阶段聚合失败，并展示受控错误码和最近失败用户/会话 | `skill_observability_store.py`、`skill_analytics_api.py`、`analytics.tsx` | 已完成 |
 | 基础及会话测试 | 覆盖应用层提示、真实 Toolkit/Agent 输入、真实 Skill viewer、普通工具透传和 partial 结果 | `tests/skill_observability_test.py` | 已通过 6 项专项测试 |
 
 ### 2.2 部分完成
@@ -40,7 +51,7 @@
 | 确认 `Skill` 工具进入会话 | 测试已通过真实 `Agent._prepare_model_input()` 断言工具 schema 中存在 `Skill` | 已通过 |
 | 确认 Skill 指令进入会话 | 测试已通过真实 Agent 输入断言 Skill 名称、描述和应用层约定进入系统提示词 | 已通过 |
 | 自动化测试执行 | 已安装工作区运行时依赖并执行专项测试 | 相关测试通过，完整项目测试尚未执行 |
-| 结构化日志 | 当前日志字段固定、可检索 | 尚未统一为 Observer 接口，也没有 request ID 和 trace ID |
+| 结构化日志与事件落库 | 日志字段固定，并可通过 `SkillObservationSink` 写入 PostgreSQL；管理员查询 API 已提供 | 尚未统一 request ID 和 trace ID；尚未完成真实 PostgreSQL 联调 |
 
 ### 2.3 尚未实现
 
@@ -49,9 +60,8 @@
 - 当前服务入口启用 `TracingMiddleware`；
 - request ID 到 Skill 同步链路的上下文传播；
 - Skill 发布、撤销和删除的专属管理审计；
-- 可视化大盘。
 
-这些内容属于后续增强，不影响当前三项要求的主体实现，但在称为“生产级完整可观测性”之前必须补齐。
+这些内容属于后续增强，不影响当前三项要求和当前管理员分析页的主体实现，但在称为“生产级完整可观测性”之前必须补齐。
 
 ## 3. 使用口径
 
@@ -140,6 +150,21 @@ skill.completed
 - 同步主流程抛出异常：`failed`；
 - 账号不可用或没有有效应用上下文：`skipped`。
 
+### 5.3 PostgreSQL 事件表
+
+表名：`skill_observability_events`
+
+当前列分为四类：
+
+| 类别 | 字段 | 用途 |
+| --- | --- | --- |
+| 事件定位 | `event_id`、`event_name`、`result`、`occurred_at` | 区分事件和时间范围查询 |
+| 链路关联 | `user_id`、`agent_id`、`session_id`、`skill_name` | 按用户、会话、Skill 聚合 |
+| 同步指标 | `before_count`、`visible_count`、`after_count`、`removed_count`、`restored_count`、`installed_count`、`failure_count`、`duration_seconds` | 支撑同步状态、数量和耗时分析 |
+| 会话暴露指标 | `skill_count`、`listed_skill_count`、`skill_tool_available` | 判断 Skill 是否进入实际会话 |
+
+表中明确不设置 Prompt、Skill Markdown、模型输出和凭据字段。当前写入入口由 `SkillObservationSink` 注入，分析页通过独立查询 API 读取聚合结果，不直接依赖 Middleware。
+
 ## 6. 解耦边界
 
 ### 6.1 当前结构
@@ -154,9 +179,22 @@ examples/agent_service/
    ├─ 同步摘要模型
    ├─ 诊断日志
    └─ SkillUsageMiddleware
+├─ skill_observability_store.py
+│  ├─ SkillObservationEvent
+│  ├─ SkillObservationSink
+│  ├─ PostgreSQL repository
+│  └─ no-op / best-effort sink
+└─ migrations/0001_skill_observability_events.sql
+   └─ skill_observability_events 表和查询索引
+└─ skill_analytics_api.py
+   └─ 管理员查询 API：/admin/analytics/skills
+
+examples/web_ui/frontend/src/pages/admin/
+└─ analytics.tsx
+   └─ Skill 趋势、生命周期、排行和同步快照
 ```
 
-当前结构已经把应用层 Skill 观测从 `main.py` 主流程中分离出来。首版不需要立即拆成多个文件；当接入 Context、Metrics 和 Trace 后，再根据职责拆分。
+当前结构已经把应用层 Skill 观测从 `main.py` 主流程中分离出来。PostgreSQL 只是可选落点，不替换现有 Redis Storage；后续查询 API 和前端可以只依赖事件表，不依赖 AgentScope 核心对象。
 
 ### 6.2 必须保持的边界
 
@@ -165,6 +203,8 @@ examples/agent_service/
 - Middleware 必须原样返回系统提示词之外的原业务结果；
 - `on_acting` 必须原样 yield 所有下游 ToolChunk 和 ToolResponse；
 - 日志失败不能阻塞 Skill 主流程；
+- PostgreSQL 未配置时仍保持 stdout 日志行为；
+- PostgreSQL 写入失败时降级为诊断日志，不阻塞 Skill 主流程；
 - 不记录 Skill Markdown 正文、Prompt 或模型完整输出；
 - 不把用户、Session、Skill 名称作为未来 Metrics 标签。
 
@@ -224,7 +264,7 @@ examples/agent_service/
 
 ### 7.3 测试执行环境
 
-当前已使用工作区 Python 3.12 环境安装项目核心依赖、`service` 可选依赖、`pytest` 和 `PyYAML`。`skill_observability_test.py` 与 `toolkit_skill_test.py` 共 16 项测试已通过；这不等同于完整项目测试全部通过，完整测试仍应在标准开发环境中执行。
+当前已使用工作区 Python 3.12 环境安装项目核心依赖、`service`、`observability-postgres`、`pytest` 和 `PyYAML`。Skill 可观测性、事件 Sink 和 Toolkit/Skill 专项测试共 18 项已通过；这不等同于完整项目测试全部通过，完整测试仍应在标准开发环境中执行。
 
 ## 8. 后续可观测性增强
 
@@ -249,8 +289,10 @@ examples/agent_service/
 ### 8.3 P2：管理审计和展示
 
 - Skill 发布、撤销和删除接入现有 `_audit`；
-- 根据现有观测平台增加查询或仪表盘；
-- 不单独开发新的监控数据库；
+- 已基于 `skill_observability_events` 增加 Skill 分析查询 API；
+- 已在账号菜单增加 Skill 分析入口和图表；页面本身仍受管理员路由保护；
+- 分析页已增加失败阶段、失败原因、失败率和最近失败记录；
+- MCP 仅预留后续独立事件类型，不在本阶段写入；
 - 不在普通 `/health` 中扫描全部 Workspace。
 
 ## 9. 后续 Metrics 规划

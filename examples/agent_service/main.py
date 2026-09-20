@@ -14,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry.trace import StatusCode
 
 from agentscope.app import create_app, SubAgentTemplate
 from agentscope.app.channel import (
@@ -30,7 +31,11 @@ from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import OpenAICredential
 from agentscope._logging import logger
 from agentscope.mcp import MCPClient, StdioMCPConfig
-from agentscope.middleware import AgenticMemoryMiddleware, MiddlewareBase
+from agentscope.middleware import (
+    AgenticMemoryMiddleware,
+    MiddlewareBase,
+    TracingMiddleware,
+)
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.rag import (
     ApproxTokenChunker,
@@ -49,12 +54,28 @@ from auth import AuthUser, load_auth_from_env
 from longxin_admin.credential_policy import AdminManagedCredentialPolicy
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
 from longxin_admin.upgrade import UpgradeService, upgrade_router
+from skill_analytics_api import skill_analytics_router
 from skill_observability import (
     SkillReconcileSummary,
     SkillUsageMiddleware,
     log_skill_reconcile_completed,
     log_skill_reconcile_started,
+    persist_skill_observation,
+    _reconcile_event,
 )
+from skill_observability_store import (
+    BestEffortSkillObservationSink,
+    NullSkillObservationSink,
+    PostgresSkillObservationStore,
+    SkillObservationSink,
+)
+from project_observability_store import PostgresProjectObservabilityStore
+from project_observability import (
+    ProjectObservability,
+    new_request_id,
+    observability_router,
+)
+from observability_analytics_api import observability_analytics_router
 from task import AgentScopeTaskExecutor, TaskService, TaskStore, task_router
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
@@ -88,6 +109,14 @@ storage = RedisStorage(
     port=int(os.getenv("REDIS_PORT", "6379")),
     password=os.getenv("REDIS_PASSWORD") or None,
 )
+
+# Skill analysis persistence is an application-level optional sink.  The
+# default keeps the existing stdout-only diagnostics when PostgreSQL is not
+# configured, so Redis-only deployments remain backwards compatible.
+skill_observation_sink: SkillObservationSink = NullSkillObservationSink()
+skill_observation_store: PostgresSkillObservationStore | None = None
+project_observability_store: PostgresProjectObservabilityStore | None = None
+project_observability = ProjectObservability()
 
 # Product-owned office skills are seeded into every new workspace. They do
 # not become user-installed library records, so every account can use them
@@ -168,8 +197,17 @@ async def _sync_current_user_skills(
         user_id=user_id,
         agent_id=agent_id,
         session_id=session_id,
+        observation_sink=skill_observation_sink,
     )
     log_skill_reconcile_started(summary)
+    await persist_skill_observation(
+        summary,
+        _reconcile_event(
+            summary,
+            event_name="skill.reconcile.started",
+            result="started",
+        ),
+    )
     try:
         account = await auth._account_by_id(user_id)
         application = globals().get("app")
@@ -287,6 +325,14 @@ async def _sync_current_user_skills(
     finally:
         summary.finish()
         log_skill_reconcile_completed(summary)
+        await persist_skill_observation(
+            summary,
+            _reconcile_event(
+                summary,
+                event_name="skill.reconcile.completed",
+                result=summary.result,
+            ),
+        )
 
 
 async def longterm_memory_factory(
@@ -303,13 +349,24 @@ async def longterm_memory_factory(
         workspace,
         session_id=session_id,
     )
-    return [
+    middlewares: list[MiddlewareBase] = [
         AgenticMemoryMiddleware(
             workdir=workspace.workdir,
             backend=workspace.get_backend(),
         ),
-        SkillUsageMiddleware(summary),
     ]
+    if project_observability.settings.enabled:
+        # Application-owned measurements are attached through AgentScope's
+        # public middleware extension point. No framework internals are
+        # changed for this service-level integration.
+        middlewares.extend(
+            [
+                project_observability.agent_middleware(),
+                TracingMiddleware(),
+            ],
+        )
+    middlewares.append(SkillUsageMiddleware(summary))
+    return middlewares
 
 
 app = create_app(
@@ -421,15 +478,72 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
 # Task is an application-level module.  It owns its repository and execution
 # port so the generic AgentScope application factory remains unchanged.
 app.state.task_store = TaskStore()
+app.state.observability = project_observability
+
+
+async def _request_user_id(request: Request) -> str:
+    """Resolve the request identity once for project-level event context."""
+    authorization = request.headers.get("authorization")
+    auth = getattr(request.app.state, "auth", None)
+    if not authorization or auth is None:
+        return ""
+    try:
+        return await auth.get_current_user_id(authorization)
+    except Exception:
+        # Authentication dependencies remain the source of truth.  The
+        # observability path must not turn an unauthenticated request into a
+        # service failure.
+        return ""
 
 
 @app.middleware("http")
-async def request_id_middleware(request: Request, call_next):
-    """Generate one correlation ID and echo it on every application response."""
-    request_id = request.headers.get("X-Request-ID", "").strip() or f"req-{uuid4().hex}"
+async def observability_middleware(request: Request, call_next):
+    """Correlate and measure every HTTP request at the app boundary."""
+    request_id = new_request_id(request)
     request.state.request_id = request_id
-    response = await call_next(request)
+    started_at = asyncio.get_running_loop().time()
+    response = None
+    status_code = 500
+    user_id = await _request_user_id(request)
+    try:
+        with project_observability.http_span(request) as span:
+            request.state.trace_id = project_observability.trace_id(span)
+            with project_observability.context(
+                request_id,
+                request.state.trace_id,
+                user_id,
+            ):
+                try:
+                    response = await call_next(request)
+                    status_code = response.status_code
+                    span.set_attribute("http.response.status_code", status_code)
+                    route = getattr(request.scope.get("route"), "path", None)
+                    if route:
+                        span.set_attribute("http.route", route)
+                    if status_code >= 500:
+                        span.set_status(StatusCode.ERROR)
+                except BaseException as exc:
+                    span.record_exception(exc)
+                    span.set_status(StatusCode.ERROR)
+                    raise
+    finally:
+        duration_seconds = asyncio.get_running_loop().time() - started_at
+        route = getattr(request.scope.get("route"), "path", None) or "__unmatched__"
+        project_observability.record_http(
+            method=request.method,
+            route=route,
+            status_code=status_code,
+            duration_seconds=duration_seconds,
+            request_id=request_id,
+            trace_id=getattr(request.state, "trace_id", ""),
+            user_id=user_id,
+        )
+
+    assert response is not None
     response.headers["X-Request-ID"] = request_id
+    trace_id = getattr(request.state, "trace_id", "")
+    if trace_id:
+        response.headers["X-Trace-ID"] = trace_id
     return response
 
 
@@ -492,11 +606,14 @@ app.state.upgrade_service = UpgradeService(storage, auth)
 app.state.sales_hub_authorizer = app.state.admin_service.authorize_hub
 app.include_router(auth.router)
 app.include_router(admin_router)
+app.include_router(skill_analytics_router)
+app.include_router(observability_analytics_router)
 app.include_router(resource_router)
 app.include_router(sales_hub_router)
 app.include_router(plan_billing_router)
 app.include_router(upgrade_router)
 app.include_router(task_router)
+app.include_router(observability_router)
 app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal
@@ -507,25 +624,94 @@ _base_lifespan = app.router.lifespan_context
 
 @asynccontextmanager
 async def _application_lifespan(app_instance):
-    async with _base_lifespan(app_instance):
-        await app_instance.state.admin_service.ensure_default_builtin_publications()
-        await _ensure_siliconflow_credential(auth.admin_user_ids)
-        app_instance.state.task_service = TaskService(
-            app_instance.state.task_store,
-            agentscope_executor=AgentScopeTaskExecutor(
-                chat_service=app_instance.state.chat_service,
-                storage=storage,
-            ),
-        )
-        recharge_sync_task = asyncio.create_task(
-            _sales_hub_recharge_sync_loop(app_instance.state.admin_service),
-        )
+    global skill_observation_sink, skill_observation_store
+    global project_observability_store
+
+    # Configure the application-owned observability layer before the
+    # AgentScope lifespan creates the ChatService and its runtime agents.
+    # The integration uses only public extension points.
+    project_observability.configure()
+
+    project_url = (
+        os.getenv("PROJECT_OBSERVABILITY_DATABASE_URL", "").strip()
+        or os.getenv("SKILL_OBSERVABILITY_DATABASE_URL", "").strip()
+    )
+    local_project_store: PostgresProjectObservabilityStore | None = None
+    if project_url:
+        local_project_store = PostgresProjectObservabilityStore(project_url)
         try:
-            yield
-        finally:
-            await app_instance.state.task_service.shutdown()
-            recharge_sync_task.cancel()
-            await asyncio.gather(recharge_sync_task, return_exceptions=True)
+            await local_project_store.initialize()
+            project_observability.set_persistent_store(local_project_store)
+            restored_count = await project_observability.restore_persisted_events()
+            logger.info(
+                "project.observability.store_ready backend=postgres "
+                "table=project_observability_events restored=%s",
+                restored_count,
+            )
+        except Exception:
+            logger.exception(
+                "project.observability.store_unavailable backend=postgres",
+            )
+            await local_project_store.close()
+            local_project_store = None
+
+    project_observability_store = local_project_store
+
+    # The database is deliberately opt-in.  A failed optional observability
+    # backend falls back to stdout diagnostics and must not prevent the
+    # business service from starting.
+    configured_url = os.getenv("SKILL_OBSERVABILITY_DATABASE_URL", "").strip()
+    local_store: PostgresSkillObservationStore | None = None
+    local_sink: SkillObservationSink = NullSkillObservationSink()
+    if configured_url:
+        local_store = PostgresSkillObservationStore(configured_url)
+        try:
+            await local_store.initialize()
+            local_sink = BestEffortSkillObservationSink(local_store)
+            logger.info(
+                "skill.observation.store_ready backend=postgres "
+                "table=skill_observability_events",
+            )
+        except Exception:
+            logger.exception(
+                "skill.observation.store_unavailable backend=postgres",
+            )
+            await local_store.close()
+            local_store = None
+
+    skill_observation_store = local_store
+    skill_observation_sink = local_sink
+    app_instance.state.skill_observation_store = local_store
+    app_instance.state.skill_observation_sink = local_sink
+
+    try:
+        async with _base_lifespan(app_instance):
+            await app_instance.state.admin_service.ensure_default_builtin_publications()
+            await _ensure_siliconflow_credential(auth.admin_user_ids)
+            app_instance.state.task_service = TaskService(
+                app_instance.state.task_store,
+                agentscope_executor=AgentScopeTaskExecutor(
+                    chat_service=app_instance.state.chat_service,
+                    storage=storage,
+                ),
+            )
+            recharge_sync_task = asyncio.create_task(
+                _sales_hub_recharge_sync_loop(app_instance.state.admin_service),
+            )
+            try:
+                yield
+            finally:
+                await app_instance.state.task_service.shutdown()
+                recharge_sync_task.cancel()
+                await asyncio.gather(recharge_sync_task, return_exceptions=True)
+    finally:
+        await project_observability.close_persistent_store()
+        project_observability_store = None
+        if local_store is not None:
+            await local_store.close()
+        project_observability.shutdown()
+        skill_observation_store = None
+        skill_observation_sink = NullSkillObservationSink()
 
 
 app.router.lifespan_context = _application_lifespan

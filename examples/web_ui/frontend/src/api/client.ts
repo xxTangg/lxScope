@@ -5,6 +5,30 @@ const getDefaultBaseUrl = () => {
 	return `${window.location.protocol}//${window.location.hostname}:${port}`;
 };
 
+const localHosts = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/**
+ * A setup URL can outlive a Docker development port change. Keep explicit
+ * remote URLs untouched, but allow read-only requests to recover from an old
+ * localhost URL by trying the current Vite-configured backend address.
+ */
+const getLocalReadFallback = (configuredBaseUrl: string, method: string, hasExplicitBaseUrl: boolean) => {
+	if (hasExplicitBaseUrl || !['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) return null;
+
+	const currentBaseUrl = getDefaultBaseUrl();
+	if (configuredBaseUrl === currentBaseUrl) return null;
+
+	try {
+		const configured = new URL(configuredBaseUrl);
+		const current = new URL(currentBaseUrl);
+		if (!localHosts.has(configured.hostname.toLowerCase()) || !localHosts.has(current.hostname.toLowerCase())) return null;
+		if (configured.origin === current.origin) return null;
+		return currentBaseUrl;
+	} catch {
+		return null;
+	}
+};
+
 const createRequestToken = () => {
 	if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
 	return `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -88,7 +112,9 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 		timeoutMs,
 		headers: extraHeaders,
 	} = options;
-	const url = new URL(path, baseUrl ?? getBaseUrl());
+	const configuredBaseUrl = baseUrl ?? getBaseUrl();
+	const localReadFallback = getLocalReadFallback(configuredBaseUrl, method, baseUrl !== undefined);
+	const url = new URL(path, configuredBaseUrl);
 	if (params) {
 		Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
 	}
@@ -109,31 +135,48 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 	);
 	if (isMutation && !hasIdempotencyKey) headers['Idempotency-Key'] = createRequestToken();
 
-	let res: Response;
+	const requestInit: RequestInit = {
+		method,
+		headers,
+		body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
+		signal: combined,
+	};
+	let res: Response | undefined;
 	try {
-		res = await fetch(url.toString(), {
-			method,
-			headers,
-			body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
-			signal: combined,
-		});
+		res = await fetch(url.toString(), requestInit);
 	} catch (e) {
-		// An abort is the caller's own doing — pass it through untouched.
-		if (e instanceof DOMException && e.name === 'AbortError') throw e;
-		// A server that accepts the connection then stalls would otherwise
-		// leave the caller waiting forever.
-		const timedOut = e instanceof DOMException && e.name === 'TimeoutError';
-		// Otherwise fetch only rejects when the request never reached the
-		// server: wrong address, DNS failure, refused connection, blocked
-		// preflight. Status 0 distinguishes that from any HTTP-level failure.
-		const error = timedOut
-			? new ApiError(TIMEOUT_STATUS, 'The server took too long to respond.')
-			: new ApiError(
-					0,
-					'Cannot reach the server. Check the server address and your network.',
-				);
-		if (!silent) toast.error(error.detail);
-		throw error;
+		if (localReadFallback) {
+			try {
+				const fallbackUrl = new URL(path, localReadFallback);
+				if (params) {
+					Object.entries(params).forEach(([k, v]) => fallbackUrl.searchParams.set(k, v));
+				}
+				res = await fetch(fallbackUrl.toString(), requestInit);
+				if (localStorage.getItem('server_url') === configuredBaseUrl) {
+					localStorage.setItem('server_url', localReadFallback);
+				}
+			} catch {
+				// Keep the original network error below when the fallback also fails.
+			}
+		}
+		if (!res) {
+			// An abort is the caller's own doing — pass it through untouched.
+			if (e instanceof DOMException && e.name === 'AbortError') throw e;
+			// A server that accepts the connection then stalls would otherwise
+			// leave the caller waiting forever.
+			const timedOut = e instanceof DOMException && e.name === 'TimeoutError';
+			// Otherwise fetch only rejects when the request never reached the
+			// server: wrong address, DNS failure, refused connection, blocked
+			// preflight. Status 0 distinguishes that from any HTTP-level failure.
+			const error = timedOut
+				? new ApiError(TIMEOUT_STATUS, 'The server took too long to respond.')
+				: new ApiError(
+						0,
+						'Cannot reach the server. Check the server address and your network.',
+					);
+			if (!silent) toast.error(error.detail);
+			throw error;
+		}
 	}
 
 	if (!res.ok) {
