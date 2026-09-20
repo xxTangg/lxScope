@@ -1,6 +1,6 @@
 import { Check, CircleAlert, Loader2, Play, RotateCcw, Square } from 'lucide-react';
 
-import type { NodeRunRecord, RunStatus, TaskRunRecord } from '@/api';
+import type { NodeRunRecord, RunStatus, TaskNode, TaskRunRecord, TaskStepType } from '@/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
@@ -34,6 +34,47 @@ function nodeIcon(node: NodeRunRecord) {
 	if (node.status === 'succeeded') return <Check className="size-4 text-emerald-600" />;
 	if (node.status === 'failed') return <CircleAlert className="size-4 text-red-600" />;
 	return <Play className="size-3.5 text-muted-foreground" />;
+}
+
+function stepTypeLabel(type: TaskStepType): string {
+	if (type === 'tool') return 'ToolStep';
+	if (type === 'python') return 'PythonStep';
+	return 'AgentStep';
+}
+
+function nodeStatusLabel(status: NodeRunRecord['status']): string {
+	if (status === 'running') return '运行中';
+	if (status === 'succeeded') return '成功';
+	if (status === 'failed') return '失败';
+	if (status === 'canceled') return '已取消';
+	return '等待中';
+}
+
+function nodeDetails(node: TaskNode | undefined, run: TaskRunRecord) {
+	if (!node) return null;
+	if (node.config.type === 'tool') {
+		return (
+			<div className="space-y-1 text-xs leading-5 text-muted-foreground">
+				<div>工具：{node.config.tool_name || '未配置'}</div>
+				<div className="break-all">参数：{JSON.stringify(node.config.arguments)}</div>
+			</div>
+		);
+	}
+	if (node.config.type === 'python') {
+		return (
+			<div className="space-y-1 text-xs leading-5 text-muted-foreground">
+				<div>超时：{node.config.timeout_seconds} 秒</div>
+				<div>代码：{node.config.code || '未配置'}</div>
+			</div>
+		);
+	}
+	return (
+		<div className="space-y-1 text-xs leading-5 text-muted-foreground">
+			<div>Agent：{node.config.agent_id || run.context.agent_id || '当前会话 Agent'}</div>
+			<div>Session：{node.config.session_id || run.context.session_id || '当前会话'}</div>
+			<div className="whitespace-pre-wrap">Prompt：{node.config.prompt}</div>
+		</div>
+	);
 }
 
 function isTerminal(status: RunStatus): boolean {
@@ -81,31 +122,62 @@ export function TaskRunPanel({ run, onCancel, onRetry }: TaskRunPanelProps) {
 				<div className="space-y-3">
 					{run.node_runs.map((node) => (
 						<div key={node.node_id} className="rounded-2xl border border-border bg-card p-4">
+							{(() => {
+								const definition = run.nodes.find((item) => item.id === node.node_id);
+								return (
+									<>
 							<div className="flex items-center gap-2">
 								<div className="flex size-6 items-center justify-center rounded-full bg-muted">
 									{nodeIcon(node)}
 								</div>
 								<div className="min-w-0 flex-1 truncate text-sm font-medium">{node.name}</div>
-								<span className="text-xs text-muted-foreground">{node.status}</span>
+								<span className="text-xs text-muted-foreground">{nodeStatusLabel(node.status)}</span>
 							</div>
-							{node.output && (
-								<div className="mt-3 whitespace-pre-wrap rounded-xl bg-muted/60 p-3 text-sm leading-6">
-									{node.output}
+							<div className="mt-3 rounded-xl bg-muted/40 p-3">
+								<div className="mb-2 text-xs font-medium text-foreground">
+									步骤类型：{stepTypeLabel(definition?.type ?? node.type)}
 								</div>
+								{nodeDetails(definition, run)}
+							</div>
+							{(node.display_summary || node.output) && (
+								<div className="mt-3 whitespace-pre-wrap rounded-xl bg-muted/60 p-3 text-sm leading-6">
+									{node.display_summary || node.output}
+								</div>
+							)}
+							{node.output && node.output !== (node.display_summary || node.output) && (
+								<details className="mt-2 rounded-xl border border-border/70 bg-background/70 p-3 text-sm">
+									<summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+										查看完整输出
+									</summary>
+									<div className="mt-2 whitespace-pre-wrap leading-6">{node.output}</div>
+								</details>
 							)}
 							{node.error && (
 								<div className="mt-3 rounded-xl bg-red-50 p-3 text-sm leading-6 text-red-700">
 									{node.error}
 								</div>
 							)}
+									</>
+								);
+							})()}
 						</div>
 					))}
 				</div>
 
-				{run.final_output && (
+				{(run.final_summary || run.final_output) && (
 					<div className="mt-5 rounded-2xl border border-primary/15 bg-primary/[0.03] p-4">
 						<div className="mb-2 text-xs font-medium text-muted-foreground">最终结果</div>
-						<div className="whitespace-pre-wrap text-sm leading-6">{run.final_output}</div>
+						<div className="whitespace-pre-wrap text-sm leading-6">
+							{run.final_summary || run.final_output}
+						</div>
+						{run.final_output && run.final_output !== (run.final_summary || run.final_output) && (
+							<details className="mt-3 rounded-xl border border-primary/10 bg-background/70 p-3 text-sm">
+								<summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+									查看完整最终结果
+								</summary>
+								<div className="mt-2 whitespace-pre-wrap leading-6">{run.final_output}</div>
+							</details>
+						)}
 					</div>
 				)}
 			</div>

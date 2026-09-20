@@ -5,7 +5,7 @@ services:
     volumes:
       - .:/app
     environment:
-      UVICORN_RELOAD: "true"
+      UVICORN_RELOAD: "false"
 
   web-ui:
     image: agentscope-web-ui-dev:latest

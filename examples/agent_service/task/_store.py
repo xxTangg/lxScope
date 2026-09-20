@@ -3,6 +3,7 @@
 
 import asyncio
 from datetime import datetime, timezone
+from typing import Protocol
 
 from ._models import (
     NodeRunRecord,
@@ -163,3 +164,42 @@ class TaskStore:
 
         async with self._lock:
             return len(self._events.get(run_id, [])) + 1
+
+
+class TaskStoreProtocol(Protocol):
+    """Persistence boundary shared by in-memory and Redis repositories."""
+
+    async def list_tasks(self, user_id: str) -> list[TaskRecord]: ...
+
+    async def get_task(self, user_id: str, task_id: str) -> TaskRecord | None: ...
+
+    async def save_task(self, record: TaskRecord) -> TaskRecord: ...
+
+    async def delete_task(self, user_id: str, task_id: str) -> bool: ...
+
+    async def save_run(self, record: TaskRunRecord) -> TaskRunRecord: ...
+
+    async def get_run(self, user_id: str, run_id: str) -> TaskRunRecord | None: ...
+
+    async def list_runs(self, user_id: str, task_id: str) -> list[TaskRunRecord]: ...
+
+    async def update_run(
+        self,
+        user_id: str,
+        run_id: str,
+        **updates: object,
+    ) -> TaskRunRecord: ...
+
+    async def update_node_run(
+        self,
+        user_id: str,
+        run_id: str,
+        node_id: str,
+        **updates: object,
+    ) -> TaskRunRecord: ...
+
+    async def append_event(self, event: TaskEventRecord) -> TaskEventRecord: ...
+
+    async def list_events(self, user_id: str, run_id: str) -> list[TaskEventRecord]: ...
+
+    async def next_event_sequence(self, run_id: str) -> int: ...

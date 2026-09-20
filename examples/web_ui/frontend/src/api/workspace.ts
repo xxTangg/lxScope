@@ -157,6 +157,17 @@ export const workspaceApi = {
 				session_id: sessionId,
 			}),
 
+		/**
+		 * Re-probe an MCP already attached to this workspace using the
+		 * management-owned fresh lifecycle adapter.
+		 */
+		probe: (agentId: string, sessionId: string, name: string) =>
+			client.post<MCPClientStatus>(
+				'/management/mcp/probe',
+				undefined,
+				{ agent_id: agentId, session_id: sessionId, name },
+				{ silent: true },
+			),
 		add: (agentId: string, sessionId: string, mcp: MCPClient) =>
 			client.post<void>('/workspace/mcp', mcp, { agent_id: agentId, session_id: sessionId }),
 

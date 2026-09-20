@@ -48,7 +48,15 @@ from auth import AuthUser, load_auth_from_env
 from longxin_admin.credential_policy import AdminManagedCredentialPolicy
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
 from longxin_admin.upgrade import UpgradeService, upgrade_router
-from task import AgentScopeTaskExecutor, TaskService, TaskStore, task_router
+from mcp_management import management_mcp_router
+from task import (
+    AgentScopeTaskExecutor,
+    AgentScopeTaskPlanner,
+    RedisTaskStore,
+    TaskService,
+    TaskStore,
+    task_router,
+)
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
 playwright_browsers_path = os.getenv(
@@ -339,6 +347,7 @@ app.include_router(sales_hub_router)
 app.include_router(plan_billing_router)
 app.include_router(upgrade_router)
 app.include_router(task_router)
+app.include_router(management_mcp_router)
 app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal
@@ -352,11 +361,32 @@ async def _application_lifespan(app_instance):
     async with _base_lifespan(app_instance):
         await app_instance.state.admin_service.ensure_default_builtin_publications()
         await _ensure_siliconflow_credential(auth.admin_user_ids)
+        # Share AgentScope's managed Redis connection, but keep Task data in
+        # its own lxscope:task namespace rather than extending StorageBase.
+        app_instance.state.task_store = RedisTaskStore(storage.get_client())
         app_instance.state.task_service = TaskService(
             app_instance.state.task_store,
             agentscope_executor=AgentScopeTaskExecutor(
-                chat_service=app_instance.state.chat_service,
                 storage=storage,
+                resource_access_service=(
+                    app_instance.state.resource_access_service
+                ),
+                workspace_manager=app_instance.state.workspace_manager,
+                scheduler_manager=app_instance.state.scheduler_manager,
+                background_task_manager=(
+                    app_instance.state.background_task_manager
+                ),
+                message_bus=app_instance.state.message_bus,
+                extra_agent_tools=app_instance.state.extra_agent_tools,
+                sub_agent_templates=(
+                    app_instance.state.custom_subagent_templates
+                ),
+            ),
+            planner=AgentScopeTaskPlanner(
+                storage=storage,
+                resource_access_service=(
+                    app_instance.state.resource_access_service
+                ),
             ),
         )
         recharge_sync_task = asyncio.create_task(

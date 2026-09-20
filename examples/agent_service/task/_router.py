@@ -12,9 +12,12 @@ from agentscope.app.deps import get_current_user_id
 
 from ._models import (
     CreateTaskRequest,
+    GenerateTaskRequest,
+    TaskContext,
     TaskRecord,
     TaskRunRecord,
     TaskRunRequest,
+    TaskToolSchema,
     UpdateTaskRequest,
 )
 from ._service import TaskService
@@ -72,6 +75,59 @@ async def create_task(
     """Create a task definition without touching AgentScope internals."""
 
     return await task_service.create_task(user_id, body)
+
+
+@task_router.post(
+    "/{task_id}/generate",
+    response_model=TaskRecord,
+    summary="Generate task nodes from the goal",
+)
+async def generate_task(
+    task_id: str,
+    body: GenerateTaskRequest,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskRecord:
+    """Generate an editable linear workflow for a task draft."""
+
+    try:
+        task = await task_service.generate_task(
+            user_id,
+            task_id,
+            body.context,
+        )
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+    if task is None:
+        raise _not_found("Task", task_id)
+    return task
+
+
+@task_router.get(
+    "/tools",
+    response_model=list[TaskToolSchema],
+    summary="List tools available to a Task context",
+)
+async def list_task_tools(
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> list[TaskToolSchema]:
+    """Expose the selected AgentScope session's tool capabilities."""
+
+    return await task_service.list_tools(
+        user_id,
+        TaskContext(
+            agent_id=agent_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+        ),
+    )
 
 
 @task_router.get("/runs/{run_id}", response_model=TaskRunRecord, summary="Get a task run")
@@ -257,4 +313,3 @@ async def retry_run(
     if run is None:
         raise _not_found("Run", run_id)
     return run
-

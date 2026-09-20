@@ -20,14 +20,22 @@ export { publishedApi } from './published';
 export { taskApi } from './task';
 export type {
 	CreateTaskRequest,
+	AgentStepConfig,
+	GenerateTaskRequest,
 	NodeRunRecord,
 	NodeRunStatus,
+	PythonStepConfig,
 	RunStatus,
+	TaskStepConfig,
+	TaskStepType,
 	TaskContext,
 	TaskNode,
 	TaskRecord,
 	TaskRunRecord,
 	TaskRunRequest,
 	TaskStatus,
+	TaskGenerationStatus,
+	TaskToolSchema,
+	ToolStepConfig,
 	UpdateTaskRequest,
 } from './task';
