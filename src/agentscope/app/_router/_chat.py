@@ -390,6 +390,7 @@ async def chat(
             agent_id=run_agent_id,
             kind=MessageBusKeys.WAKEUP_KIND_RESUME,
             inputs=request.input,
+            skill_names=request.skill_names,
         )
         return ChatTriggerResponse(status="started", session_id=run_session_id)
 
@@ -404,6 +405,7 @@ async def chat(
                 session_id=request.session_id,
                 agent_id=request.agent_id,
                 input_msg=request.input,
+                skill_names=request.skill_names,
             ),
             session_id=request.session_id,
         )

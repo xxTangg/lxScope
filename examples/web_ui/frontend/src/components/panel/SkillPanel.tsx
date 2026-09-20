@@ -10,6 +10,7 @@ import { DeleteDialog } from '@/components/dialog/DeleteDialog.tsx';
 import { PanelEmpty } from '@/components/panel/PanelEmpty';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.tsx';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
 import {
 	Item,
@@ -31,6 +32,10 @@ interface SkillPanelProps {
 	readOnly?: boolean;
 	/** Whether the skill list is still loading. */
 	loading?: boolean;
+	/** Skill names exposed to the model for the current conversation. */
+	selectedSkillNames?: string[];
+	/** Update the skill scope used by the next chat turn. */
+	onSelectedSkillNamesChange?: (names: string[]) => void;
 	/**
 	 * Upload a picked folder as a skill.
 	 *
@@ -88,6 +93,8 @@ export function SkillPanel({
 	readOnly = true,
 	loading = false,
 	publishedSkills,
+	selectedSkillNames,
+	onSelectedSkillNamesChange,
 	onUpload,
 	onAddFromLibrary,
 	onRemove,
@@ -157,6 +164,23 @@ export function SkillPanel({
 					.includes(search.toLowerCase()),
 			)
 		: displayedSkills;
+	const availableSkillNames = displayedSkills.map((skill) => skill.name);
+	const selectedCount =
+		selectedSkillNames === undefined
+			? availableSkillNames.length
+			: availableSkillNames.filter((name) => selectedSkillNames.includes(name)).length;
+	const allSelected =
+		availableSkillNames.length > 0 && selectedCount === availableSkillNames.length;
+
+	const updateSkillSelection = (name: string, selected: boolean) => {
+		if (!onSelectedSkillNamesChange) return;
+		const next = new Set(selectedSkillNames ?? availableSkillNames);
+		if (selected) next.add(name);
+		else next.delete(name);
+		onSelectedSkillNamesChange(
+			availableSkillNames.filter((skillName) => next.has(skillName)),
+		);
+	};
 
 	const openSkillDetails = async (skill: DisplaySkill) => {
 		const requestId = ++detailRequestRef.current;
@@ -207,6 +231,36 @@ export function SkillPanel({
 					<Search />
 				</InputGroupAddon>
 			</InputGroup>
+			{onSelectedSkillNamesChange && (
+				<div className="flex items-center justify-between gap-2 px-1">
+					<span className="text-muted-foreground text-xs">
+						{t('panel.skill.selectedCount', {
+							selected: selectedCount,
+							total: availableSkillNames.length,
+						})}
+					</span>
+					<div className="flex items-center gap-1">
+						<Button
+							variant="ghost"
+							size="sm"
+							className="h-7 px-2 text-xs"
+							disabled={loading || allSelected}
+							onClick={() => onSelectedSkillNamesChange(availableSkillNames)}
+						>
+							{t('panel.skill.selectAll')}
+						</Button>
+						<Button
+							variant="ghost"
+							size="sm"
+							className="h-7 px-2 text-xs"
+							disabled={loading || selectedCount === 0}
+							onClick={() => onSelectedSkillNamesChange([])}
+						>
+							{t('panel.skill.clearAll')}
+						</Button>
+					</div>
+				</div>
+			)}
 
 			{loading ? (
 				<div className="flex flex-1 items-center justify-center">
@@ -240,6 +294,23 @@ export function SkillPanel({
 									}
 								}}
 							>
+								<div
+									className="flex shrink-0 items-start pt-1"
+									onClick={(event) => event.stopPropagation()}
+									onKeyDown={(event) => event.stopPropagation()}
+								>
+									<Checkbox
+										checked={
+											selectedSkillNames === undefined ||
+											selectedSkillNames.includes(skill.name)
+										}
+										aria-label={skill.display_name}
+										disabled={!onSelectedSkillNamesChange || loading}
+										onCheckedChange={(checked) =>
+											updateSkillSelection(skill.name, checked === true)
+										}
+									/>
+								</div>
 								<ItemMedia>
 									<Avatar className="rounded-md">
 										<AvatarImage

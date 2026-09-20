@@ -707,7 +707,10 @@
 			"pickFolder": "选择文件夹",
 			"pickAnother": "重新选择",
 			"fileCount": "{{count}} 个文件",
-			"selected": "已选择"
+			"selected": "已选择",
+			"selectedCount": "本次对话已选 {{selected}} / {{total}} 个技能",
+			"selectAll": "全选",
+			"clearAll": "清空"
 		},
 		"knowledge": {
 			"title": "知识库",

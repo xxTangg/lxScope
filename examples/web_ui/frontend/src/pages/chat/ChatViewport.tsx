@@ -89,6 +89,7 @@ const MAX_PANELS_PER_COLUMN = 2;
 /** localStorage key holding the dock layout across page navigations. */
 const PANEL_LAYOUT_KEY = 'chat_panel_layout';
 const OPEN_SKILL_PANEL_KEY = 'chat_open_skill_panel';
+const SKILL_SELECTION_KEY_PREFIX = 'chat_skill_selection:';
 
 // Typed as a full Record so adding a PanelKey without listing it here
 // is a compile error rather than a silently unrestorable panel.
@@ -217,6 +218,8 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	const [selectedKnowledgeConfig, setSelectedKnowledgeConfig] =
 		useState<SessionKnowledgeConfig | null>(null);
 	const [selectedPermissionMode, setSelectedPermissionMode] = useState<string>('default');
+	const [selectedSkillNames, setSelectedSkillNames] = useState<string[] | undefined>(undefined);
+	const skillSelectionSessionRef = useRef<string | null>(null);
 	const [credentialOpen, setCredentialOpen] = useState(false);
 	const [credentialRefetchTrigger, setCredentialRefetchTrigger] = useState(0);
 	const [tasksContext, setTasksContext] = useState<TaskContext | null>(null);
@@ -305,6 +308,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		onTeamUpdated: handleTeamUpdated,
 		onStateUpdated: handleStateUpdated,
 		onSessionUpdated: handleSessionUpdated,
+		skillNames: selectedSkillNames,
 	});
 	const {
 		mcps,
@@ -326,6 +330,45 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 			: mcps.filter((mcp) => publishedMcps.some((resource) => resource.name === mcp.name));
 	const skillsPanelLoading =
 		skillsLoading || publishedSkillsLoading;
+	const skillSelectionKey =
+		agentId && sessionId
+			? `${SKILL_SELECTION_KEY_PREFIX}${agentId}:${sessionId}`
+			: null;
+
+	// A skill choice belongs to one conversation. New sessions start with the
+	// complete user-visible catalog selected; revisiting a session restores the
+	// last choice without changing the workspace's installed skills.
+	useEffect(() => {
+		if (!skillSelectionKey) {
+			skillSelectionSessionRef.current = null;
+			setSelectedSkillNames(undefined);
+			return;
+		}
+		if (skillSelectionSessionRef.current === skillSelectionKey) return;
+		if (skillsPanelLoading) {
+			setSelectedSkillNames(undefined);
+			return;
+		}
+
+		const availableNames = publishedSkills.map((skill) => skill.name);
+		let nextSelection = availableNames;
+		try {
+			const stored = JSON.parse(localStorage.getItem(skillSelectionKey) ?? 'null');
+			if (Array.isArray(stored)) {
+				nextSelection = availableNames.filter((name) => stored.includes(name));
+			}
+		} catch {
+			// A corrupt local selection falls back to the safe default: all.
+		}
+		setSelectedSkillNames(nextSelection);
+		skillSelectionSessionRef.current = skillSelectionKey;
+	}, [skillSelectionKey, skillsPanelLoading, publishedSkills]);
+
+	useEffect(() => {
+		if (!skillSelectionKey || skillSelectionSessionRef.current !== skillSelectionKey) return;
+		if (selectedSkillNames === undefined) return;
+		localStorage.setItem(skillSelectionKey, JSON.stringify(selectedSkillNames));
+	}, [skillSelectionKey, selectedSkillNames]);
 	const { knowledgeBases, loading: knowledgeBasesLoading } = useKnowledgeBases();
 	const { schema: kbMiddlewareSchema } = useKnowledgeBaseMiddlewareSchema();
 
@@ -453,11 +496,13 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 				title: t('panel.skill.title'),
 				icon: <BookText className="size-4" />,
 				content: (
-					<SkillPanel
-						skills={skills}
-						publishedSkills={publishedSkills}
-						readOnly
-						loading={skillsPanelLoading}
+									<SkillPanel
+										skills={skills}
+										publishedSkills={publishedSkills}
+										selectedSkillNames={selectedSkillNames}
+										onSelectedSkillNamesChange={setSelectedSkillNames}
+										readOnly
+										loading={skillsPanelLoading}
 					/>
 				),
 			},
@@ -893,11 +938,11 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 										onChange={handleParametersChange}
 										selectedFallbackModel={selectedFallbackModel}
 										onFallbackChange={handleFallbackChange}
-										selectedTTSModel={selectedTTSModel}
-										onTTSChange={handleTTSChange}
-										disabled={configPending}
-									/>
-									<PermissionModeSelect
+												selectedTTSModel={selectedTTSModel}
+												onTTSChange={handleTTSChange}
+												disabled={configPending}
+											/>
+											<PermissionModeSelect
 										id="tour-permission-mode"
 										variant={'ghost'}
 										className="font-mono text-muted-foreground hover:text-foreground"

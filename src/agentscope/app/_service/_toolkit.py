@@ -52,6 +52,7 @@ async def get_toolkit(
     sub_agent_templates: dict[str, SubAgentTemplate] | None = None,
     team_role: Literal["leader", "worker"] | None = None,
     channel_tools: list[ToolBase] | None = None,
+    skill_names: list[str] | None = None,
 ) -> Toolkit:
     """Assemble the complete :class:`Toolkit` for one chat turn.
 
@@ -123,6 +124,9 @@ optional):
         channel_tools (`list[ToolBase] | None`, optional):
             Platform tools of the originating channel, resolved once
             by the caller. ``None`` / empty when channel-less.
+        skill_names (`list[str] | None`, optional):
+            When provided, restrict the skills exposed to this assembled
+            agent to these names. ``None`` keeps every workspace skill.
 
     Returns:
         `Toolkit`: Fully populated toolkit (tools + skills + MCPs).
@@ -237,11 +241,18 @@ time or interval"
     if channel_tools:
         tools += channel_tools
 
+    workspace_skills = await workspace.list_skills(
+        agent_id=agent_record.id,
+    )
+    if skill_names is not None:
+        selected = set(skill_names)
+        workspace_skills = [
+            skill for skill in workspace_skills if skill.name in selected
+        ]
+
     return Toolkit(
         tools=tools,
-        skills_or_loaders=await workspace.list_skills(
-            agent_id=agent_record.id,
-        ),
+        skills_or_loaders=workspace_skills,
         mcps=await workspace.list_mcps(
             agent_id=agent_record.id,
             session_id=session_record.id,

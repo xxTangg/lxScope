@@ -275,6 +275,7 @@ class ChatService:
         | ExternalExecutionResultEvent
         | UserInterruptEvent
         | None = None,
+        skill_names: list[str] | None = None,
     ) -> None:
         """Drive a chat run to completion.
 
@@ -314,9 +315,18 @@ class ChatService:
                 - ``UserInterruptEvent``: abort a parked reply — the
                   agent closes pending tool calls with interrupted
                   results and ends the reply (Case B, no reasoning).
+            skill_names (`list[str] | None`, optional):
+                Skill names to expose while assembling this chat turn.
+                ``None`` keeps all workspace skills available.
         """
         try:
-            await self._run_impl(user_id, session_id, agent_id, input_msg)
+            await self._run_impl(
+                user_id,
+                session_id,
+                agent_id,
+                input_msg,
+                skill_names=skill_names,
+            )
         except Exception as e:
             logger.exception(
                 "ChatService.run failed for user_id=%s session_id=%s "
@@ -777,6 +787,8 @@ class ChatService:
         | ExternalExecutionResultEvent
         | UserInterruptEvent
         | None,
+        *,
+        skill_names: list[str] | None = None,
     ) -> None:
         """The actual chat-run body; wrapped by :meth:`run` for error
         swallowing. Separated so the try/except doesn't bury the
@@ -1042,6 +1054,7 @@ class ChatService:
                     sub_agent_templates=self._sub_agent_templates,
                     team_role=team_ctx.role if team_ctx else None,
                     channel_tools=channel_tools,
+                    skill_names=skill_names,
                 )
 
                 # -------------------------------------------------------------
