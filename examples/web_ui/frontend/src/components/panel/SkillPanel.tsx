@@ -1,7 +1,8 @@
 import { FileX, PlusCircle, Search, SearchX, Trash } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import type { Skill } from '@/api';
+import { skillApi } from '@/api';
+import type { PublishedResource, Skill } from '@/api';
 import type { UploadOptions } from '@/api/workspace';
 import { AddSkillDialog } from '@/components/dialog/AddSkillDialog.tsx';
 import { ResourceDetailDrawer } from '@/components/drawer/ResourceDetailDrawer.tsx';
@@ -22,9 +23,11 @@ import { useSkills } from '@/hooks/useSkills.ts';
 import { useTranslation } from '@/i18n/useI18n.ts';
 
 interface SkillPanelProps {
-	/** The skills equipped in the workspace. */
+	/** The skills currently equipped in the workspace, used for detail bodies. */
 	skills: Skill[];
-	/** Regular users can use published skills but cannot change the list. */
+	/** The administrator-published catalog visible to the current user. */
+	publishedSkills?: PublishedResource[];
+	/** The chat-side panel is a read-only view; admin changes happen elsewhere. */
 	readOnly?: boolean;
 	/** Whether the skill list is still loading. */
 	loading?: boolean;
@@ -34,58 +37,162 @@ interface SkillPanelProps {
 	 * @param files - The folder's files, carrying `webkitRelativePath`.
 	 * @param options - Progress and abort hooks.
 	 */
-	onUpload: (files: File[], options?: UploadOptions) => Promise<void>;
+	onUpload?: (files: File[], options?: UploadOptions) => Promise<void>;
 	/**
 	 * Install skills the user already has.
 	 *
 	 * @param skillIds - The library record ids to add.
 	 */
-	onAddFromLibrary: (skillIds: string[]) => Promise<void>;
+	onAddFromLibrary?: (skillIds: string[]) => Promise<void>;
 	/**
 	 * Remove a skill by name.
 	 *
 	 * @param name - The skill name to remove.
 	 */
-	onRemove: (name: string) => Promise<void>;
+	onRemove?: (name: string) => Promise<void>;
 }
 
+type DisplaySkill = {
+	name: string;
+	display_name: string;
+	description: string;
+	markdown: string;
+	updated_at: number;
+	tags: string[];
+	author: string | null;
+	icon_url: string | null;
+	version: string | null;
+	hub_id: string | null;
+	url: string | null;
+	libraryId: string | null;
+};
+
 /**
- * Pure content body for the Skill dock panel: a search box, the list
- * of equipped skills, and an "Add Skill" action. Holds only local UI
- * state (search text, delete confirmation target); all data arrives
- * via props so it owns no data fetching.
+ * Pure content body for the Skill dock panel: a search box and the
+ * administrator-published list visible to the current user. In chat it is
+ * intentionally read-only; all data arrives via props so it owns no data
+ * fetching.
  *
  * Renders without its own header/border — the surrounding `Panel`
  * chrome (from `PanelDock`) provides those.
  *
  * @param skills - The skills to list.
  * @param loading - Whether the list is loading.
- * @param onUpload - Folder-upload callback.
- * @param onAddFromLibrary - Library-install callback.
- * @param onRemove - Remove-skill callback.
+ * @param onUpload - Optional folder-upload callback for editable contexts.
+ * @param onAddFromLibrary - Optional library-install callback.
+ * @param onRemove - Optional remove-skill callback.
  * @returns The skill panel body.
  */
 export function SkillPanel({
 	skills,
-	readOnly = false,
+	readOnly = true,
 	loading = false,
+	publishedSkills,
 	onUpload,
 	onAddFromLibrary,
 	onRemove,
 }: SkillPanelProps) {
 	const { t } = useTranslation();
 	const [search, setSearch] = useState('');
-	const [detailSkill, setDetailSkill] = useState<Skill | null>(null);
+	const [detailSkill, setDetailSkill] = useState<DisplaySkill | null>(null);
+	const [detailLoading, setDetailLoading] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 	const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-	// The workspace stores only the skill itself, so the icon and author
-	// are looked up in the library, matched on the shared name.
-	const { skills: library } = useSkills();
-	const byName = new Map(library.map((skill) => [skill.name, skill]));
+	const detailRequestRef = useRef(0);
+	const { skills: librarySkills, refetch: refetchLibrarySkills } = useSkills();
+	// The publication catalog is the source of truth for what this user may
+	// see. The workspace is only used to enrich an item with its markdown
+	// body when that skill has already been equipped for the current session.
+	const workspaceByName = new Map(skills.map((skill) => [skill.name, skill]));
+	const libraryByName = new Map(librarySkills.map((skill) => [skill.name, skill]));
+	const publishedSignature = publishedSkills
+		?.map((resource) => `${resource.id}:${resource.name}`)
+		.join('|');
+
+	useEffect(() => {
+		if (publishedSignature) void refetchLibrarySkills();
+	}, [publishedSignature, refetchLibrarySkills]);
+
+	const displayedSkills: DisplaySkill[] = publishedSkills
+		? publishedSkills.map((resource) => {
+				const workspaceSkill = workspaceByName.get(resource.name);
+				const librarySkill = libraryByName.get(resource.name);
+				return {
+					name: resource.name,
+					display_name:
+						resource.display_name || librarySkill?.display_name || resource.name,
+					description:
+						resource.description || librarySkill?.description || workspaceSkill?.description || '',
+					markdown: workspaceSkill?.markdown || '',
+					updated_at: workspaceSkill?.updated_at || 0,
+					tags: resource.tags.length > 0 ? resource.tags : (librarySkill?.tags ?? []),
+					author: resource.author || librarySkill?.author || null,
+					icon_url: resource.icon_url || librarySkill?.icon_url || null,
+					version: resource.version || librarySkill?.version || null,
+					hub_id: librarySkill?.hub_id || null,
+					url: librarySkill?.url || null,
+					libraryId: librarySkill?.id || null,
+				};
+			})
+		: skills.map((skill) => ({
+				name: skill.name,
+				display_name: skill.name,
+				description: skill.description,
+				markdown: skill.markdown,
+				updated_at: skill.updated_at,
+				tags: [],
+				author: null,
+				icon_url: null,
+				version: null,
+				hub_id: null,
+				url: null,
+				libraryId: null,
+			}));
 
 	const filtered = search
-		? skills.filter((s) => s.name.toLowerCase().includes(search.toLowerCase()))
-		: skills;
+		? displayedSkills.filter((skill) =>
+				[skill.name, skill.display_name, skill.description]
+					.join(' ')
+					.toLowerCase()
+					.includes(search.toLowerCase()),
+			)
+		: displayedSkills;
+
+	const openSkillDetails = async (skill: DisplaySkill) => {
+		const requestId = ++detailRequestRef.current;
+		setDetailSkill(skill);
+		if (skill.markdown || !skill.libraryId) {
+			setDetailLoading(false);
+			return;
+		}
+
+		setDetailLoading(true);
+		try {
+			const record = await skillApi.get(skill.libraryId);
+			if (requestId !== detailRequestRef.current) return;
+			setDetailSkill((current) =>
+				current && current.name === skill.name
+					? {
+							...current,
+							display_name: record.display_name || current.display_name,
+							description: record.description || current.description,
+							tags: record.tags,
+							author: record.author || current.author,
+							icon_url: record.icon_url || current.icon_url,
+							version: record.version || current.version,
+							hub_id: record.hub_id || current.hub_id,
+							url: record.url || current.url,
+							markdown: record.markdown,
+						}
+					: current,
+			);
+		} catch {
+			// Keep the catalog summary visible if the library detail request
+			// fails; the drawer will show the same fallback as before.
+		} finally {
+			if (requestId === detailRequestRef.current) setDetailLoading(false);
+		}
+	};
 
 	return (
 		<div className="flex flex-col flex-1 min-h-0 gap-y-2">
@@ -118,7 +225,6 @@ export function SkillPanel({
 			) : (
 				<div className="flex flex-col flex-1 min-h-0 overflow-y-auto scroll-fade gap-y-2">
 					{filtered.map((skill) => {
-						const installed = byName.get(skill.name);
 						return (
 							<Item
 								key={skill.name}
@@ -126,18 +232,18 @@ export function SkillPanel({
 								className="group/skill cursor-pointer transition-colors hover:bg-accent/50"
 								role="button"
 								tabIndex={0}
-								onClick={() => setDetailSkill(skill)}
+								onClick={() => void openSkillDetails(skill)}
 								onKeyDown={(event) => {
 									if (event.key === 'Enter' || event.key === ' ') {
 										event.preventDefault();
-										setDetailSkill(skill);
+										void openSkillDetails(skill);
 									}
 								}}
 							>
 								<ItemMedia>
 									<Avatar className="rounded-md">
 										<AvatarImage
-											src={installed?.icon_url ?? undefined}
+											src={skill.icon_url ?? undefined}
 											alt={skill.name}
 											loading="lazy"
 										/>
@@ -148,10 +254,10 @@ export function SkillPanel({
 								</ItemMedia>
 								<ItemContent>
 									<ItemTitle>
-										<span className="truncate font-medium">{skill.name}</span>
-										{installed?.author && (
+										<span className="truncate font-medium">{skill.display_name}</span>
+										{skill.author && (
 											<span className="text-xs text-muted-foreground">
-												@{installed.author}
+												@{skill.author}
 											</span>
 										)}
 									</ItemTitle>
@@ -163,7 +269,7 @@ export function SkillPanel({
 									{/* Only on hover: deleting is rare, and a
 									    button on every row competes with the
 									    content for attention. */}
-									{!readOnly && (
+									{!readOnly && onRemove && (
 										<Button
 											variant="secondary"
 											size="icon-sm"
@@ -185,7 +291,7 @@ export function SkillPanel({
 				</div>
 			)}
 
-			{!readOnly && (
+			{!readOnly && onUpload && onAddFromLibrary && (
 				<AddSkillDialog
 					present={new Set(skills.map((s) => s.name))}
 					onUpload={onUpload}
@@ -208,7 +314,7 @@ export function SkillPanel({
 					})}
 					description={t('dialog-mcp-delete.skillDescription')}
 					onConfirm={async () => {
-						if (deleteTarget) await onRemove(deleteTarget);
+						if (deleteTarget && onRemove) await onRemove(deleteTarget);
 					}}
 				/>
 			)}
@@ -218,15 +324,26 @@ export function SkillPanel({
 					detailSkill
 						? {
 								name: detailSkill.name,
+								display_name: detailSkill.display_name,
 								description: detailSkill.description,
-								tags: [],
+								tags: detailSkill.tags,
 								updated_at: detailSkill.updated_at,
+								version: detailSkill.version,
+								author: detailSkill.author,
+								icon_url: detailSkill.icon_url,
+								hub_id: detailSkill.hub_id,
+								url: detailSkill.url,
 								markdown: detailSkill.markdown,
-							}
+								}
 						: null
 				}
+				loading={detailLoading}
 				onOpenChange={(open) => {
-					if (!open) setDetailSkill(null);
+					if (!open) {
+						detailRequestRef.current += 1;
+						setDetailSkill(null);
+						setDetailLoading(false);
+					}
 				}}
 			/>
 		</div>

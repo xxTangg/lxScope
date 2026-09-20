@@ -314,19 +314,18 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		removeMcp,
 		skills,
 		skillsLoading,
-		uploadSkill,
-		addSkillsFromLibrary,
-		removeSkill,
 	} = useWorkspace(agentId, sessionId);
 	const { resources: publishedMcps } = usePublishedResources('mcp');
+	const {
+		resources: publishedSkills,
+		loading: publishedSkillsLoading,
+	} = usePublishedResources('skill');
 	const visibleMcps =
 		user?.role === 'admin'
 			? mcps
 			: mcps.filter((mcp) => publishedMcps.some((resource) => resource.name === mcp.name));
-	// The workspace endpoint is the source of truth for what the model can
-	// currently see. Publication scope controls catalog distribution; it is
-	// not a per-turn skill selector.
-	const visibleSkills = skills;
+	const skillsPanelLoading =
+		skillsLoading || publishedSkillsLoading;
 	const { knowledgeBases, loading: knowledgeBasesLoading } = useKnowledgeBases();
 	const { schema: kbMiddlewareSchema } = useKnowledgeBaseMiddlewareSchema();
 
@@ -455,12 +454,10 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 				icon: <BookText className="size-4" />,
 				content: (
 					<SkillPanel
-						skills={visibleSkills}
-						readOnly={user?.role !== 'admin'}
-						loading={skillsLoading}
-						onUpload={uploadSkill}
-						onAddFromLibrary={addSkillsFromLibrary}
-						onRemove={removeSkill}
+						skills={skills}
+						publishedSkills={publishedSkills}
+						readOnly
+						loading={skillsPanelLoading}
 					/>
 				),
 			},
@@ -529,11 +526,9 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 			addMcps,
 			addMcpsFromLibrary,
 			removeMcp,
-			visibleSkills,
-			skillsLoading,
-			uploadSkill,
-			addSkillsFromLibrary,
-			removeSkill,
+			skills,
+			publishedSkills,
+			skillsPanelLoading,
 			user?.role,
 			permissionContext,
 			knowledgeBases,

@@ -45,6 +45,19 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # Project-level observability. Metrics are exposed at
+      # /observability/metrics for authenticated administrators.
+      LXSCOPE_OBSERVABILITY_ENABLED: ${LXSCOPE_OBSERVABILITY_ENABLED:-true}
+      LXSCOPE_OBSERVABILITY_MAX_EVENTS: ${LXSCOPE_OBSERVABILITY_MAX_EVENTS:-50000}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-lxscope-agent-service}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      # Optional PostgreSQL sink for the existing Skill-specific event
+      # history. It is not required by the project-level observability layer.
+      SKILL_OBSERVABILITY_DATABASE_URL: ${SKILL_OBSERVABILITY_DATABASE_URL:-}
+      # Project-level runtime events use their own table in the same
+      # PostgreSQL database by default. The application falls back to the
+      # Skill URL for existing deployments that have not split the settings.
+      PROJECT_OBSERVABILITY_DATABASE_URL: ${PROJECT_OBSERVABILITY_DATABASE_URL:-}
       AGENTSCOPE_PORT: 8000
       UVICORN_RELOAD: "false"
       AGENTSCOPE_USERNAME: ${AGENTSCOPE_USERNAME:-admin}

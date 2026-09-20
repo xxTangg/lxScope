@@ -25,7 +25,4 @@ export default defineConfig({
 			'next/navigation': path.resolve(__dirname, './src/lib/next-navigation-shim.ts'),
 		},
 	},
-	optimizeDeps: {
-		include: ['mime-types'],
-	},
 });

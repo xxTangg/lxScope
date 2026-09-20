@@ -1,4 +1,5 @@
 import {
+	BarChart3,
 	BookText,
 	BotMessageSquare,
 	Cable,
@@ -49,6 +50,7 @@ export function AppSidebar() {
 	const { t } = useTranslation();
 	const { startOnborda } = useOnborda();
 	const { user, logout } = useAuth();
+	const isObservability = location.pathname.startsWith('/admin/observability');
 
 	const handleStartTour = () => {
 		if (!location.pathname.startsWith('/chat')) {
@@ -110,7 +112,7 @@ export function AppSidebar() {
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('admin.title'), hidden: false }}
-										isActive={location.pathname.startsWith('/admin')}
+										isActive={location.pathname.startsWith('/admin') && !isObservability}
 										onClick={() => navigate('/admin/overview')}
 										className="justify-center"
 									>
@@ -233,6 +235,12 @@ export function AppSidebar() {
 									<UserRound />
 									{t('auth.accountAndUsage')}
 								</DropdownMenuItem>
+								{user?.role === 'admin' && (
+									<DropdownMenuItem onSelect={() => navigate('/admin/observability')}>
+										<BarChart3 />
+										{t('admin.analyticsTitle')}
+									</DropdownMenuItem>
+								)}
 								<DropdownMenuItem onSelect={() => navigate('/setup')}>
 									<Settings />
 									{t('common.settings')}

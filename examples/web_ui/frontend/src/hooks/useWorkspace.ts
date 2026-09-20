@@ -160,6 +160,7 @@ export function useWorkspace(agentId: string | null, sessionId: string | null) {
 		removeMcp,
 		skills,
 		skillsLoading,
+		refetchSkills,
 		uploadSkill,
 		addSkillsFromLibrary,
 		removeSkill,

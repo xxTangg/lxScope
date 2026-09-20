@@ -79,6 +79,13 @@ storage-sql = [
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
 ]
+# Optional application-layer Skill analysis sink.  Kept separate from the
+# generic SQL storage extra so AgentScope's storage backend remains driver-
+# agnostic and existing Redis deployments do not need PostgreSQL.
+observability-postgres = [
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+]
 # S3-compatible blob store
 storage-s3 = ["aioboto3"]
 # ------------ Channel ------------

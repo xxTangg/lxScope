@@ -391,6 +391,19 @@ textarea {
   border-bottom: 1px solid var(--line);
   background: #fff;
 }
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.topbar-refresh {
+  min-height: 34px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
 .breadcrumb {
   display: flex;
   align-items: baseline;

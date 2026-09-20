@@ -62,6 +62,312 @@ export interface AdminOverview {
 	updated_at: string;
 }
 
+export interface SkillAnalyticsDaily {
+	date: string;
+	event_count: number;
+	exposed: number;
+	invoked: number;
+	completed: number;
+}
+
+export interface SkillAnalyticsTopSkill {
+	skill_name: string;
+	invoked_count: number;
+}
+
+export interface SkillFailureBreakdown {
+	key: string;
+	count: number;
+}
+
+export interface SkillFailureRecord {
+	occurred_at: string;
+	event_name: string;
+	stage: string;
+	error_code: string;
+	result: string;
+	user_id: string;
+	session_id: string | null;
+	skill_name: string | null;
+	duration_seconds: number | null;
+}
+
+export interface TokenUserUsage {
+	user_id: string;
+	username: string;
+	role: string;
+	input_tokens: number;
+	output_tokens: number;
+	cache_input_tokens: number;
+	cache_creation_input_tokens: number;
+	total_tokens: number;
+	message_count: number;
+	session_count: number;
+}
+
+export interface TokenUsageAnalytics {
+	input_tokens: number;
+	output_tokens: number;
+	cache_input_tokens: number;
+	cache_creation_input_tokens: number;
+	total_tokens: number;
+	message_count: number;
+	session_count: number;
+	user_count: number;
+	users: TokenUserUsage[];
+}
+
+export interface SkillAnalytics {
+	start: string;
+	end: string;
+	skill_data_available: boolean;
+	token_usage: TokenUsageAnalytics;
+	event_count: number;
+	reconcile: Record<string, number>;
+	lifecycle: {
+		exposed: number;
+		invoked: number;
+		completed: number;
+	};
+	completed: {
+		success: number;
+		failed: number;
+		other: number;
+	};
+	failure_count: number;
+	execution_failure_count: number;
+	execution_failure_rate: number;
+	failure_by_stage: SkillFailureBreakdown[];
+	failure_by_error: SkillFailureBreakdown[];
+	recent_failures: SkillFailureRecord[];
+	actual_usage_rate: number;
+	average_reconcile_duration_seconds: number | null;
+	latest_snapshot: {
+		visible_count: number;
+		after_count: number;
+	} | null;
+	daily: SkillAnalyticsDaily[];
+	top_skills: SkillAnalyticsTopSkill[];
+}
+
+export interface ObservabilityDaily {
+	date: string;
+	requests: number;
+	errors: number;
+	calls: number;
+	input_tokens: number;
+	output_tokens: number;
+	total_tokens: number;
+}
+
+export interface ObservabilityComponentRow {
+	name: string;
+	user_names: string[];
+	last_occurred_at: string;
+	tool_call_count: number;
+	call_count: number;
+	success_count: number;
+	failure_count: number;
+	success_rate: number;
+	average_duration_seconds: number | null;
+	input_tokens: number;
+	output_tokens: number;
+	total_tokens: number;
+	tool_kind: string | null;
+	mcp_server: string | null;
+	timeout_count: number;
+}
+
+export interface ObservabilityFailure {
+	occurred_at: string;
+	event_name: string;
+	component: string;
+	error_code: string;
+	category: string | null;
+	error_type: string | null;
+	request_id: string | null;
+	trace_id: string | null;
+	user_id: string | null;
+	username: string | null;
+	session_id: string | null;
+	agent_name: string | null;
+	model: string | null;
+	tool: string | null;
+	tool_kind: string | null;
+	mcp_server: string | null;
+	skill_name: string | null;
+	route: string | null;
+	duration_seconds: number | null;
+}
+
+export interface ObservabilityTokenUsage {
+	input_tokens: number;
+	output_tokens: number;
+	cache_input_tokens: number;
+	cache_creation_input_tokens: number;
+	total_tokens: number;
+	message_count: number;
+	session_count: number;
+	user_count: number;
+	users: TokenUserUsage[];
+}
+
+export interface ObservabilityOverview {
+	start: string;
+	end: string;
+	data_available: boolean;
+	event_count: number;
+	request_count: number;
+	successful_requests: number;
+	failed_requests: number;
+	success_rate: number;
+	active_user_count: number;
+	average_response_time_seconds: number | null;
+	token_usage: ObservabilityTokenUsage;
+	daily: ObservabilityDaily[];
+	models: ObservabilityComponentRow[];
+	agents: ObservabilityComponentRow[];
+	tools: ObservabilityComponentRow[];
+	failures: ObservabilityFailure[];
+	failure_by_component: Array<{ key: string; count: number }>;
+	failure_by_type: Array<{ key: string; count: number }>;
+}
+
+export interface ObservabilityFailureCenter {
+	start: string;
+	end: string;
+	failure_count: number;
+	failure_by_component: Array<{ key: string; count: number }>;
+	failure_by_type: Array<{ key: string; count: number }>;
+	failures: ObservabilityFailure[];
+}
+
+export type ObservabilityComponent = 'model' | 'agent' | 'tool';
+
+export interface ObservabilityComponentDetail {
+	start: string;
+	end: string;
+	component: ObservabilityComponent;
+	call_count: number;
+	success_count: number;
+	failure_count: number;
+	success_rate: number;
+	average_duration_seconds: number | null;
+	p95_duration_seconds: number | null;
+	input_tokens: number;
+	output_tokens: number;
+	total_tokens: number;
+	daily: ObservabilityDaily[];
+	items: ObservabilityComponentRow[];
+	failures: ObservabilityFailure[];
+	user_options: ObservabilityUserOption[];
+	user_breakdown: ObservabilityUserBreakdown[];
+	timeout_count: number;
+	agent_breakdown: ObservabilityAgentBreakdown[];
+	executions: ToolExecutionRecord[];
+	mcp_servers: McpServerStatus[];
+}
+
+export interface ObservabilityUserOption {
+	user_id: string;
+	username: string;
+}
+
+export interface ObservabilityUserBreakdown extends ObservabilityUserOption {
+	call_count: number;
+	percentage: number;
+}
+
+export interface ObservabilityAgentBreakdown {
+	agent_name: string;
+	call_count: number;
+	percentage: number;
+}
+
+export interface ToolExecutionRecord {
+	occurred_at: string;
+	request_id: string | null;
+	trace_id: string | null;
+	user_id: string | null;
+	username: string | null;
+	agent_name: string | null;
+	result: string;
+	duration_seconds: number | null;
+	error_code: string | null;
+	tool_kind: string;
+	mcp_server: string | null;
+}
+
+export interface McpServerStatus {
+	server_name: string;
+	status: string;
+	tool_count: number;
+	call_count: number;
+	average_duration_seconds: number | null;
+	failure_count: number;
+}
+
+export interface AgentExecutionRecord {
+	occurred_at: string;
+	request_id: string | null;
+	trace_id: string | null;
+	user_id: string | null;
+	username: string | null;
+	result: string;
+	duration_seconds: number | null;
+	input_tokens: number;
+	output_tokens: number;
+	total_tokens: number;
+	model_call_count: number;
+	tool_call_count: number;
+	error_code: string | null;
+}
+
+export interface ObservabilityAgentDetail {
+	start: string;
+	end: string;
+	agent_name: string;
+	call_count: number;
+	success_count: number;
+	failure_count: number;
+	success_rate: number;
+	average_duration_seconds: number | null;
+	input_tokens: number;
+	output_tokens: number;
+	total_tokens: number;
+	tool_call_count: number;
+	executions: AgentExecutionRecord[];
+}
+
+export interface ObservabilityTraceEvent {
+	occurred_at: string;
+	event_name: string;
+	component: string;
+	result: string;
+	request_id: string | null;
+	trace_id: string | null;
+	user_id: string | null;
+	username: string | null;
+	agent_name: string | null;
+	model: string | null;
+	tool: string | null;
+	tool_kind: string | null;
+	mcp_server: string | null;
+	skill_name: string | null;
+	route: string | null;
+	duration_seconds: number | null;
+	input_tokens: number;
+	output_tokens: number;
+	total_tokens: number;
+	error_code: string | null;
+}
+
+export interface ObservabilityTrace {
+	trace_id: string;
+	request_id: string | null;
+	events: ObservabilityTraceEvent[];
+}
+
 export interface SystemQuota {
 	system_id: string;
 	pool_tokens: number;
@@ -221,6 +527,18 @@ const toParams = (params: Record<string, string | number | undefined>) =>
 
 export const adminApi = {
 	overview: () => client.get<AdminOverview>('/admin/overview'),
+	observability: (days = 14) =>
+		client.get<ObservabilityOverview>('/admin/observability/overview', toParams({ days })),
+	observabilityFailures: (days = 14, filters?: { component?: string; error_type?: string; user_id?: string; limit?: number }) =>
+		client.get<ObservabilityFailureCenter>('/admin/observability/failures', toParams({ days, ...filters })),
+	observabilityComponent: (component: ObservabilityComponent, days = 14, filters?: { name?: string; user_id?: string }) =>
+		client.get<ObservabilityComponentDetail>(`/admin/observability/${component}`, toParams({ days, ...filters })),
+	observabilityAgent: (agentName: string, days = 14) =>
+		client.get<ObservabilityAgentDetail>(`/admin/observability/agents/${encodeURIComponent(agentName)}`, toParams({ days })),
+	observabilityTrace: (traceId: string) =>
+		client.get<ObservabilityTrace>(`/admin/observability/traces/${encodeURIComponent(traceId)}`),
+	skillAnalytics: (days = 14) =>
+		client.get<SkillAnalytics>('/admin/analytics/skills', toParams({ days })),
 	policy: () => client.get<AdminPolicy>('/admin/policy'),
 	users: (params: {
 		keyword?: string;
@@ -316,4 +634,12 @@ export const adminApi = {
 		),
 	publishResource: (body: PublishResourceRequest) =>
 		client.post<ResourcePublication>('/admin/resources', body),
+	removeSkill: (skillId: string) =>
+		client.delete(`/admin/skills/${encodeURIComponent(skillId)}`, undefined, {
+			headers: idempotencyHeaders(),
+		}),
+	removeMcp: (mcpId: string) =>
+		client.delete(`/admin/mcps/${encodeURIComponent(mcpId)}`, undefined, {
+			headers: idempotencyHeaders(),
+		}),
 };

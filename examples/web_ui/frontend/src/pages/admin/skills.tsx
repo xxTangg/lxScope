@@ -2,20 +2,35 @@ import {
 	BarChart3,
 	BookOpen,
 	CheckCircle2,
+	Eye,
+	EyeOff,
 	FileText,
 	Presentation,
 	Search,
+	Trash2,
+	UsersRound,
 	Upload,
 	type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { adminApi, skillApi } from '@/api';
 import type { AdminUser, PublicationScope, ResourcePublication, SkillView } from '@/api';
 import { AdminHeader } from './shared';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { DeleteDialog } from '@/components/dialog/DeleteDialog';
+import { ResourceDetailDrawer, type ResourceDetail } from '@/components/drawer/ResourceDetailDrawer';
 import { Input } from '@/components/ui/input';
+import {
+	Popover,
+	PopoverContent,
+	PopoverDescription,
+	PopoverHeader,
+	PopoverTitle,
+	PopoverTrigger,
+} from '@/components/ui/popover';
 import { Spinner } from '@/components/ui/spinner';
 import { useTranslation } from '@/i18n/useI18n';
 
@@ -133,24 +148,113 @@ const BUILTIN_SKILLS: BuiltinSkill[] = [
 
 const CATEGORY_ALL = 'all';
 
+function publishRequest(
+	skill: BuiltinSkill,
+	scope: PublicationScope,
+	userIds: string[] = [],
+) {
+	return {
+		kind: 'skill' as const,
+		source_id: skill.sourceRecordId ?? skill.id,
+		source_record_id: skill.sourceRecordId,
+		name: skill.resourceName ?? skill.title,
+		display_name: skill.title,
+		description: skill.description,
+		tags: skill.tags ?? [skill.category],
+		scope,
+		user_ids: scope === 'selected' ? userIds : [],
+	};
+}
+
+export function UserScopePicker({
+	users,
+	userIds,
+	onChange,
+}: {
+	users: AdminUser[];
+	userIds: string[];
+	onChange: (userIds: string[]) => void;
+}) {
+	const { t } = useTranslation();
+	const activeUsers = users.filter((user) => user.status === 'active');
+	const selected = new Set(userIds);
+
+	return (
+		<Popover>
+			<PopoverTrigger asChild>
+				<Button variant="outline" size="sm" className="max-w-full">
+					<UsersRound className="size-3.5" />
+					<span className="truncate">
+						{t('admin.selectedUsers', { count: userIds.length })}
+					</span>
+				</Button>
+			</PopoverTrigger>
+			<PopoverContent align="start" className="w-72">
+				<PopoverHeader>
+					<PopoverTitle>{t('admin.selectUsers')}</PopoverTitle>
+					<PopoverDescription>{t('admin.selectedUsersHint')}</PopoverDescription>
+				</PopoverHeader>
+				<div className="flex items-center justify-between border-b pb-2">
+					<span className="text-xs text-muted-foreground">
+						{t('admin.selectedUsers', { count: userIds.length })}
+					</span>
+					<div className="flex gap-1">
+						<Button
+							variant="ghost"
+							size="xs"
+							onClick={() => onChange(activeUsers.map((user) => user.id))}
+						>
+							{t('admin.selectAllUsers')}
+						</Button>
+						<Button variant="ghost" size="xs" onClick={() => onChange([])}>
+							{t('admin.clearUsers')}
+						</Button>
+					</div>
+				</div>
+				<div className="max-h-56 space-y-1 overflow-y-auto py-1">
+					{activeUsers.map((user) => (
+						<label
+							key={user.id}
+							className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted"
+						>
+							<Checkbox
+								checked={selected.has(user.id)}
+								onCheckedChange={(checked) => {
+									const next = new Set(selected);
+									if (checked === true) next.add(user.id);
+									else next.delete(user.id);
+									onChange(Array.from(next));
+								}}
+							/>
+							<span className="truncate text-sm">{user.username}</span>
+						</label>
+					))}
+				</div>
+			</PopoverContent>
+		</Popover>
+	);
+}
+
 function BuiltinSkillCard({
 	skill,
 	publication,
 	users,
 	onSaved,
+	onOpen,
+	onRemove,
 }: {
 	skill: BuiltinSkill;
 	publication?: ResourcePublication;
 	users: AdminUser[];
 	onSaved: () => void;
+	onOpen: () => void;
+	onRemove?: () => void;
 }) {
 	const { t } = useTranslation();
 	const [scope, setScope] = useState<PublicationScope>(publication?.scope ?? 'none');
 	const [userIds, setUserIds] = useState<string[]>(publication?.user_ids ?? []);
 	const [saving, setSaving] = useState(false);
 	const Icon = skill.Icon;
-	const sourceId = skill.sourceRecordId ?? skill.id;
-	const resourceName = skill.resourceName ?? skill.title;
 
 	useEffect(() => {
 		setScope(publication?.scope ?? 'none');
@@ -161,17 +265,7 @@ function BuiltinSkillCard({
 		if (nextScope === 'selected' && userIds.length === 0) return;
 		setSaving(true);
 		try {
-			await adminApi.publishResource({
-				kind: 'skill',
-				source_id: sourceId,
-				source_record_id: skill.sourceRecordId,
-				name: resourceName,
-				display_name: skill.title,
-				description: skill.description,
-				tags: skill.tags ?? [skill.category],
-				scope: nextScope,
-				user_ids: userIds,
-			});
+			await adminApi.publishResource(publishRequest(skill, nextScope, userIds));
 			onSaved();
 		} finally {
 			setSaving(false);
@@ -179,8 +273,13 @@ function BuiltinSkillCard({
 	};
 
 	return (
-		<article className="group flex min-h-64 flex-col rounded-2xl border bg-card p-5 transition-shadow hover:shadow-md">
-			<div className="flex items-start gap-3">
+		<article className="group flex h-80 min-h-0 flex-col rounded-2xl border bg-card p-5 transition-shadow hover:shadow-md">
+			<button
+				type="button"
+				onClick={onOpen}
+				title={t('admin.viewSkillDetails')}
+				className="flex min-w-0 items-start gap-3 text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+			>
 				<div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
 					<Icon className="size-5" />
 				</div>
@@ -188,8 +287,15 @@ function BuiltinSkillCard({
 					<h2 className="truncate font-heading text-base font-semibold">{skill.title}</h2>
 					<p className="mt-1 text-xs text-muted-foreground">{skill.type}</p>
 				</div>
-			</div>
-			<p className="mt-5 text-sm leading-6 text-muted-foreground">{skill.description}</p>
+			</button>
+			<button
+				type="button"
+				onClick={onOpen}
+				title={t('admin.viewSkillDetails')}
+				className="mt-5 line-clamp-4 text-left text-sm leading-6 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+			>
+				{skill.description}
+			</button>
 			<div className="mt-auto space-y-3 pt-5">
 				<div className="flex flex-wrap items-center gap-2">
 					<span className="text-xs text-muted-foreground">{t('admin.publishTo')}</span>
@@ -198,7 +304,10 @@ function BuiltinSkillCard({
 						onChange={(event) => {
 							const next = event.target.value as PublicationScope;
 							setScope(next);
-							if (next !== 'selected') void save(next);
+							if (next !== 'selected') {
+								setUserIds([]);
+								void save(next);
+							}
 						}}
 						className="h-8 rounded-md border border-input bg-background px-2 text-xs"
 					>
@@ -207,29 +316,37 @@ function BuiltinSkillCard({
 						<option value="selected">{t('admin.publishSelected')}</option>
 					</select>
 					{scope === 'selected' && (
-						<Button size="sm" disabled={saving || userIds.length === 0} onClick={() => void save()}>
-							{saving ? <Spinner /> : <CheckCircle2 className="size-3.5" />}
-							{t('admin.savePublication')}
-						</Button>
+						<>
+							<UserScopePicker users={users} userIds={userIds} onChange={setUserIds} />
+							<Button size="sm" disabled={saving || userIds.length === 0} onClick={() => void save()}>
+								{saving ? <Spinner /> : <CheckCircle2 className="size-3.5" />}
+								{t('admin.savePublication')}
+							</Button>
+						</>
 					)}
 				</div>
-				{scope === 'selected' && (
-					<select
-						multiple
-						value={userIds}
-						onChange={(event) =>
-							setUserIds(Array.from(event.target.selectedOptions, (option) => option.value))
-						}
-						className="min-h-16 w-full rounded-md border border-input bg-background p-1 text-xs"
-					>
-						{users.map((user) => (
-							<option key={user.id} value={user.id}>{user.username}</option>
-						))}
-					</select>
-				)}
-				<div className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-					<CheckCircle2 className="size-3.5" />
-					{t('admin.builtinSkillBadge')}
+				<div className="flex items-center justify-between gap-2">
+					<div className={`flex items-center gap-1 text-xs ${scope === 'none' ? 'text-muted-foreground' : 'text-emerald-600 dark:text-emerald-400'}`}>
+						{scope === 'none' ? <EyeOff className="size-3.5" /> : <CheckCircle2 className="size-3.5" />}
+						{scope === 'all'
+							? t('admin.builtinSkillBadge')
+							: scope === 'selected'
+								? t('admin.selectedUsersBadge', { count: userIds.length })
+								: t('admin.hiddenSkillBadge')}
+					</div>
+					{onRemove && (
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							title={t('admin.removeInstalledSkill')}
+							onClick={(event) => {
+								event.stopPropagation();
+								onRemove();
+							}}
+						>
+							<Trash2 />
+						</Button>
+					)}
 				</div>
 			</div>
 		</article>
@@ -245,6 +362,11 @@ export function AdminSkillsPage() {
 	const [users, setUsers] = useState<AdminUser[]>([]);
 	const [installedSkills, setInstalledSkills] = useState<SkillView[]>([]);
 	const [loading, setLoading] = useState(true);
+	const [bulkScope, setBulkScope] = useState<Exclude<PublicationScope, 'selected'> | null>(null);
+	const [detailSkill, setDetailSkill] = useState<ResourceDetail | null>(null);
+	const [detailLoading, setDetailLoading] = useState(false);
+	const detailRequestRef = useRef(0);
+	const [removeTarget, setRemoveTarget] = useState<BuiltinSkill | null>(null);
 
 	const refetch = async () => {
 		setLoading(true);
@@ -306,6 +428,66 @@ export function AdminSkillsPage() {
 			})),
 		[installedSkills],
 	);
+	const allManagedSkills = useMemo(
+		() => [...BUILTIN_SKILLS, ...installedSkillCards],
+		[installedSkillCards],
+	);
+
+	const setAllSkillsScope = async (scope: Exclude<PublicationScope, 'selected'>) => {
+		setBulkScope(scope);
+		try {
+			await Promise.all(
+				allManagedSkills.map((skill) => adminApi.publishResource(publishRequest(skill, scope))),
+			);
+			await refetch();
+		} finally {
+			setBulkScope(null);
+		}
+	};
+
+	const openSkillDetails = async (skill: BuiltinSkill) => {
+		const requestId = ++detailRequestRef.current;
+		const fallback: ResourceDetail = {
+			name: skill.resourceName ?? skill.title,
+			display_name: skill.title,
+			description: skill.description,
+			tags: skill.tags ?? [skill.category],
+			version: skill.sourceRecordId ? null : 'builtin',
+		};
+		setDetailSkill(fallback);
+		if (!skill.sourceRecordId) {
+			setDetailLoading(false);
+			return;
+		}
+		setDetailLoading(true);
+		try {
+			const record = await skillApi.get(skill.sourceRecordId);
+			if (requestId !== detailRequestRef.current) return;
+			setDetailSkill({
+				name: record.name,
+				display_name: record.display_name,
+				description: record.description,
+				tags: record.tags,
+				author: record.author,
+				icon_url: record.icon_url,
+				hub_id: record.hub_id,
+				version: record.version,
+				url: record.url,
+				markdown: record.markdown,
+			});
+		} finally {
+			if (requestId === detailRequestRef.current) setDetailLoading(false);
+		}
+	};
+
+	const removeInstalledSkill = async () => {
+		if (!removeTarget?.sourceRecordId) return;
+		// Withdraw the publication first so users do not retain a stale
+		// published entry when the administrator removes the source record.
+		await adminApi.removeSkill(removeTarget.sourceRecordId);
+		setRemoveTarget(null);
+		await refetch();
+	};
 
 	return (
 		<>
@@ -315,10 +497,31 @@ export function AdminSkillsPage() {
 			/>
 			<div className="flex flex-wrap items-center justify-between gap-3 border-b pb-5">
 				<p className="text-sm text-muted-foreground">{t('admin.builtinSkillsNotice')}</p>
-				<Button variant="outline" onClick={() => navigate('/skill')}>
-					<Upload />
-					{t('admin.uploadSkill')}
-				</Button>
+				<div className="flex flex-wrap items-center gap-2">
+					<span className="text-xs text-muted-foreground">{t('admin.bulkVisibility')}</span>
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={bulkScope !== null || allManagedSkills.length === 0}
+						onClick={() => void setAllSkillsScope('all')}
+					>
+						{bulkScope === 'all' ? <Spinner /> : <Eye />}
+						{t('admin.showAllSkills')}
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={bulkScope !== null || allManagedSkills.length === 0}
+						onClick={() => void setAllSkillsScope('none')}
+					>
+						{bulkScope === 'none' ? <Spinner /> : <EyeOff />}
+						{t('admin.hideAllSkills')}
+					</Button>
+					<Button variant="outline" size="sm" onClick={() => navigate('/skill')}>
+						<Upload />
+						{t('admin.uploadSkill')}
+					</Button>
+				</div>
 			</div>
 
 			<div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(14rem,24rem)]">
@@ -357,6 +560,7 @@ export function AdminSkillsPage() {
 								publication={publicationBySource.get(skill.id)}
 								users={users}
 								onSaved={() => void refetch()}
+								onOpen={() => void openSkillDetails(skill)}
 							/>
 						);
 					})}
@@ -377,11 +581,36 @@ export function AdminSkillsPage() {
 								publication={publicationBySource.get(skill.id)}
 								users={users}
 								onSaved={() => void refetch()}
+								onOpen={() => void openSkillDetails(skill)}
+								onRemove={() => setRemoveTarget(skill)}
 							/>
 						))}
 					</div>
 				</section>
 			)}
+			<ResourceDetailDrawer
+				skill={detailSkill}
+				loading={detailLoading}
+				onOpenChange={(open) => {
+					if (!open) {
+						detailRequestRef.current += 1;
+						setDetailSkill(null);
+						setDetailLoading(false);
+					}
+				}}
+			/>
+			<DeleteDialog
+				open={removeTarget !== null}
+				onOpenChange={(open) => {
+					if (!open) setRemoveTarget(null);
+				}}
+				title={t('admin.removeInstalledSkill')}
+				description={t('admin.removeInstalledSkillDescription', {
+					name: removeTarget?.title ?? '',
+				})}
+				confirmLabel={t('admin.removeSkill')}
+				onConfirm={removeInstalledSkill}
+			/>
 		</>
 	);
 }

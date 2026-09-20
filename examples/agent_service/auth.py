@@ -644,26 +644,71 @@ class JWTAuthService:
     ) -> str:
         return (await self.get_current_user(authorization)).id
 
-    async def get_token_usage(self, user_id: str) -> TokenUsageResponse:
+    async def get_token_usage(
+        self,
+        user_id: str,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> TokenUsageResponse:
+        """Aggregate persisted model usage, optionally within a time range."""
         client = self._redis()
         result = TokenUsageResponse()
+        normalized_start = (
+            start.astimezone(timezone.utc)
+            if start is not None and start.tzinfo is not None
+            else start.replace(tzinfo=timezone.utc) if start is not None else None
+        )
+        normalized_end = (
+            end.astimezone(timezone.utc)
+            if end is not None and end.tzinfo is not None
+            else end.replace(tzinfo=timezone.utc) if end is not None else None
+        )
         pattern = f"agentscope:user:{user_id}:session:*:messages"
         async for key in client.scan_iter(match=pattern, count=100):
-            result.session_count += 1
+            session_has_usage = False
+            if normalized_start is None and normalized_end is None:
+                result.session_count += 1
             for raw in await client.lrange(key, 0, -1):
                 try:
-                    usage = json.loads(raw).get("usage")
+                    message = json.loads(raw)
+                    usage = message.get("usage")
                 except (json.JSONDecodeError, AttributeError):
                     continue
                 if not isinstance(usage, dict):
                     continue
+                if start is not None or end is not None:
+                    created_at = message.get("created_at")
+                    try:
+                        occurred_at = datetime.fromisoformat(
+                            str(created_at).replace("Z", "+00:00"),
+                        )
+                        if occurred_at.tzinfo is None:
+                            occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+                        else:
+                            occurred_at = occurred_at.astimezone(timezone.utc)
+                    except (TypeError, ValueError):
+                        # Old or malformed messages cannot be safely assigned
+                        # to a requested period, so exclude them from that
+                        # period while preserving all-time usage behavior.
+                        continue
+                    if normalized_start is not None:
+                        if occurred_at < normalized_start:
+                            continue
+                    if normalized_end is not None:
+                        if occurred_at >= normalized_end:
+                            continue
                 result.message_count += 1
+                session_has_usage = True
                 result.input_tokens += int(usage.get("input_tokens") or 0)
                 result.output_tokens += int(usage.get("output_tokens") or 0)
                 result.cache_input_tokens += int(usage.get("cache_input_tokens") or 0)
                 result.cache_creation_input_tokens += int(
                     usage.get("cache_creation_input_tokens") or 0,
                 )
+            if normalized_start is not None or normalized_end is not None:
+                if session_has_usage:
+                    result.session_count += 1
         result.total_tokens = result.input_tokens + result.output_tokens
         return result
 

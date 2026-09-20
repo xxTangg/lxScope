@@ -24,9 +24,18 @@ import { useTranslation } from '@/i18n/useI18n';
 import { queryClient } from '@/lib/query-client';
 import { AccountPage } from '@/pages/account';
 import { AdminAuditPage } from '@/pages/admin/audit';
+import { AdminObservabilityPage } from '@/pages/admin/analytics';
+import { AdminObservabilityFailuresPage } from '@/pages/admin/observability-failures';
+import { AdminAgentDetailPage } from '@/pages/admin/agent-detail';
+import { AdminObservabilityDetailPage } from '@/pages/admin/observability-detail';
+import { AdminObservabilityFocusPage } from '@/pages/admin/observability-focus';
+import { AdminSkillAnalyticsPage } from '@/pages/admin/skill-analytics';
+import { AdminTraceDetailPage } from '@/pages/admin/trace-detail';
+import { AdminToolObservabilityPage } from '@/pages/admin/tool-analysis';
 import { AdminLayout } from '@/pages/admin/layout';
 import { AdminMcpPage } from '@/pages/admin/mcp';
 import { AdminMembersPage } from '@/pages/admin/members';
+import { AdminModelObservabilityPage } from '@/pages/admin/model-analysis';
 import { AdminModelsPage } from '@/pages/admin/models';
 import { AdminOverviewPage } from '@/pages/admin/overview';
 import { AdminPolicyPage } from '@/pages/admin/policy';
@@ -129,6 +138,20 @@ const router = createBrowserRouter([
 						children: [
 							{ index: true, element: <Navigate to="overview" replace /> },
 							{ path: 'overview', element: <AdminOverviewPage /> },
+							{ path: 'observability', element: <AdminObservabilityPage /> },
+							{ path: 'observability/failures', element: <AdminObservabilityFailuresPage /> },
+							{ path: 'observability/skills', element: <AdminSkillAnalyticsPage /> },
+							{ path: 'observability/requests', element: <AdminObservabilityFocusPage /> },
+							{ path: 'observability/tokens', element: <AdminObservabilityFocusPage /> },
+							{ path: 'observability/users', element: <AdminObservabilityFocusPage /> },
+							{ path: 'observability/agent/:agentName', element: <AdminAgentDetailPage /> },
+							{ path: 'observability/trace/:traceId', element: <AdminTraceDetailPage /> },
+							{ path: 'observability/model', element: <AdminModelObservabilityPage /> },
+							{ path: 'observability/model/:modelName', element: <AdminModelObservabilityPage /> },
+							{ path: 'observability/tool', element: <AdminToolObservabilityPage /> },
+							{ path: 'observability/tool/:toolName', element: <AdminToolObservabilityPage /> },
+							{ path: 'observability/:component', element: <AdminObservabilityDetailPage /> },
+							{ path: 'analytics/skills', element: <AdminSkillAnalyticsPage /> },
 							{ path: 'members', element: <AdminMembersPage /> },
 							{ path: 'quota', element: <AdminQuotaPage /> },
 							{ path: 'models', element: <AdminModelsPage /> },

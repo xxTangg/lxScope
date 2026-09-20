@@ -14,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry.trace import StatusCode
 
 from agentscope.app import create_app, SubAgentTemplate
 from agentscope.app.channel import (
@@ -28,8 +29,13 @@ from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
 from agentscope.app.storage import RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import OpenAICredential
+from agentscope._logging import logger
 from agentscope.mcp import MCPClient, StdioMCPConfig
-from agentscope.middleware import AgenticMemoryMiddleware, MiddlewareBase
+from agentscope.middleware import (
+    AgenticMemoryMiddleware,
+    MiddlewareBase,
+    TracingMiddleware,
+)
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.rag import (
     ApproxTokenChunker,
@@ -57,6 +63,28 @@ from task import (
     TaskStore,
     task_router,
 )
+from skill_analytics_api import skill_analytics_router
+from skill_observability import (
+    SkillReconcileSummary,
+    SkillUsageMiddleware,
+    log_skill_reconcile_completed,
+    log_skill_reconcile_started,
+    persist_skill_observation,
+    _reconcile_event,
+)
+from skill_observability_store import (
+    BestEffortSkillObservationSink,
+    NullSkillObservationSink,
+    PostgresSkillObservationStore,
+    SkillObservationSink,
+)
+from project_observability_store import PostgresProjectObservabilityStore
+from project_observability import (
+    ProjectObservability,
+    new_request_id,
+    observability_router,
+)
+from observability_analytics_api import observability_analytics_router
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
 playwright_browsers_path = os.getenv(
@@ -89,6 +117,14 @@ storage = RedisStorage(
     port=int(os.getenv("REDIS_PORT", "6379")),
     password=os.getenv("REDIS_PASSWORD") or None,
 )
+
+# Skill analysis persistence is an application-level optional sink.  The
+# default keeps the existing stdout-only diagnostics when PostgreSQL is not
+# configured, so Redis-only deployments remain backwards compatible.
+skill_observation_sink: SkillObservationSink = NullSkillObservationSink()
+skill_observation_store: PostgresSkillObservationStore | None = None
+project_observability_store: PostgresProjectObservabilityStore | None = None
+project_observability = ProjectObservability()
 
 # Product-owned office skills are seeded into every new workspace. They do
 # not become user-installed library records, so every account can use them
@@ -146,6 +182,167 @@ auth = load_auth_from_env(
 )
 
 
+_builtin_skill_paths_by_id = {
+    os.path.basename(path): path
+    for path in builtin_skill_paths
+}
+
+
+async def _sync_current_user_skills(
+    user_id: str,
+    agent_id: str,
+    workspace: WorkspaceBase,
+    session_id: str | None = None,
+) -> SkillReconcileSummary:
+    """Align one live workspace with this user's published skill scope.
+
+    This is an application-level reconciliation before the AgentScope
+    toolkit is assembled. It deliberately uses the existing workspace and
+    skill-hub APIs instead of changing the AgentScope core skill loader.
+    """
+
+    summary = SkillReconcileSummary(
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        observation_sink=skill_observation_sink,
+    )
+    log_skill_reconcile_started(summary)
+    await persist_skill_observation(
+        summary,
+        _reconcile_event(
+            summary,
+            event_name="skill.reconcile.started",
+            result="started",
+        ),
+    )
+    try:
+        account = await auth._account_by_id(user_id)
+        application = globals().get("app")
+        if account is None or account.status != "active" or application is None:
+            summary.result = "skipped"
+            summary.error_code = "account_not_active"
+            return summary
+
+        admin_service = application.state.admin_service
+        current_user = auth._public_user(account)
+        visible_resources = await admin_service.published_resources(
+            current_user,
+            "skill",
+        )
+        visible_names = {
+            resource.name for resource in visible_resources.resources
+        }
+        summary.visible_count = len(visible_names)
+        managed_names = await admin_service.managed_resource_names("skill")
+
+        current_skills = await workspace.list_skills(agent_id=agent_id)
+        summary.before_count = len(current_skills)
+        current_names = {skill.name for skill in current_skills}
+
+        # Keep user-created/local skills intact. Only remove skills that the
+        # administrator publication catalog controls and has revoked for this
+        # particular user.
+        for skill in current_skills:
+            if skill.name in managed_names and skill.name not in visible_names:
+                await workspace.remove_skill(skill.name, agent_id=agent_id)
+                current_names.discard(skill.name)
+                summary.removed_count += 1
+
+        # Built-ins are seeded by the workspace manager. If a previous scope
+        # reconciliation removed one and it becomes visible again, restore it
+        # from the product-owned source directory.
+        for resource in visible_resources.resources:
+            source_id = resource.id.removeprefix("skill:")
+            builtin_path = _builtin_skill_paths_by_id.get(source_id)
+            if builtin_path is None or resource.name in current_names:
+                continue
+            try:
+                await workspace.add_skill(builtin_path, agent_id=agent_id)
+                current_names.add(resource.name)
+                summary.restored_count += 1
+            except Exception:
+                summary.failure_count += 1
+                logger.exception(
+                    "Unable to restore builtin skill %s",
+                    resource.name,
+                )
+
+        # Installed skills are already copied into the user's library when an
+        # administrator publishes them. Missing visible skills are downloaded
+        # into this workspace only when this user actually starts a turn here.
+        skill_hubs = getattr(application.state, "skill_hubs", {})
+        workspace_service = getattr(application.state, "workspace_service", None)
+        if workspace_service is None:
+            final_skills = await workspace.list_skills(agent_id=agent_id)
+            summary.after_count = len(final_skills)
+            summary.skill_names = tuple(
+                sorted(skill.name for skill in final_skills)
+            )
+            summary.result = "partial"
+            summary.error_code = "workspace_service_unavailable"
+            return summary
+        for record in await storage.list_skills(user_id):
+            if record.name not in visible_names or record.name in current_names:
+                continue
+            hub = skill_hubs.get(record.hub_id or "")
+            if hub is None:
+                summary.failure_count += 1
+                summary.error_code = "skill_hub_not_found"
+                continue
+            try:
+                archive = await hub.download(
+                    user_id,
+                    record.card_id or record.name,
+                    record.version,
+                )
+                await workspace_service.install_skill(
+                    workspace,
+                    archive.stream,
+                    archive.format,
+                    record.name,
+                    agent_id=agent_id,
+                )
+                current_names.add(record.name)
+                summary.installed_count += 1
+            except Exception:
+                summary.failure_count += 1
+                summary.error_code = "skill_install_failed"
+                logger.exception(
+                    "Unable to equip published skill %s",
+                    record.name,
+                )
+
+        # This is the application-level provisioned check. It does not replace
+        # AgentScope's loader; it confirms the workspace is ready before the
+        # generic toolkit builder receives it.
+        final_skills = await workspace.list_skills(agent_id=agent_id)
+        summary.after_count = len(final_skills)
+        summary.skill_names = tuple(sorted(skill.name for skill in final_skills))
+        return summary
+    except Exception:
+        summary.result = "failed"
+        summary.error_code = summary.error_code or "unknown_error"
+        logger.exception(
+            "skill.reconcile.failed user_id=%s agent_id=%s session_id=%s",
+            user_id,
+            agent_id,
+            session_id,
+        )
+        raise
+    finally:
+        summary.finish()
+        log_skill_reconcile_completed(summary)
+        await persist_skill_observation(
+            summary,
+            _reconcile_event(
+                summary,
+                event_name="skill.reconcile.completed",
+                result=summary.result,
+            ),
+        )
+
+
 async def longterm_memory_factory(
     user_id: str,
     agent_id: str,
@@ -154,13 +351,30 @@ async def longterm_memory_factory(
 ) -> list[MiddlewareBase]:
     """Attach Markdown-file long-term memory, stored under the session's
     workspace so it is reachable through whichever backend is bound."""
-    del user_id, agent_id, session_id
-    return [
+    summary = await _sync_current_user_skills(
+        user_id,
+        agent_id,
+        workspace,
+        session_id=session_id,
+    )
+    middlewares: list[MiddlewareBase] = [
         AgenticMemoryMiddleware(
             workdir=workspace.workdir,
             backend=workspace.get_backend(),
         ),
     ]
+    if project_observability.settings.enabled:
+        # Application-owned measurements are attached through AgentScope's
+        # public middleware extension point. No framework internals are
+        # changed for this service-level integration.
+        middlewares.extend(
+            [
+                project_observability.agent_middleware(),
+                TracingMiddleware(),
+            ],
+        )
+    middlewares.append(SkillUsageMiddleware(summary))
+    return middlewares
 
 
 app = create_app(
@@ -272,15 +486,72 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
 # Task is an application-level module.  It owns its repository and execution
 # port so the generic AgentScope application factory remains unchanged.
 app.state.task_store = TaskStore()
+app.state.observability = project_observability
+
+
+async def _request_user_id(request: Request) -> str:
+    """Resolve the request identity once for project-level event context."""
+    authorization = request.headers.get("authorization")
+    auth = getattr(request.app.state, "auth", None)
+    if not authorization or auth is None:
+        return ""
+    try:
+        return await auth.get_current_user_id(authorization)
+    except Exception:
+        # Authentication dependencies remain the source of truth.  The
+        # observability path must not turn an unauthenticated request into a
+        # service failure.
+        return ""
 
 
 @app.middleware("http")
-async def request_id_middleware(request: Request, call_next):
-    """Generate one correlation ID and echo it on every application response."""
-    request_id = request.headers.get("X-Request-ID", "").strip() or f"req-{uuid4().hex}"
+async def observability_middleware(request: Request, call_next):
+    """Correlate and measure every HTTP request at the app boundary."""
+    request_id = new_request_id(request)
     request.state.request_id = request_id
-    response = await call_next(request)
+    started_at = asyncio.get_running_loop().time()
+    response = None
+    status_code = 500
+    user_id = await _request_user_id(request)
+    try:
+        with project_observability.http_span(request) as span:
+            request.state.trace_id = project_observability.trace_id(span)
+            with project_observability.context(
+                request_id,
+                request.state.trace_id,
+                user_id,
+            ):
+                try:
+                    response = await call_next(request)
+                    status_code = response.status_code
+                    span.set_attribute("http.response.status_code", status_code)
+                    route = getattr(request.scope.get("route"), "path", None)
+                    if route:
+                        span.set_attribute("http.route", route)
+                    if status_code >= 500:
+                        span.set_status(StatusCode.ERROR)
+                except BaseException as exc:
+                    span.record_exception(exc)
+                    span.set_status(StatusCode.ERROR)
+                    raise
+    finally:
+        duration_seconds = asyncio.get_running_loop().time() - started_at
+        route = getattr(request.scope.get("route"), "path", None) or "__unmatched__"
+        project_observability.record_http(
+            method=request.method,
+            route=route,
+            status_code=status_code,
+            duration_seconds=duration_seconds,
+            request_id=request_id,
+            trace_id=getattr(request.state, "trace_id", ""),
+            user_id=user_id,
+        )
+
+    assert response is not None
     response.headers["X-Request-ID"] = request_id
+    trace_id = getattr(request.state, "trace_id", "")
+    if trace_id:
+        response.headers["X-Trace-ID"] = trace_id
     return response
 
 
@@ -337,17 +608,21 @@ app.state.admin_service = AdminService(
     storage,
     auth,
     plan_billing=app.state.plan_billing_service,
+    workspace_service_provider=lambda: getattr(app.state, "workspace_service", None),
 )
 app.state.upgrade_service = UpgradeService(storage, auth)
 app.state.sales_hub_authorizer = app.state.admin_service.authorize_hub
 app.include_router(auth.router)
 app.include_router(admin_router)
+app.include_router(skill_analytics_router)
+app.include_router(observability_analytics_router)
 app.include_router(resource_router)
 app.include_router(sales_hub_router)
 app.include_router(plan_billing_router)
 app.include_router(upgrade_router)
 app.include_router(task_router)
 app.include_router(management_mcp_router)
+app.include_router(observability_router)
 app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal
@@ -358,46 +633,117 @@ _base_lifespan = app.router.lifespan_context
 
 @asynccontextmanager
 async def _application_lifespan(app_instance):
-    async with _base_lifespan(app_instance):
-        await app_instance.state.admin_service.ensure_default_builtin_publications()
-        await _ensure_siliconflow_credential(auth.admin_user_ids)
-        # Share AgentScope's managed Redis connection, but keep Task data in
-        # its own lxscope:task namespace rather than extending StorageBase.
-        app_instance.state.task_store = RedisTaskStore(storage.get_client())
-        app_instance.state.task_service = TaskService(
-            app_instance.state.task_store,
-            agentscope_executor=AgentScopeTaskExecutor(
-                storage=storage,
-                resource_access_service=(
-                    app_instance.state.resource_access_service
-                ),
-                workspace_manager=app_instance.state.workspace_manager,
-                scheduler_manager=app_instance.state.scheduler_manager,
-                background_task_manager=(
-                    app_instance.state.background_task_manager
-                ),
-                message_bus=app_instance.state.message_bus,
-                extra_agent_tools=app_instance.state.extra_agent_tools,
-                sub_agent_templates=(
-                    app_instance.state.custom_subagent_templates
-                ),
-            ),
-            planner=AgentScopeTaskPlanner(
-                storage=storage,
-                resource_access_service=(
-                    app_instance.state.resource_access_service
-                ),
-            ),
-        )
-        recharge_sync_task = asyncio.create_task(
-            _sales_hub_recharge_sync_loop(app_instance.state.admin_service),
-        )
+    global skill_observation_sink, skill_observation_store
+    global project_observability_store
+
+    # Configure the application-owned observability layer before the
+    # AgentScope lifespan creates the ChatService and its runtime agents.
+    # The integration uses only public extension points.
+    project_observability.configure()
+
+    project_url = (
+        os.getenv("PROJECT_OBSERVABILITY_DATABASE_URL", "").strip()
+        or os.getenv("SKILL_OBSERVABILITY_DATABASE_URL", "").strip()
+    )
+    local_project_store: PostgresProjectObservabilityStore | None = None
+    if project_url:
+        local_project_store = PostgresProjectObservabilityStore(project_url)
         try:
-            yield
-        finally:
-            await app_instance.state.task_service.shutdown()
-            recharge_sync_task.cancel()
-            await asyncio.gather(recharge_sync_task, return_exceptions=True)
+            await local_project_store.initialize()
+            project_observability.set_persistent_store(local_project_store)
+            restored_count = await project_observability.restore_persisted_events()
+            logger.info(
+                "project.observability.store_ready backend=postgres "
+                "table=project_observability_events restored=%s",
+                restored_count,
+            )
+        except Exception:
+            logger.exception(
+                "project.observability.store_unavailable backend=postgres",
+            )
+            await local_project_store.close()
+            local_project_store = None
+
+    project_observability_store = local_project_store
+
+    # The database is deliberately opt-in.  A failed optional observability
+    # backend falls back to stdout diagnostics and must not prevent the
+    # business service from starting.
+    configured_url = os.getenv("SKILL_OBSERVABILITY_DATABASE_URL", "").strip()
+    local_store: PostgresSkillObservationStore | None = None
+    local_sink: SkillObservationSink = NullSkillObservationSink()
+    if configured_url:
+        local_store = PostgresSkillObservationStore(configured_url)
+        try:
+            await local_store.initialize()
+            local_sink = BestEffortSkillObservationSink(local_store)
+            logger.info(
+                "skill.observation.store_ready backend=postgres "
+                "table=skill_observability_events",
+            )
+        except Exception:
+            logger.exception(
+                "skill.observation.store_unavailable backend=postgres",
+            )
+            await local_store.close()
+            local_store = None
+
+    skill_observation_store = local_store
+    skill_observation_sink = local_sink
+    app_instance.state.skill_observation_store = local_store
+    app_instance.state.skill_observation_sink = local_sink
+
+    try:
+        async with _base_lifespan(app_instance):
+            await app_instance.state.admin_service.ensure_default_builtin_publications()
+            await _ensure_siliconflow_credential(auth.admin_user_ids)
+            # Share AgentScope's managed Redis connection, but keep Task data
+            # in its own lxscope:task namespace rather than extending
+            # StorageBase. The Task executor remains the h-branch adapter,
+            # which preserves MCP refresh/lifecycle handling.
+            app_instance.state.task_store = RedisTaskStore(storage.get_client())
+            app_instance.state.task_service = TaskService(
+                app_instance.state.task_store,
+                agentscope_executor=AgentScopeTaskExecutor(
+                    storage=storage,
+                    resource_access_service=(
+                        app_instance.state.resource_access_service
+                    ),
+                    workspace_manager=app_instance.state.workspace_manager,
+                    scheduler_manager=app_instance.state.scheduler_manager,
+                    background_task_manager=(
+                        app_instance.state.background_task_manager
+                    ),
+                    message_bus=app_instance.state.message_bus,
+                    extra_agent_tools=app_instance.state.extra_agent_tools,
+                    sub_agent_templates=(
+                        app_instance.state.custom_subagent_templates
+                    ),
+                ),
+                planner=AgentScopeTaskPlanner(
+                    storage=storage,
+                    resource_access_service=(
+                        app_instance.state.resource_access_service
+                    ),
+                ),
+            )
+            recharge_sync_task = asyncio.create_task(
+                _sales_hub_recharge_sync_loop(app_instance.state.admin_service),
+            )
+            try:
+                yield
+            finally:
+                await app_instance.state.task_service.shutdown()
+                recharge_sync_task.cancel()
+                await asyncio.gather(recharge_sync_task, return_exceptions=True)
+    finally:
+        await project_observability.close_persistent_store()
+        project_observability_store = None
+        if local_store is not None:
+            await local_store.close()
+        project_observability.shutdown()
+        skill_observation_store = None
+        skill_observation_sink = NullSkillObservationSink()
 
 
 app.router.lifespan_context = _application_lifespan
