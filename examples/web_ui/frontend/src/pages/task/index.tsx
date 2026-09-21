@@ -106,6 +106,16 @@ function clamp(value: number, min: number, max: number): number {
 	return Math.min(max, Math.max(min, value));
 }
 
+const MIN_RESULT_WIDTH = 360;
+const MAX_RESULT_WIDTH = 960;
+
+function getResultWidthLimit(): number {
+	// Keep the result panel large enough for graph inspection while leaving
+	// the task editor a usable area on smaller screens.
+	const viewportWidth = typeof window === 'undefined' ? 1440 : window.innerWidth;
+	return Math.min(MAX_RESULT_WIDTH, Math.max(640, Math.floor(viewportWidth * 0.58)));
+}
+
 export function TaskPage() {
 	const navigate = useNavigate();
 	const { taskId } = useParams<{ taskId?: string }>();
@@ -129,7 +139,7 @@ export function TaskPage() {
 	const [newTaskOpen, setNewTaskOpen] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
 	const [sidebarWidth, setSidebarWidth] = React.useState(280);
-	const [resultWidth, setResultWidth] = React.useState(420);
+	const [resultWidth, setResultWidth] = React.useState(480);
 	const [resizingPane, setResizingPane] = React.useState<ResizePane | null>(null);
 	const resizeStartRef = React.useRef<{ pane: ResizePane; x: number; width: number } | null>(
 		null,
@@ -158,7 +168,7 @@ export function TaskPage() {
 			} else {
 				// The results divider sits on the results panel's left edge.
 				// Moving it left makes the results panel wider.
-				setResultWidth(clamp(start.width - delta, 320, 640));
+				setResultWidth(clamp(start.width - delta, MIN_RESULT_WIDTH, getResultWidthLimit()));
 			}
 		};
 		const finishResize = () => {
@@ -729,7 +739,11 @@ export function TaskPage() {
 							<ResizeHandle
 								label="调整执行结果宽度"
 								onPointerDown={(event) => beginResize('results', event)}
-								onNudge={(delta) => setResultWidth((value) => clamp(value - delta, 320, 640))}
+								onNudge={(delta) =>
+									setResultWidth((value) =>
+										clamp(value - delta, MIN_RESULT_WIDTH, getResultWidthLimit()),
+									)
+								}
 							/>
 							<TaskRunPanel
 								run={currentRun}

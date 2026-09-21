@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """MVP Task pipeline tests without a real MCP server."""
 
+import asyncio
 from unittest import IsolatedAsyncioTestCase
 
 from examples.agent_service.task._executor import (
@@ -52,6 +53,13 @@ class _MockToolTaskExecutor(TaskExecutor):
             raise AssertionError(f"Unexpected step type: {node.type}")
 
         return StepExecutionResult(text=output)
+
+
+class _HangingTaskPlanner:
+    """Planner fixture that simulates a model request that never returns."""
+
+    async def plan(self, **_kwargs):
+        await asyncio.sleep(3600)
 
 
 class TestTaskMvpPipeline(IsolatedAsyncioTestCase):
@@ -160,3 +168,35 @@ class TestTaskMvpPipeline(IsolatedAsyncioTestCase):
             completed.final_output,
             "agent:python:TOOL:AGENT:原始目标",
         )
+
+    async def test_generation_timeout_returns_editable_fallback(self) -> None:
+        """A hung planner must not leave a task permanently generating."""
+
+        service = TaskService(
+            TaskStore(),
+            planner=_HangingTaskPlanner(),
+            generation_timeout_seconds=0.01,
+        )
+        task = await service.create_task(
+            "test-user",
+            CreateTaskRequest(
+                title="超时兜底测试",
+                goal="验证任务生成超时后仍可编辑",
+                source_context=TaskContext(
+                    agent_id="fake-agent",
+                    session_id="fake-session",
+                ),
+            ),
+        )
+
+        generated = await service.generate_task(
+            "test-user",
+            task.id,
+            task.source_context,
+        )
+
+        self.assertIsNotNone(generated)
+        assert generated is not None
+        self.assertEqual(generated.generation_status.value, "succeeded")
+        self.assertEqual(generated.status.value, "active")
+        self.assertEqual(len(generated.nodes), 2)

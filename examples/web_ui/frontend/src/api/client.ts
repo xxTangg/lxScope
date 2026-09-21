@@ -218,6 +218,7 @@ export const client = {
 			silent?: boolean;
 			authenticated?: boolean;
 			headers?: Record<string, string>;
+			timeoutMs?: number;
 		},
 	) => request<T>(path, { method: 'POST', body, params, ...options }),
 	form: <T>(

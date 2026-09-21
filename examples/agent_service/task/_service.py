@@ -2,6 +2,8 @@
 """Application service for reusable linear Tasks."""
 
 import asyncio
+import logging
+import os
 from datetime import datetime, timezone
 
 from ._artifact_spec import ArtifactSpec, artifact_spec_prompt, parse_agent_spec, spec_from_markdown
@@ -52,6 +54,24 @@ _TERMINAL_RUN_STATUSES = {
 }
 
 
+logger = logging.getLogger(__name__)
+
+_DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS = 45.0
+
+
+def _configured_generation_timeout() -> float:
+    """Read the planner deadline without allowing an invalid env to disable it."""
+
+    value = os.getenv(
+        "LXSCOPE_TASK_GENERATION_TIMEOUT_SECONDS",
+        str(_DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS),
+    )
+    try:
+        return max(1.0, float(value))
+    except (TypeError, ValueError):
+        return _DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS
+
+
 class TaskService:
     """Own Task lifecycle while keeping execution behind an adapter port."""
 
@@ -63,6 +83,7 @@ class TaskService:
         preview_executor: TaskExecutor | None = None,
         planner: TaskPlanner | None = None,
         artifact_writer: TaskArtifactWriter | None = None,
+        generation_timeout_seconds: float | None = None,
     ) -> None:
         """Bind repository and execution adapters."""
 
@@ -77,6 +98,12 @@ class TaskService:
         )
         self._preview_executor = preview_executor or PreviewTaskExecutor()
         self._planner = planner or PreviewTaskPlanner()
+        self._generation_timeout_seconds = max(
+            1.0,
+            generation_timeout_seconds
+            if generation_timeout_seconds is not None
+            else _configured_generation_timeout(),
+        )
         self._active_runs: dict[str, asyncio.Task[None]] = {}
         self._run_users: dict[str, str] = {}
 
@@ -129,20 +156,55 @@ class TaskService:
         try:
             tool_schemas: list[TaskToolSchema] = []
             try:
-                tool_schemas = await self.list_tools(user_id, merged_context)
+                tool_schemas = await asyncio.wait_for(
+                    self.list_tools(user_id, merged_context),
+                    timeout=self._generation_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Task tool discovery timed out after %.1fs for task=%s; "
+                    "continuing without tool schemas",
+                    self._generation_timeout_seconds,
+                    task_id,
+                )
+                tool_schemas = []
             except Exception:  # pylint: disable=broad-except
                 # Tool discovery is an enhancement for planning. A broken
                 # optional MCP must not prevent Agent/Python planning.
                 tool_schemas = []
-            draft = await self._planner.plan(
-                user_id=user_id,
-                goal=current.goal,
-                context=merged_context,
-                current_title=(
-                    current.title if current.title_source == "user" else None
-                ),
-                tool_schemas=tool_schemas,
-            )
+            try:
+                draft = await asyncio.wait_for(
+                    self._planner.plan(
+                        user_id=user_id,
+                        goal=current.goal,
+                        context=merged_context,
+                        current_title=(
+                            current.title if current.title_source == "user" else None
+                        ),
+                        tool_schemas=tool_schemas,
+                    ),
+                    timeout=self._generation_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                # A planner may be waiting on a model or a stateful MCP.  The
+                # editor must never leave a newly created task in "generating"
+                # forever; a deterministic editable plan keeps the UI usable
+                # while still allowing the user to refine or regenerate it.
+                logger.warning(
+                    "Task planner timed out after %.1fs for task=%s; "
+                    "using the editable fallback plan",
+                    self._generation_timeout_seconds,
+                    task_id,
+                )
+                draft = await PreviewTaskPlanner().plan(
+                    user_id=user_id,
+                    goal=current.goal,
+                    context=merged_context,
+                    current_title=(
+                        current.title if current.title_source == "user" else None
+                    ),
+                    tool_schemas=tool_schemas,
+                )
             plan_issues = validate_task_plan(draft, tool_schemas)
             if plan_issues:
                 raise ValueError(
@@ -215,7 +277,20 @@ class TaskService:
             run_id="task-tool-catalog",
             task_revision=0,
         )
-        return await list_tools(execution_context)
+        try:
+            return await list_tools(execution_context)
+        except Exception as error:  # noqa: BLE001 — tool discovery is optional
+            # Tool discovery runs while the Task editor is loading.  A stale
+            # stateful MCP must not make the whole page look unreachable; the
+            # planner and editor can safely continue with no optional tools.
+            logger.warning(
+                "Task tool discovery degraded for agent=%s session=%s; "
+                "continuing with no optional tools: %s",
+                context.agent_id,
+                context.session_id,
+                error,
+            )
+            return []
 
     async def get_task(self, user_id: str, task_id: str) -> TaskRecord | None:
         """Get one task owned by the caller."""

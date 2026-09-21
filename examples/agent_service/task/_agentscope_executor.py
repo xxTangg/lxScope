@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """AgentScope adapters for the typed Task step implementations."""
 
+import asyncio
 import inspect
 import json
+import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -21,6 +23,9 @@ from ._models import (
 if TYPE_CHECKING:
     from agentscope.app._service._access import ResourceAccessService
     from agentscope.app.storage import StorageBase
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentScopeTaskExecutor:
@@ -55,6 +60,11 @@ class AgentScopeTaskExecutor:
         self._message_bus = message_bus
         self._extra_agent_tools = extra_agent_tools
         self._sub_agent_templates = sub_agent_templates
+        # A browser/stdin MCP owns an AnyIO stream and cannot be probed or
+        # reconnected concurrently.  The Task page can issue duplicate tool
+        # discovery requests during a React refresh, so serialize lifecycle
+        # operations per logical MCP/session.
+        self._mcp_refresh_locks: dict[tuple[str, ...], asyncio.Lock] = {}
 
     async def execute_node(
         self,
@@ -412,13 +422,12 @@ class AgentScopeTaskExecutor:
         workspace: Any,
         context: ExecutionContext,
     ) -> None:
-        """Repair stale stateful MCP sessions before building a Task Toolkit.
+        """Best-effort probe of stateful MCP sessions before Task Toolkit use.
 
-        The workspace owns the configured MCP records, but this application
-        adapter owns the Task request boundary. A cached client may still say
-        it is connected after its AnyIO stream has been closed. Probe it using
-        AgentScope's public MCPClient API; if that fails, close and reconnect
-        the same stored client before Toolkit assembles its MCP tools.
+        The workspace owns MCP lifecycle. Task must not close or reconnect a
+        cached stateful client here: doing so can move an AnyIO cancel scope
+        across request/reload tasks and wedge the whole Uvicorn process. A
+        stale optional MCP is therefore left unavailable for this Task call.
         """
         clients = await workspace.list_mcps(
             agent_id=context.agent_id,
@@ -427,17 +436,29 @@ class AgentScopeTaskExecutor:
         for client in clients:
             if not client.is_stateful:
                 continue
-            try:
-                await client.list_tools()
-                continue
-            except Exception:
-                # The cached session is stale or was never connected. The
-                # public close/connect lifecycle resets its private stream
-                # state without changing the Agentscope core implementation.
-                if client.is_connected:
-                    await client.close(ignore_errors=True)
-                await client.connect()
-                await client.list_tools()
+            lock_key = (
+                context.agent_id or "",
+                context.session_id or "",
+                context.workspace_id or "",
+                client.name,
+            )
+            lock = self._mcp_refresh_locks.setdefault(
+                lock_key,
+                asyncio.Lock(),
+            )
+            async with lock:
+                try:
+                    await client.list_tools()
+                    continue
+                except Exception as probe_error:
+                    logger.warning(
+                        "Task MCP '%s' is stale for agent=%s session=%s; "
+                        "skipping its tools for this call: %s",
+                        client.name,
+                        context.agent_id,
+                        context.session_id,
+                        probe_error,
+                    )
 
     async def _build_toolkit(self, context: ExecutionContext) -> Any:
         """Assemble AgentScope's standard Toolkit for the Task context."""

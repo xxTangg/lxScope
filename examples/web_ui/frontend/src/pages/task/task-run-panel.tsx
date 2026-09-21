@@ -6,6 +6,13 @@ import { taskApi } from '@/api';
 import type { NodeRunRecord, RunStatus, TaskArtifactRecord, TaskNode, TaskRunRecord, TaskStepType } from '@/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+} from '@/components/ui/dialog';
 
 interface TaskRunPanelProps {
 	run: TaskRunRecord | null;
@@ -100,10 +107,14 @@ function artifactSizeLabel(size: number): string {
 export function TaskRunPanel({ run, width = 420, onCancel, onRetry }: TaskRunPanelProps) {
 	const [previewArtifact, setPreviewArtifact] = React.useState<TaskArtifactRecord | null>(null);
 	const [artifactBusyId, setArtifactBusyId] = React.useState<string | null>(null);
+	const [previewGraphNodeId, setPreviewGraphNodeId] = React.useState<string | null>(null);
 
 	React.useEffect(() => {
 		setPreviewArtifact(null);
+		setPreviewGraphNodeId(null);
 	}, [run?.id]);
+
+	const previewGraphNode = run?.node_runs.find((node) => node.node_id === previewGraphNodeId);
 
 	const previewArtifactContent = async (artifact: TaskArtifactRecord) => {
 		setArtifactBusyId(artifact.id);
@@ -207,14 +218,30 @@ export function TaskRunPanel({ run, width = 420, onCancel, onRetry }: TaskRunPan
 								</details>
 							)}
 							{definition?.knowledge_graph_enabled && (
-								<TaskKnowledgeGraph
-									taskId={run.task_id}
-									selectedIds={run.knowledge_base_ids ?? []}
-									runId={run.id}
-									nodeId={node.node_id}
-									compact
-									disabled={node.status === 'pending'}
-								/>
+								<>
+									<div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2">
+										<div className="min-w-0">
+											<div className="text-xs font-medium text-blue-900">节点知识图谱</div>
+											<div className="mt-0.5 text-[11px] text-blue-700/70">
+												在执行结果中按需查看该节点的实体关系
+											</div>
+										</div>
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											disabled={node.status === 'pending'}
+											onClick={() =>
+												setPreviewGraphNodeId((current) =>
+													current === node.node_id ? null : node.node_id,
+												)
+											}
+										>
+											<Eye />
+											预览图谱
+										</Button>
+									</div>
+								</>
 							)}
 							{node.error && (
 								<div className="mt-3 rounded-xl bg-red-50 p-3 text-sm leading-6 text-red-700">
@@ -297,6 +324,31 @@ export function TaskRunPanel({ run, width = 420, onCancel, onRetry }: TaskRunPan
 					</div>
 				</div>
 			)}
+			<Dialog
+				open={previewGraphNodeId !== null}
+				onOpenChange={(open) => {
+					if (!open) setPreviewGraphNodeId(null);
+				}}
+			>
+				{previewGraphNode && (
+					<DialogContent className="!w-[min(1500px,calc(100%-2rem))] !max-w-none max-h-[94vh] overflow-y-auto">
+						<DialogHeader>
+							<DialogTitle>节点知识图谱预览 · {previewGraphNode.name}</DialogTitle>
+							<DialogDescription>
+								在执行结果中查看该节点的实体关系、关系证据和来源片段；图谱支持拖动、缩放和适配视图。
+							</DialogDescription>
+						</DialogHeader>
+						<TaskKnowledgeGraph
+							taskId={run.task_id}
+							selectedIds={run.knowledge_base_ids ?? []}
+							runId={run.id}
+							nodeId={previewGraphNode.node_id}
+							preview
+							disabled={previewGraphNode.status === 'pending'}
+						/>
+					</DialogContent>
+				)}
+			</Dialog>
 			{!isTerminal(run.status) ? (
 				<div className="border-t border-border/70 px-6 py-4">
 					<Button variant="outline" size="sm" onClick={onCancel}>

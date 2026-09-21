@@ -214,9 +214,8 @@ export function TaskFlowEditor({
 												disabled={disabled}
 												className="size-3.5 accent-primary"
 											/>
-											<span>允许在此步骤按需生成知识图谱</span>
-										</label>
-
+																					<span>允许在此步骤按需生成知识图谱</span>
+																				</label>
 										{agentConfig && (
 											<Textarea
 												value={agentConfig.prompt}
@@ -436,6 +435,7 @@ export function TaskFlowEditor({
 					<span className="text-sm font-medium">结束</span>
 				</div>
 			</div>
+
 		</section>
 	);
 }

@@ -71,6 +71,9 @@ services:
       LXSCOPE_TENANT_CODE: ${LXSCOPE_TENANT_CODE:-default}
       LXSCOPE_TENANT_NAME: ${LXSCOPE_TENANT_NAME:-Default Tenant}
       LXSCOPE_TENANT_ID: ${LXSCOPE_TENANT_ID:-}
+      # Bound the Task planner so a stalled model or MCP cannot leave the
+      # editor in "generating" forever. Override for local demos if needed.
+      LXSCOPE_TASK_GENERATION_TIMEOUT_SECONDS: ${LXSCOPE_TASK_GENERATION_TIMEOUT_SECONDS:-45}
       # Project-level observability. Metrics are exposed at
       # /observability/metrics for authenticated administrators.
       LXSCOPE_OBSERVABILITY_ENABLED: ${LXSCOPE_OBSERVABILITY_ENABLED:-true}
