@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import SecretStr
 import uvicorn
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -78,6 +78,15 @@ from project_observability import (
 from observability_analytics_api import observability_analytics_router
 from mcp_management import management_mcp_router
 from persistence import ApplicationDatabase
+from identity.dependencies import (
+    clear_bound_tenant_identity,
+    get_current_tenant_identity,
+    get_logto_verifier,
+    get_tenant_binding_repository,
+    reset_bound_tenant_identity,
+    resolve_tenant_identity_from_authorization,
+)
+from identity.models import TenantIdentity
 from task import (
     AgentScopeTaskExecutor,
     AgentScopeTaskPlanner,
@@ -128,6 +137,12 @@ skill_observation_store: PostgresSkillObservationStore | None = None
 project_observability_store: PostgresProjectObservabilityStore | None = None
 application_database: ApplicationDatabase | None = None
 project_observability = ProjectObservability()
+
+_AUTH_PROVIDER = os.getenv("LXSCOPE_AUTH_PROVIDER", "local").strip().lower()
+if _AUTH_PROVIDER not in {"local", "logto"}:
+    raise RuntimeError(
+        "LXSCOPE_AUTH_PROVIDER must be either 'local' or 'logto'.",
+    )
 
 # Product-owned office skills are seeded into every new workspace. They do
 # not become user-installed library records, so every account can use them
@@ -220,7 +235,12 @@ async def _sync_current_user_skills(
         ),
     )
     try:
-        account = await auth._account_by_id(user_id)
+        if _AUTH_PROVIDER == "logto":
+            summary.result = "skipped"
+            summary.error_code = "logto_identity_skill_sync_deferred"
+            return summary
+
+        account = await auth.get_user_by_id(user_id)
         application = globals().get("app")
         if account is None or account.status != "active" or application is None:
             summary.result = "skipped"
@@ -228,7 +248,7 @@ async def _sync_current_user_skills(
             return summary
 
         admin_service = application.state.admin_service
-        current_user = auth._public_user(account)
+        current_user = account
         visible_resources = await admin_service.published_resources(
             current_user,
             "skill",
@@ -498,6 +518,16 @@ async def _request_user_id(request: Request) -> str:
     auth = getattr(request.app.state, "auth", None)
     if not authorization or auth is None:
         return ""
+    if _AUTH_PROVIDER == "logto":
+        try:
+            identity = await resolve_tenant_identity_from_authorization(
+                authorization,
+                verifier=get_logto_verifier(request),
+                repository=get_tenant_binding_repository(request),
+            )
+            return str(identity.membership_id)
+        except Exception:
+            return ""
     try:
         return await auth.get_current_user_id(authorization)
     except Exception:
@@ -510,6 +540,7 @@ async def _request_user_id(request: Request) -> str:
 @app.middleware("http")
 async def observability_middleware(request: Request, call_next):
     """Correlate and measure every HTTP request at the app boundary."""
+    tenant_context_token = clear_bound_tenant_identity()
     request_id = new_request_id(request)
     request.state.request_id = request_id
     started_at = asyncio.get_running_loop().time()
@@ -549,6 +580,7 @@ async def observability_middleware(request: Request, call_next):
             trace_id=getattr(request.state, "trace_id", ""),
             user_id=user_id,
         )
+        reset_bound_tenant_identity(tenant_context_token)
 
     assert response is not None
     response.headers["X-Request-ID"] = request_id
@@ -604,6 +636,9 @@ async def admin_validation_error_handler(request: Request, exc: RequestValidatio
 
 
 app.state.auth = auth
+app.state.auth_provider = _AUTH_PROVIDER
+app.state.application_database = None
+app.state.tenant_binding_repository = None
 app.state.plan_billing_service = PlanBillingService(storage, auth)
 app.state.credential_access_check = auth.is_admin_user
 app.state.chat_access_check = app.state.plan_billing_service.ensure_chat_allowed
@@ -626,7 +661,21 @@ app.include_router(upgrade_router)
 app.include_router(task_router)
 app.include_router(observability_router)
 app.include_router(management_mcp_router)
-app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
+
+
+async def _logto_agent_user_id(
+    tenant_identity: TenantIdentity = Depends(get_current_tenant_identity),
+) -> str:
+    """Expose membership_id at the AgentScope user_id boundary."""
+
+    return str(tenant_identity.membership_id)
+
+
+app.dependency_overrides[get_current_user_id] = (
+    auth.get_current_user_id
+    if _AUTH_PROVIDER == "local"
+    else _logto_agent_user_id
+)
 
 # Seed the env-backed credential only after AgentScope has entered its normal
 # storage lifespan.  Keeping the wrapper here avoids changing the library's
@@ -652,12 +701,19 @@ async def _application_lifespan(app_instance):
         "LXSCOPE_DATABASE_URL",
         "",
     ).strip()
+    app_instance.state.application_database = None
+    app_instance.state.tenant_binding_repository = None
+    if _AUTH_PROVIDER == "logto" and not application_database_url:
+        raise RuntimeError(
+            "LXSCOPE_AUTH_PROVIDER=logto requires LXSCOPE_DATABASE_URL.",
+        )
     local_application_database: ApplicationDatabase | None = None
     if application_database_url:
         local_application_database = ApplicationDatabase(application_database_url)
         try:
             await local_application_database.initialize()
             application_database = local_application_database
+            app_instance.state.application_database = local_application_database
             logger.info(
                 "lxscope.persistence.database_ready backend=postgres "
                 "schema=longxin_app",
@@ -667,7 +723,7 @@ async def _application_lifespan(app_instance):
             await local_application_database.close()
             local_application_database = None
             application_database = None
-            if task_store_backend == "postgres":
+            if task_store_backend == "postgres" or _AUTH_PROVIDER == "logto":
                 raise
     elif task_store_backend == "postgres":
         raise RuntimeError(
@@ -746,6 +802,8 @@ async def _application_lifespan(app_instance):
                         "Default Tenant",
                     ),
                     tenant_id=os.getenv("LXSCOPE_TENANT_ID") or None,
+                    provision_default_tenant=_AUTH_PROVIDER == "local",
+                    require_tenant_context=_AUTH_PROVIDER == "logto",
                 )
                 await app_instance.state.task_store.initialize()
                 logger.info(
@@ -798,6 +856,8 @@ async def _application_lifespan(app_instance):
             await local_store.close()
         if local_application_database is not None:
             await local_application_database.close()
+        app_instance.state.application_database = None
+        app_instance.state.tenant_binding_repository = None
         application_database = None
         project_observability.shutdown()
         skill_observation_store = None

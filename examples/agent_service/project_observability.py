@@ -69,6 +69,27 @@ _user_id_context: ContextVar[str] = ContextVar(
 )
 
 
+def _bound_identity_dimensions() -> tuple[str | None, str | None]:
+    """Read trusted tenant dimensions from the current application context."""
+
+    try:
+        from identity.dependencies import (
+            get_bound_membership_id,
+            get_bound_tenant_id,
+        )
+    except ModuleNotFoundError:  # pragma: no cover - package import mode
+        from examples.agent_service.identity.dependencies import (
+            get_bound_membership_id,
+            get_bound_tenant_id,
+        )
+    tenant_id = get_bound_tenant_id()
+    membership_id = get_bound_membership_id()
+    return (
+        str(tenant_id) if tenant_id is not None else None,
+        str(membership_id) if membership_id is not None else None,
+    )
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -354,6 +375,15 @@ class ProjectObservability:
         safe_attributes.setdefault("request_id", _request_id_context.get() or None)
         safe_attributes.setdefault("trace_id", _trace_id_context.get() or None)
         safe_attributes.setdefault("user_id", _user_id_context.get() or None)
+        tenant_id, membership_id = _bound_identity_dimensions()
+        if tenant_id is not None:
+            # A verified request identity is authoritative.  Never let an
+            # event attribute supplied by an application caller override it.
+            safe_attributes["tenant_id"] = tenant_id
+            safe_attributes["membership_id"] = membership_id
+        else:
+            safe_attributes.setdefault("tenant_id", tenant_id)
+            safe_attributes.setdefault("membership_id", membership_id)
         event_payload = {
             "event": event_name,
             "component": component,

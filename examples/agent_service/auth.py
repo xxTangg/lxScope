@@ -307,6 +307,12 @@ class JWTAuthService:
         registered = await self._registered_by_id(user_id)
         return registered or self._accounts_by_id.get(user_id)
 
+    async def get_user_by_id(self, user_id: str) -> AuthUser | None:
+        """Return a public account view without exposing storage internals."""
+
+        account = await self._account_by_id(user_id)
+        return self._public_user(account) if account is not None else None
+
     async def _save_account(self, account: _Account) -> None:
         if account.user_id in self._accounts_by_id:
             self._accounts_by_id[account.user_id] = account

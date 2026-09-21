@@ -609,6 +609,8 @@
 		"confirmPassword": "确认密码",
 		"confirmPasswordPlaceholder": "请再次输入密码",
 		"signIn": "登录",
+		"logtoSignIn": "使用 Logto 登录",
+		"logtoDescription": "使用 Logto 账号访问企业工作区。",
 		"signingIn": "登录中...",
 		"register": "注册并登录",
 		"registering": "注册中...",
@@ -634,7 +636,15 @@
 		"cacheTokens": "缓存输入 Token",
 		"refreshUsage": "刷新用量",
 		"usageLoadFailed": "Token 用量加载失败，请稍后重试。",
-		"usageScope": "基于 {{sessions}} 个会话中的 {{messages}} 条用量记录统计。"
+		"usageScope": "基于 {{sessions}} 个会话中的 {{messages}} 条用量记录统计。",
+		"organization": "企业",
+		"chooseOrganization": "选择企业",
+		"chooseOrganizationTitle": "选择企业",
+		"chooseOrganizationDescription": "请选择要使用的企业工作区。",
+		"switchingOrganization": "正在切换企业...",
+		"organizationSwitchFailed": "切换企业失败，请重试。",
+		"noOrganizationTitle": "没有企业权限",
+		"noOrganizationDescription": "当前 Logto 账号不属于任何企业工作区。"
 	},
 	"tour": {
 		"trigger": "新手引导",

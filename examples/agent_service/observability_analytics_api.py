@@ -17,6 +17,11 @@ except ModuleNotFoundError:
     from examples.agent_service.auth import AuthUser
     from examples.agent_service.token_usage_analytics import collect_token_usage
 
+try:
+    from identity.dependencies import get_bound_tenant_id
+except ModuleNotFoundError:
+    from examples.agent_service.identity.dependencies import get_bound_tenant_id
+
 
 class ObservabilityDaily(BaseModel):
     date: str
@@ -242,6 +247,13 @@ observability_analytics_router = APIRouter(
 )
 
 
+def _current_tenant_id() -> str | None:
+    """Return only the verified tenant bound by the authentication layer."""
+
+    tenant_id = get_bound_tenant_id()
+    return str(tenant_id) if tenant_id is not None else None
+
+
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -266,6 +278,7 @@ async def _load_skill_failures(
     *,
     start: datetime,
     end: datetime,
+    tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Read Skill failures into the same shape as project runtime failures."""
     skill_store = getattr(request.app.state, "skill_observation_store", None)
@@ -275,6 +288,7 @@ async def _load_skill_failures(
         skill_summary = await skill_store.query_skill_analytics(
             start=start,
             end=end,
+            tenant_id=tenant_id,
         )
     except Exception:
         return []
@@ -464,6 +478,7 @@ async def get_observability_overview(
 ) -> ObservabilityOverviewResponse:
     """Return one stable projection for the admin observability dashboard."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
+    tenant_id = _current_tenant_id()
 
     observability = getattr(request.app.state, "observability", None)
     store = getattr(observability, "events", None)
@@ -471,7 +486,11 @@ async def get_observability_overview(
         summary = _empty_summary()
         data_available = False
     else:
-        summary = store.summarize(start=normalized_start, end=normalized_end)
+        summary = store.summarize(
+            start=normalized_start,
+            end=normalized_end,
+            tenant_id=tenant_id,
+        )
         data_available = bool(
             getattr(getattr(observability, "settings", None), "enabled", True),
         )
@@ -480,6 +499,7 @@ async def get_observability_overview(
         request,
         start=normalized_start,
         end=normalized_end,
+        tenant_id=tenant_id,
     )
     if skill_failures:
         summary["failures"] = [
@@ -561,6 +581,7 @@ async def get_observability_failures(
 ) -> ObservabilityFailureCenterResponse:
     """Return one unified failure center across runtime components."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
+    tenant_id = _current_tenant_id()
     observability = getattr(request.app.state, "observability", None)
     store = getattr(observability, "events", None)
     detail = (
@@ -570,6 +591,7 @@ async def get_observability_failures(
             component=component,
             error_type=error_type,
             user_id=user_id,
+            tenant_id=tenant_id,
             limit=limit,
         )
         if store is not None
@@ -584,6 +606,7 @@ async def get_observability_failures(
         request,
         start=normalized_start,
         end=normalized_end,
+        tenant_id=tenant_id,
     )
     skill_failures = [
         row
@@ -645,6 +668,7 @@ async def get_observability_component_detail(
 ) -> ObservabilityComponentDetailResponse:
     """Return detail data for the model, Agent or Tool/MCP drill-down page."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
+    tenant_id = _current_tenant_id()
 
     observability = getattr(request.app.state, "observability", None)
     store = getattr(observability, "events", None)
@@ -655,6 +679,7 @@ async def get_observability_component_detail(
             end=normalized_end,
             name=name,
             user_id=user_id,
+            tenant_id=tenant_id,
         )
         if store is not None
         else _empty_component_detail(component)
@@ -689,6 +714,7 @@ async def get_observability_agent_detail(
 ) -> AgentDetailResponse:
     """Return Agent executions and their related model/Tool summaries."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
+    tenant_id = _current_tenant_id()
     observability = getattr(request.app.state, "observability", None)
     store = getattr(observability, "events", None)
     detail = (
@@ -696,6 +722,7 @@ async def get_observability_agent_detail(
             agent_name,
             start=normalized_start,
             end=normalized_end,
+            tenant_id=tenant_id,
         )
         if store is not None
         else {
@@ -737,6 +764,7 @@ async def get_observability_trace(
 ) -> ObservabilityTraceResponse:
     """Return the chronological event chain for one trace ID."""
     normalized_start, normalized_end = _period(start=None, end=None, days=90)
+    tenant_id = _current_tenant_id()
     observability = getattr(request.app.state, "observability", None)
     store = getattr(observability, "events", None)
     if store is None:
@@ -745,6 +773,7 @@ async def get_observability_trace(
         trace_id,
         start=normalized_start,
         end=normalized_end,
+        tenant_id=tenant_id,
     )
     if not detail["events"]:
         raise HTTPException(status_code=404, detail="Trace not found.")

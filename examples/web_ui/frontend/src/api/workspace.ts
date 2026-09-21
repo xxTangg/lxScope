@@ -1,4 +1,4 @@
-import { ApiError, client, getAccessToken, getBaseUrl } from './client';
+import { ApiError, client, getBaseUrl, getRequestAccessToken } from './client';
 import type { UploadProgress } from './knowledgeBase';
 import type {
 	AddFromLibraryResponse,
@@ -26,13 +26,14 @@ export interface UploadOptions {
  * tar as they arrive, and a tar header needs each member's size before
  * its bytes — which a multipart part does not declare.
  */
-function uploadSkillXhr(
+async function uploadSkillXhr(
 	agentId: string,
 	sessionId: string,
 	files: File[],
 	options: UploadOptions = {},
 ): Promise<void> {
 	const { onProgress, signal } = options;
+	const token = await getRequestAccessToken();
 	const formData = new FormData();
 	formData.append(
 		'manifest',
@@ -56,7 +57,6 @@ function uploadSkillXhr(
 		url.searchParams.set('agent_id', agentId);
 		url.searchParams.set('session_id', sessionId);
 		xhr.open('POST', url.toString(), true);
-		const token = getAccessToken();
 		if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
 		const onAbort = () => xhr.abort();

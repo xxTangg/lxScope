@@ -13,6 +13,7 @@ import { Toaster } from 'sonner';
 
 import { MCPHubPage } from './pages/mcp';
 import { SkillHubPage } from './pages/skill';
+import { OrganizationGate } from '@/components/auth/OrganizationGate';
 import { RouteError } from '@/components/error/RouteError';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { buildChatTour } from '@/components/tour/chatTourSteps';
@@ -23,25 +24,25 @@ import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { queryClient } from '@/lib/query-client';
 import { AccountPage } from '@/pages/account';
-import { AdminAuditPage } from '@/pages/admin/audit';
-import { AdminObservabilityPage } from '@/pages/admin/analytics';
-import { AdminObservabilityFailuresPage } from '@/pages/admin/observability-failures';
 import { AdminAgentDetailPage } from '@/pages/admin/agent-detail';
-import { AdminObservabilityDetailPage } from '@/pages/admin/observability-detail';
-import { AdminObservabilityFocusPage } from '@/pages/admin/observability-focus';
-import { AdminSkillAnalyticsPage } from '@/pages/admin/skill-analytics';
-import { AdminTraceDetailPage } from '@/pages/admin/trace-detail';
-import { AdminToolObservabilityPage } from '@/pages/admin/tool-analysis';
+import { AdminObservabilityPage } from '@/pages/admin/analytics';
+import { AdminAuditPage } from '@/pages/admin/audit';
 import { AdminLayout } from '@/pages/admin/layout';
 import { AdminMcpPage } from '@/pages/admin/mcp';
 import { AdminMembersPage } from '@/pages/admin/members';
 import { AdminModelObservabilityPage } from '@/pages/admin/model-analysis';
 import { AdminModelsPage } from '@/pages/admin/models';
+import { AdminObservabilityDetailPage } from '@/pages/admin/observability-detail';
+import { AdminObservabilityFailuresPage } from '@/pages/admin/observability-failures';
+import { AdminObservabilityFocusPage } from '@/pages/admin/observability-focus';
 import { AdminOverviewPage } from '@/pages/admin/overview';
 import { AdminPolicyPage } from '@/pages/admin/policy';
 import { AdminQuotaPage } from '@/pages/admin/quota';
 import { AdminSalesHubPage } from '@/pages/admin/sales-hub';
+import { AdminSkillAnalyticsPage } from '@/pages/admin/skill-analytics';
 import { AdminSkillsPage } from '@/pages/admin/skills';
+import { AdminToolObservabilityPage } from '@/pages/admin/tool-analysis';
+import { AdminTraceDetailPage } from '@/pages/admin/trace-detail';
 import { AdminUpgradesPage } from '@/pages/admin/upgrades';
 import { ChannelPage } from '@/pages/channel';
 import { ChatPage } from '@/pages/chat';
@@ -62,7 +63,7 @@ function SetupPageRoute() {
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-	const { status } = useAuth();
+	const { status, noOrganizationAccess, organizationSelectionRequired } = useAuth();
 	const location = useLocation();
 
 	if (status === 'loading') {
@@ -81,7 +82,21 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 			/>
 		);
 	}
+	if (noOrganizationAccess) return <OrganizationGate mode="none" />;
+	if (organizationSelectionRequired) return <OrganizationGate mode="select" />;
 	return children;
+}
+
+function LogtoCallbackRoute() {
+	const { status } = useAuth();
+	if (status === 'loading') {
+		return (
+			<div className="flex h-screen items-center justify-center bg-canvas">
+				<Loader2 className="size-5 animate-spin text-muted-foreground" />
+			</div>
+		);
+	}
+	return <Navigate to={status === 'authenticated' ? '/chat' : '/login'} replace />;
 }
 
 function AdminOnlyRoute({ children }: { children: React.ReactNode }) {
@@ -177,6 +192,7 @@ const router = createBrowserRouter([
 		),
 		errorElement: <RouteError />,
 	},
+	{ path: '/callback', element: <LogtoCallbackRoute />, errorElement: <RouteError /> },
 	{ path: '/login', element: <LoginPage />, errorElement: <RouteError /> },
 ]);
 

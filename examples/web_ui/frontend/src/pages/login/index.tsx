@@ -15,7 +15,7 @@ import { formatApiErrorForAlert } from '@/lib/api-error';
 
 export function LoginPage() {
 	const { t } = useTranslation();
-	const { status, login, register } = useAuth();
+	const { status, login, register, signIn, isLogto } = useAuth();
 	const navigate = useNavigate();
 	const location = useLocation();
 	const [username, setUsername] = useState('');
@@ -30,6 +30,30 @@ export function LoginPage() {
 		return (
 			<div className="flex h-screen items-center justify-center bg-canvas">
 				<Loader2 className="size-5 animate-spin text-muted-foreground" />
+			</div>
+		);
+	}
+
+	if (isLogto) {
+		return (
+			<div className="flex h-screen items-center justify-center bg-canvas px-4">
+				<div className="flex w-full max-w-sm flex-col gap-6">
+					<div className="flex items-center justify-center gap-2.5">
+						<AgentScope className="size-9" />
+						<span className="text-lg font-semibold text-foreground">{t('auth.brand')}</span>
+					</div>
+					<Card>
+						<CardHeader>
+							<CardTitle>{t('auth.title')}</CardTitle>
+							<CardDescription>{t('auth.logtoDescription')}</CardDescription>
+						</CardHeader>
+						<CardContent>
+							<Button className="w-full" onClick={() => void signIn()}>
+								{t('auth.logtoSignIn')}
+							</Button>
+						</CardContent>
+					</Card>
+				</div>
 			</div>
 		);
 	}

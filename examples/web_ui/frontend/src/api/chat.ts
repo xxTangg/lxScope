@@ -1,4 +1,4 @@
-import { ApiError, client, getAccessToken, getBaseUrl } from './client';
+import { ApiError, client, getBaseUrl, getRequestAccessToken } from './client';
 import type {
 	ChatRequest,
 	ListChatAttachmentContentTypesResponse,
@@ -6,15 +6,15 @@ import type {
 } from './types';
 
 /** Upload one document for server-side text extraction. */
-function parseAttachment(file: File): Promise<ParseChatAttachmentResponse> {
+async function parseAttachment(file: File): Promise<ParseChatAttachmentResponse> {
 	const formData = new FormData();
 	formData.append('file', file);
+	const token = await getRequestAccessToken();
 
 	return new Promise((resolve, reject) => {
 		const xhr = new XMLHttpRequest();
 		const url = new URL('/chat/attachments/parse', getBaseUrl());
 		xhr.open('POST', url.toString(), true);
-		const token = getAccessToken();
 		if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
 		xhr.onload = () => {

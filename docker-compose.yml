@@ -16,6 +16,63 @@ services:
       timeout: 3s
       retries: 20
 
+  # Create the Logto database inside the existing PostgreSQL instance.  The
+  # operation is idempotent, so it also works when postgres-data already
+  # exists and the image entrypoint init scripts will not run again.
+  logto-db-init:
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-lxscope}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      PGDATABASE: ${POSTGRES_DB:-lxscope}
+      LOGTO_DATABASE: ${LOGTO_DATABASE:-logto}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if ! psql -Atqc "SELECT 1 FROM pg_database WHERE datname = '$$LOGTO_DATABASE'" | grep -q 1; then
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$$LOGTO_DATABASE\""
+        fi
+
+  # Initialize the Logto schema and apply the version-matched alterations.
+  # This is separate from database creation because the Logto image owns the
+  # CLI and migration tooling, while the postgres image owns psql.
+  logto-db-seed:
+    image: ${LOGTO_IMAGE:-ghcr.io/logto-io/logto:latest}
+    restart: "no"
+    depends_on:
+      logto-db-init:
+        condition: service_completed_successfully
+    environment:
+      CI: "true"
+      DB_URL: postgres://${POSTGRES_USER:-lxscope}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${LOGTO_DATABASE:-logto}
+    entrypoint: ["/bin/sh"]
+    command:
+      - -ec
+      - |
+        npm run cli db seed -- --swe
+        npm run alteration deploy latest
+
+  logto:
+    image: ${LOGTO_IMAGE:-ghcr.io/logto-io/logto:latest}
+    restart: unless-stopped
+    depends_on:
+      logto-db-seed:
+        condition: service_completed_successfully
+    ports:
+      - "${LOGTO_CORE_PORT:-3001}:3001"
+      - "${LOGTO_ADMIN_PORT:-3002}:3002"
+    environment:
+      DB_URL: postgres://${POSTGRES_USER:-lxscope}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${LOGTO_DATABASE:-logto}
+      ENDPOINT: ${LOGTO_ENDPOINT:-http://localhost:3001}
+      ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT:-http://localhost:3002}
+      TRUST_PROXY_HEADER: ${LOGTO_TRUST_PROXY_HEADER:-0}
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -71,6 +128,15 @@ services:
       LXSCOPE_TENANT_CODE: ${LXSCOPE_TENANT_CODE:-default}
       LXSCOPE_TENANT_NAME: ${LXSCOPE_TENANT_NAME:-Default Tenant}
       LXSCOPE_TENANT_ID: ${LXSCOPE_TENANT_ID:-}
+      # Logto OSS integration is intentionally left in local mode during
+      # phase one.  The endpoint/resource values are prepared for the next
+      # phase without changing the current login behavior.
+      LXSCOPE_AUTH_PROVIDER: ${LXSCOPE_AUTH_PROVIDER:-local}
+      LOGTO_ENDPOINT: ${LOGTO_ENDPOINT:-http://localhost:3001}
+      # Keep the public issuer above for JWT validation, but fetch signing
+      # keys through the Docker service network from inside this container.
+      LOGTO_JWKS_URL: ${LOGTO_JWKS_URL:-http://logto:3001/oidc/jwks}
+      LOGTO_API_RESOURCE: ${LOGTO_API_RESOURCE:-}
       # Project-level observability. Metrics are exposed at
       # /observability/metrics for authenticated administrators.
       LXSCOPE_OBSERVABILITY_ENABLED: ${LXSCOPE_OBSERVABILITY_ENABLED:-true}
@@ -159,6 +225,11 @@ services:
         condition: service_healthy
     ports:
       - "${WEB_UI_PORT:-8000}:80"
+    environment:
+      VITE_AUTH_PROVIDER: ${VITE_AUTH_PROVIDER:-local}
+      VITE_LOGTO_ENDPOINT: ${VITE_LOGTO_ENDPOINT:-http://localhost:3001}
+      VITE_LOGTO_APP_ID: ${VITE_LOGTO_APP_ID:-}
+      VITE_LOGTO_API_RESOURCE: ${VITE_LOGTO_API_RESOURCE:-}
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/"]
       interval: 10s

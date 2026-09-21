@@ -23,6 +23,9 @@ from pydantic import BaseModel, Field, ValidationError
 from agentscope.app.storage import MCPRecord, SkillRecord
 from agentscope.mcp import MCPClient
 from auth import AuthUser, JWTAuthService
+from identity.dependencies import (
+    get_current_application_user,
+)
 from longxin_admin.distributed_lock import DistributedLease
 from longxin_admin.plan_billing.catalog import (
     PLAN_VALUES,
@@ -2938,8 +2941,7 @@ async def _auth_user(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> AuthUser:
-    auth: JWTAuthService = request.app.state.auth
-    return await auth.get_current_user(authorization)
+    return await get_current_application_user(request, authorization)
 
 
 async def require_admin(

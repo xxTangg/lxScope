@@ -20,6 +20,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 
 import AgentScope from '@/assets/images/agentscope.svg?react';
 import MCPSvg from '@/assets/images/mcp.svg?react';
+import { OrganizationSwitcher } from '@/components/auth/OrganizationSwitcher';
 import { CHAT_TOUR_NAME } from '@/components/tour/chatTourSteps';
 import {
 	DropdownMenu,
@@ -230,6 +231,8 @@ export function AppSidebar() {
 										{t('auth.brand')}
 									</div>
 								</DropdownMenuLabel>
+								<DropdownMenuSeparator />
+								<OrganizationSwitcher />
 								<DropdownMenuSeparator />
 								<DropdownMenuItem onSelect={() => navigate('/account')}>
 									<UserRound />

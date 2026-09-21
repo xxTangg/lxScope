@@ -50,6 +50,8 @@ class ObservabilityEvent:
     request_id: str | None = None
     trace_id: str | None = None
     user_id: str | None = None
+    tenant_id: str | None = None
+    membership_id: str | None = None
     session_id: str | None = None
     agent_name: str | None = None
     model: str | None = None
@@ -105,6 +107,8 @@ class ObservabilityEventStore:
             request_id=_text(attributes.get("request_id")),
             trace_id=_text(attributes.get("trace_id")),
             user_id=_text(attributes.get("user_id")),
+            tenant_id=_text(attributes.get("tenant_id")),
+            membership_id=_text(attributes.get("membership_id")),
             session_id=_text(attributes.get("session_id")),
             agent_name=_text(attributes.get("agent_name")),
             model=_text(attributes.get("model")),
@@ -134,7 +138,13 @@ class ObservabilityEventStore:
         with self._lock:
             self._events = list(events[-self.max_events :])
 
-    def query(self, *, start: datetime, end: datetime) -> list[ObservabilityEvent]:
+    def query(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        tenant_id: str | None = None,
+    ) -> list[ObservabilityEvent]:
         normalized_start = _utc(start)
         normalized_end = _utc(end)
         with self._lock:
@@ -142,10 +152,17 @@ class ObservabilityEventStore:
                 event
                 for event in self._events
                 if normalized_start <= event.occurred_at < normalized_end
+                and (tenant_id is None or event.tenant_id == tenant_id)
             ]
 
-    def summarize(self, *, start: datetime, end: datetime) -> dict[str, Any]:
-        events = self.query(start=start, end=end)
+    def summarize(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        events = self.query(start=start, end=end, tenant_id=tenant_id)
         request_events = [
             event
             for event in events
@@ -196,12 +213,17 @@ class ObservabilityEventStore:
         component: str | None = None,
         error_type: str | None = None,
         user_id: str | None = None,
+        tenant_id: str | None = None,
         limit: int = 200,
     ) -> dict[str, Any]:
         """Return the cross-component failure projection for administrators."""
         events = [
             event
-            for event in self.query(start=start, end=end)
+            for event in self.query(
+                start=start,
+                end=end,
+                tenant_id=tenant_id,
+            )
             if event.result != "success"
             and (not component or event.component == component)
             and (not user_id or event.user_id == user_id)
@@ -225,6 +247,7 @@ class ObservabilityEventStore:
         end: datetime,
         name: str | None = None,
         user_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         """Return a drill-down projection for one runtime component."""
         key_name = {
@@ -235,7 +258,11 @@ class ObservabilityEventStore:
         if key_name is None:
             raise ValueError(f"Unsupported observability component: {component}")
 
-        all_events = self.query(start=start, end=end)
+        all_events = self.query(
+            start=start,
+            end=end,
+            tenant_id=tenant_id,
+        )
         component_events = [
             event for event in all_events if event.component == component
         ]
@@ -457,10 +484,15 @@ class ObservabilityEventStore:
         start: datetime,
         end: datetime,
         limit: int = 50,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         """Return Agent executions together with related model and Tool work."""
         normalized_name = _text(agent_name) or "unknown"
-        all_events = self.query(start=start, end=end)
+        all_events = self.query(
+            start=start,
+            end=end,
+            tenant_id=tenant_id,
+        )
         agent_events = [
             event
             for event in all_events
@@ -568,12 +600,17 @@ class ObservabilityEventStore:
         *,
         start: datetime,
         end: datetime,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         """Return a payload-free chronological event chain for one trace."""
         normalized_trace_id = _text(trace_id) or ""
         events = [
             event
-            for event in self.query(start=start, end=end)
+            for event in self.query(
+                start=start,
+                end=end,
+                tenant_id=tenant_id,
+            )
             if event.trace_id == normalized_trace_id
         ]
         events.sort(key=lambda event: event.occurred_at)

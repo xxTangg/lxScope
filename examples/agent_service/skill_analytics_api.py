@@ -22,6 +22,11 @@ except ModuleNotFoundError:
     from examples.agent_service.auth import AuthUser
     from examples.agent_service.token_usage_analytics import collect_token_usage
 
+try:
+    from identity.dependencies import get_bound_tenant_id
+except ModuleNotFoundError:
+    from examples.agent_service.identity.dependencies import get_bound_tenant_id
+
 
 class SkillDailyAnalytics(BaseModel):
     date: str
@@ -111,6 +116,13 @@ skill_analytics_router = APIRouter(
 )
 
 
+def _current_tenant_id() -> str | None:
+    """Return only the verified tenant bound by the authentication layer."""
+
+    tenant_id = get_bound_tenant_id()
+    return str(tenant_id) if tenant_id is not None else None
+
+
 def _empty_skill_analytics() -> dict[str, Any]:
     """Keep Token analysis available when optional Skill storage is absent."""
     return {
@@ -178,6 +190,7 @@ async def get_skill_analytics(
             result = await store.query_skill_analytics(
                 start=normalized_start,
                 end=normalized_end,
+                tenant_id=_current_tenant_id(),
             )
         except Exception as exc:
             raise HTTPException(

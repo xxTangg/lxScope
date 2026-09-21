@@ -6,6 +6,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Header, Query, Request, UploadFile
 
 from auth import AuthUser
+from identity.dependencies import get_current_application_user
 
 from .models import (
     AdminApplyRequest,
@@ -37,7 +38,7 @@ async def _current_user(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> AuthUser:
-    return await request.app.state.auth.get_current_user(authorization)
+    return await get_current_application_user(request, authorization)
 
 
 async def _require_admin(user: AuthUser = Depends(_current_user)) -> AuthUser:

@@ -609,6 +609,8 @@
 		"confirmPassword": "Confirm password",
 		"confirmPasswordPlaceholder": "Enter your password again",
 		"signIn": "Sign in",
+		"logtoSignIn": "Continue with Logto",
+		"logtoDescription": "Use your Logto account to access an enterprise workspace.",
 		"signingIn": "Signing in...",
 		"register": "Register and sign in",
 		"registering": "Registering...",
@@ -634,7 +636,15 @@
 		"cacheTokens": "Cached input",
 		"refreshUsage": "Refresh usage",
 		"usageLoadFailed": "Token usage could not be loaded. Try again later.",
-		"usageScope": "Calculated from {{messages}} usage records across {{sessions}} sessions."
+		"usageScope": "Calculated from {{messages}} usage records across {{sessions}} sessions.",
+		"organization": "Organization",
+		"chooseOrganization": "Choose an organization",
+		"chooseOrganizationTitle": "Choose an organization",
+		"chooseOrganizationDescription": "Select the enterprise workspace you want to use.",
+		"switchingOrganization": "Switching organization...",
+		"organizationSwitchFailed": "Could not switch organization. Please try again.",
+		"noOrganizationTitle": "No enterprise access",
+		"noOrganizationDescription": "Your Logto account is not a member of any enterprise workspace."
 	},
 	"tour": {
 		"trigger": "Take a tour",
