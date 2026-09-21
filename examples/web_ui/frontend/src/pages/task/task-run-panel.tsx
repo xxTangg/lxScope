@@ -42,7 +42,7 @@ function nodeIcon(node: NodeRunRecord) {
 
 function stepTypeLabel(type: TaskStepType): string {
 	if (type === 'tool') return 'ToolStep';
-	if (type === 'python') return 'PythonStep';
+	if (type === 'python') return 'CodeStep';
 	return 'AgentStep';
 }
 

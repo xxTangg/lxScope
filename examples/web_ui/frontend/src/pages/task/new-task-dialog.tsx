@@ -59,7 +59,7 @@ export function NewTaskDialog({ open, onOpenChange, onCreate }: NewTaskDialogPro
 				<DialogHeader>
 					<DialogTitle>新建任务</DialogTitle>
 					<DialogDescription>
-						先描述想完成的目标，系统会自动生成可编辑的线性任务流，并根据需要组合 AgentStep、ToolStep 和 PythonStep。
+						先描述想完成的目标，系统会自动生成可编辑的线性任务流，并根据需要组合 AgentStep、ToolStep 和 CodeStep。
 					</DialogDescription>
 				</DialogHeader>
 
