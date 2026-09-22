@@ -17,7 +17,7 @@ interface TaskSidebarProps {
 function statusLabel(status: RunStatus | null | undefined): string {
 	switch (status) {
 		case 'queued':
-			return '排队中';
+			return '等待启动';
 		case 'running':
 			return '执行中';
 		case 'succeeded':

@@ -7,7 +7,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ._executor import StepExecutionResult
 from ._models import (
@@ -49,6 +49,7 @@ class AgentScopeTaskExecutor:
         message_bus: Any | None = None,
         extra_agent_tools: Any | None = None,
         sub_agent_templates: dict[str, Any] | None = None,
+        mcp_reconciler: Callable[[str, str, Any, str], Awaitable[None]] | None = None,
     ) -> None:
         """Bind AgentScope storage, runtime services and access policy."""
 
@@ -60,6 +61,7 @@ class AgentScopeTaskExecutor:
         self._message_bus = message_bus
         self._extra_agent_tools = extra_agent_tools
         self._sub_agent_templates = sub_agent_templates
+        self._mcp_reconciler = mcp_reconciler
         # A browser/stdin MCP owns an AnyIO stream and cannot be probed or
         # reconnected concurrently.  The Task page can issue duplicate tool
         # discovery requests during a React refresh, so serialize lifecycle
@@ -493,6 +495,13 @@ class AgentScopeTaskExecutor:
             context.session_id,
             session.config.workspace_id,
         )
+        if self._mcp_reconciler is not None and context.session_id is not None:
+            await self._mcp_reconciler(
+                context.user_id,
+                context.agent_id,
+                workspace,
+                context.session_id,
+            )
         await self._refresh_mcp_connections(workspace, context)
         return await get_toolkit(
             storage=self._storage,

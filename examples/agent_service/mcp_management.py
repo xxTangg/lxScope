@@ -10,13 +10,15 @@ It is an application adapter and must not change AgentScope's generic
 workspace implementation.
 """
 
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from agentscope.app.deps import get_current_user_id, get_workspace_service
 from agentscope.mcp import HttpMCPConfig, MCPClient, StdioMCPConfig
+from auth import AuthUser
+from mcp_access import activate_published_mcp
 
 
 class MCPProbeTool(BaseModel):
@@ -37,6 +39,17 @@ class MCPProbeStatus(BaseModel):
     error: str | None = None
 
 
+class ActivatePublishedMcpRequest(BaseModel):
+    """A browser may select a publication, never submit an MCP config."""
+
+    publication_id: str = Field(min_length=5, max_length=256)
+
+
+class ActivatePublishedMcpResponse(BaseModel):
+    status: Literal["added", "already_attached"]
+    name: str
+
+
 management_mcp_router = APIRouter(
     prefix="/management/mcp",
     tags=["management-mcp"],
@@ -46,6 +59,47 @@ management_mcp_router = APIRouter(
 def _describe_probe_error(error: Exception) -> str:
     message = str(error).strip()
     return message or type(error).__name__
+
+
+async def get_current_auth_user(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> AuthUser:
+    """Use the product auth service rather than exposing a core dependency."""
+
+    return await request.app.state.auth.get_current_user(authorization)
+
+
+@management_mcp_router.post(
+    "/activate",
+    response_model=ActivatePublishedMcpResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def activate_mcp(
+    body: ActivatePublishedMcpRequest,
+    request: Request,
+    agent_id: str = Query(...),
+    session_id: str = Query(...),
+    user: AuthUser = Depends(get_current_auth_user),
+    workspace_service: Any = Depends(get_workspace_service),
+) -> ActivatePublishedMcpResponse:
+    """Attach an administrator-authorized MCP to the caller's workspace."""
+
+    try:
+        result, name = await activate_published_mcp(
+            admin_service=request.app.state.admin_service,
+            user=user,
+            workspace_service=workspace_service,
+            agent_id=agent_id,
+            session_id=session_id,
+            publication_id=body.publication_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "code": "mcp_activation_conflict",
+            "message": str(exc),
+        }) from exc
+    return ActivatePublishedMcpResponse(status=result, name=name)
 
 
 @management_mcp_router.post("/probe", response_model=MCPProbeStatus)

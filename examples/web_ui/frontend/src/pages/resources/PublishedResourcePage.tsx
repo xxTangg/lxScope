@@ -61,7 +61,14 @@ function ResourceCard({ resource, kind }: { resource: PublishedResource; kind: R
 						</Badge>
 					))}
 				</div>
-				<Button size="sm" onClick={() => navigate('/chat')}>
+				<Button
+					size="sm"
+					onClick={() =>
+						navigate('/chat', {
+							state: kind === 'mcp' ? { pendingMcpPublicationId: resource.id } : null,
+						})
+					}
+				>
 					<Wrench className="size-3.5" />
 					{t('resources.useInChat')}
 				</Button>

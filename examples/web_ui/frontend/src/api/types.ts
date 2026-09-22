@@ -1072,6 +1072,7 @@ export interface KnowledgeGraphEdge {
 }
 
 export interface KnowledgeGraphResponse {
+	enabled?: boolean;
 	status: 'disabled' | 'empty' | 'building' | 'ready' | 'error' | string;
 	error?: string | null;
 	nodes: KnowledgeGraphNode[];

@@ -11,6 +11,11 @@ import type {
 	WorkspaceDownloadTokenResponse,
 } from './types';
 
+export interface ActivatePublishedMcpResponse {
+	status: 'added' | 'already_attached';
+	name: string;
+}
+
 export interface UploadOptions {
 	/** Fired with byte-level progress while the body is streamed. */
 	onProgress?: (progress: UploadProgress) => void;
@@ -222,4 +227,14 @@ export const workspaceApi = {
 				session_id: sessionId,
 			}),
 	},
+};
+
+/** Product-level endpoint for users to equip an administrator-authorized MCP. */
+export const managementMcpApi = {
+	activate: (agentId: string, sessionId: string, publicationId: string) =>
+		client.post<ActivatePublishedMcpResponse>(
+			'/management/mcp/activate',
+			{ publication_id: publicationId },
+			{ agent_id: agentId, session_id: sessionId },
+		),
 };

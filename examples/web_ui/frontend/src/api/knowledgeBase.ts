@@ -6,7 +6,6 @@ import type {
 	KbMiddlewareParametersSchemaResponse,
 	KnowledgeBaseView,
 	KnowledgeGraphResponse,
-	RebuildKnowledgeGraphResponse,
 	ListChunkersResponse,
 	ListDocumentChunksResponse,
 	ListKbEmbeddingModelsResponse,
@@ -326,8 +325,14 @@ export const knowledgeBaseApi = {
 			}),
 		),
 
-	rebuildGraph: (knowledgeBaseId: string) =>
-		client.post<RebuildKnowledgeGraphResponse>(
-			`/knowledge_bases/${knowledgeBaseId}/graph/rebuild`,
+	updateGraphSettings: (knowledgeBaseId: string, enabled: boolean) =>
+		client.put<{ enabled: boolean }>(`/knowledge_bases/${knowledgeBaseId}/graph/settings`, { enabled }),
+
+	getGraphSettings: (knowledgeBaseId: string) =>
+		client.get<{ enabled: boolean }>(`/knowledge_bases/${knowledgeBaseId}/graph/settings`),
+
+	generateGraph: (knowledgeBaseId: string, force = false) =>
+		client.post<{ status: string; documents?: number; error?: string | null }>(
+			`/knowledge_bases/${knowledgeBaseId}/graph/generate`, { force },
 		),
 };

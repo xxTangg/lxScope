@@ -221,6 +221,17 @@ export const client = {
 			timeoutMs?: number;
 		},
 	) => request<T>(path, { method: 'POST', body, params, ...options }),
+	put: <T>(
+		path: string,
+		body?: unknown,
+		params?: Record<string, string>,
+		options?: {
+			silent?: boolean;
+			authenticated?: boolean;
+			headers?: Record<string, string>;
+			timeoutMs?: number;
+		},
+	) => request<T>(path, { method: 'PUT', body, params, ...options }),
 	form: <T>(
 		path: string,
 		body: FormData,

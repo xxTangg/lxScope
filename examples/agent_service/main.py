@@ -6,7 +6,6 @@ import os
 import sys
 from uuid import uuid4
 
-from pydantic import SecretStr
 import uvicorn
 from fastapi import HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
@@ -28,7 +27,6 @@ from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
 from agentscope.app.storage import RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
-from agentscope.credential import OpenAICredential
 from agentscope._logging import logger
 from agentscope.mcp import MCPClient, StdioMCPConfig
 from agentscope.middleware import (
@@ -52,6 +50,9 @@ from agentscope.workspace import WorkspaceBase
 from admin_api import AdminService, admin_router, resource_router, sales_hub_router
 from auth import AuthUser, load_auth_from_env
 from longxin_admin.credential_policy import AdminManagedCredentialPolicy
+from longxin_admin.user_credential_provisioning import (
+    provision_siliconflow_credential,
+)
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
 from longxin_admin.upgrade import UpgradeService, upgrade_router
 from skill_analytics_api import skill_analytics_router
@@ -77,6 +78,8 @@ from project_observability import (
 )
 from observability_analytics_api import observability_analytics_router
 from mcp_management import management_mcp_router
+from mcp_access import reconcile_workspace_mcps
+from knowledge_graph import knowledge_graph_router
 from persistence import ApplicationDatabase
 from task import (
     AgentScopeTaskExecutor,
@@ -150,33 +153,9 @@ vector_store = QdrantStore(
 )
 
 
-async def _ensure_siliconflow_credential(user_ids: tuple[str, ...]) -> None:
-    """Make the configured SiliconFlow credential available to administrators.
-
-    SiliconFlow exposes an OpenAI-compatible API, so the existing OpenAI
-    credential/model implementation is the correct adapter. The record is
-    provisioned only for administrator-owned model configuration.
-    """
-    api_key = os.getenv("SILICONFLOW_API_KEY")
-    if not api_key:
-        return
-
-    credential = OpenAICredential(
-        id=os.getenv("SILICONFLOW_CREDENTIAL_ID", "siliconflow"),
-        name="SiliconFlow",
-        api_key=SecretStr(api_key),
-        base_url=os.getenv(
-            "SILICONFLOW_BASE_URL",
-            "https://api.siliconflow.cn/v1",
-        ),
-    )
-    for user_id in user_ids:
-        await storage.upsert_credential(user_id, credential)
-
-
 async def _provision_registered_user(user_id: str) -> None:
-    """Keep newly registered accounts free of provider credentials."""
-    del user_id
+    """Provision deployment-managed model access for a new account."""
+    await provision_siliconflow_credential(storage, (user_id,))
 
 
 auth = load_auth_from_env(
@@ -346,6 +325,26 @@ async def _sync_current_user_skills(
         )
 
 
+async def _reconcile_task_workspace_mcps(
+    user_id: str,
+    agent_id: str,
+    workspace: WorkspaceBase,
+    session_id: str,
+) -> None:
+    """Apply managed-MCP revocations before a Task reads workspace tools."""
+
+    account = await auth._account_by_id(user_id)
+    if account is None or account.status != "active":
+        return
+    await reconcile_workspace_mcps(
+        admin_service=app.state.admin_service,
+        user=auth._public_user(account),
+        workspace=workspace,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+
+
 async def longterm_memory_factory(
     user_id: str,
     agent_id: str,
@@ -507,9 +506,51 @@ async def _request_user_id(request: Request) -> str:
         return ""
 
 
+_ADMIN_ONLY_WORKSPACE_MCP_WRITES = {
+    ("POST", "/workspace/mcp"),
+    ("POST", "/workspace/mcp/from-library"),
+    ("DELETE", "/workspace/mcp"),
+}
+
+
+async def _reject_unmanaged_mcp_write(request: Request) -> JSONResponse | None:
+    """Keep normal users on the publication-authorized MCP path.
+
+    AgentScope's generic workspace routes remain intact for administrators;
+    this product-level guard prevents ordinary users from bypassing the
+    publication scope by calling them directly.
+    """
+
+    is_delete = request.method == "DELETE" and request.url.path.startswith(
+        "/workspace/mcp/",
+    )
+    if (request.method, request.url.path) not in _ADMIN_ONLY_WORKSPACE_MCP_WRITES and not is_delete:
+        return None
+    try:
+        user = await request.app.state.auth.get_current_user(
+            request.headers.get("authorization"),
+        )
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if user.role == "admin":
+        return None
+    return JSONResponse(
+        status_code=403,
+        content={
+            "detail": {
+                "code": "workspace_mcp_admin_managed",
+                "message": "MCP resources are managed by your administrator.",
+            },
+        },
+    )
+
+
 @app.middleware("http")
 async def observability_middleware(request: Request, call_next):
     """Correlate and measure every HTTP request at the app boundary."""
+    blocked = await _reject_unmanaged_mcp_write(request)
+    if blocked is not None:
+        return blocked
     request_id = new_request_id(request)
     request.state.request_id = request_id
     started_at = asyncio.get_running_loop().time()
@@ -623,6 +664,9 @@ app.include_router(resource_router)
 app.include_router(sales_hub_router)
 app.include_router(plan_billing_router)
 app.include_router(upgrade_router)
+# Application-owned, opt-in knowledge graph.  This router deliberately
+# lives outside AgentScope so document indexing remains graph-free.
+app.include_router(knowledge_graph_router)
 app.include_router(task_router)
 app.include_router(observability_router)
 app.include_router(management_mcp_router)
@@ -733,7 +777,11 @@ async def _application_lifespan(app_instance):
     try:
         async with _base_lifespan(app_instance):
             await app_instance.state.admin_service.ensure_default_builtin_publications()
-            await _ensure_siliconflow_credential(auth.admin_user_ids)
+            accounts = await auth.list_accounts()
+            await provision_siliconflow_credential(
+                storage,
+                (account.id for account in accounts if account.status == "active"),
+            )
             if (
                 task_store_backend == "postgres"
                 and local_application_database is not None
@@ -773,6 +821,14 @@ async def _application_lifespan(app_instance):
                     extra_agent_tools=app_instance.state.extra_agent_tools,
                     sub_agent_templates=(
                         app_instance.state.custom_subagent_templates
+                    ),
+                    mcp_reconciler=lambda user_id, agent_id, workspace, session_id: (
+                        _reconcile_task_workspace_mcps(
+                            user_id,
+                            agent_id,
+                            workspace,
+                            session_id,
+                        )
                     ),
                 ),
                 planner=AgentScopeTaskPlanner(

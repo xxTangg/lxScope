@@ -399,9 +399,9 @@ function Overview({
           icon={ClipboardList}
         />
         <Metric
-          label="未分配额度"
+          label="客户系统余额汇总"
           value={compact(data.poolRemaining)}
-          detail="Token · 按最新上报汇总"
+          detail="各客户管理系统最近一次上报的未分配 Token 池余额"
           icon={Gauge}
         />
       </div>
@@ -1226,6 +1226,7 @@ function Requests({ refreshToken }: { refreshToken: number }) {
     }>
   >([]);
   const [error, setError] = useState('');
+  const [processingId, setProcessingId] = useState<string | null>(null);
   const load = useCallback(
     () => {
       setError('');
@@ -1249,6 +1250,9 @@ function Requests({ refreshToken }: { refreshToken: number }) {
         ? Number(window.prompt('确认充值金额（元）', String(requestedAmount ?? '')))
         : undefined;
     if (action === 'approve' && (!amount || amount <= 0)) return;
+    if (processingId) return;
+    setProcessingId(id);
+    setError('');
     try {
       await api(`/api/v1/recharge-requests/${id}/${action}`, {
         method: 'POST',
@@ -1260,6 +1264,8 @@ function Requests({ refreshToken }: { refreshToken: number }) {
       load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '操作失败');
+    } finally {
+      setProcessingId(null);
     }
   }
   return (
@@ -1300,6 +1306,7 @@ function Requests({ refreshToken }: { refreshToken: number }) {
                     <td className="actions">
                       <button
                         className="primary small"
+                        disabled={processingId !== null}
                         onClick={() =>
                           process(order.id, 'approve', order.requestedAmount, order.requestId)
                         }
@@ -1309,6 +1316,7 @@ function Requests({ refreshToken }: { refreshToken: number }) {
                       </button>
                       <button
                         className="danger small"
+                        disabled={processingId !== null}
                         onClick={() => process(order.id, 'reject', undefined, order.requestId)}
                       >
                         <X size={14} />

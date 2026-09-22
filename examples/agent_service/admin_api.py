@@ -1018,6 +1018,64 @@ class AdminService:
             if item.get("kind") == kind and isinstance(item.get("name"), str)
         }
 
+    async def resolve_published_mcp_for_user(
+        self,
+        user: AuthUser,
+        publication_id: str,
+    ) -> MCPRecord:
+        """Resolve the server-side MCP record currently authorized for a user.
+
+        The publication id is the only value accepted from a browser.  This
+        prevents a user from substituting another library record id or an MCP
+        configuration when attaching a managed MCP to a workspace.
+        """
+
+        if user.status != "active":
+            raise _error("mcp_not_authorized", "The user is not active.", 403)
+        async with self._mutation_lock():
+            resources = await self._resource_publications()
+            publication = next(
+                (
+                    item
+                    for item in resources
+                    if item.get("id") == publication_id
+                    and item.get("kind") == "mcp"
+                ),
+                None,
+            )
+            if publication is None:
+                raise _error(
+                    "mcp_publication_not_found",
+                    "The published MCP was not found.",
+                    404,
+                )
+
+            accounts = await self._auth.list_accounts()
+            targets = self._publication_targets(publication, accounts)
+            if not publication.get("enabled", True) or user.id not in targets:
+                raise _error(
+                    "mcp_not_authorized",
+                    "The administrator has not authorized this MCP for you.",
+                    403,
+                )
+
+            if await self._sync_resource_publication(publication, accounts):
+                await self._save_resource_publications(resources)
+
+            record_id = (publication.get("provisioned") or {}).get(user.id)
+            record = (
+                await self._storage.get_mcp(user.id, record_id)
+                if isinstance(record_id, str)
+                else None
+            )
+            if record is None:
+                raise _error(
+                    "mcp_publication_unavailable",
+                    "The authorized MCP is not available in your library.",
+                    409,
+                )
+            return record
+
     async def publish_resource(
         self,
         body: ResourcePublicationRequest,
@@ -1058,6 +1116,11 @@ class AdminService:
                 (item for item in resources if item.get("id") == publication_id),
                 None,
             )
+            previous_targets = (
+                self._publication_targets(existing, accounts)
+                if existing is not None and existing.get("enabled", True)
+                else set()
+            )
             publication = {
                 **(existing or {}),
                 **body.model_dump(),
@@ -1073,6 +1136,22 @@ class AdminService:
                 resources[resources.index(existing)] = publication
             await self._sync_resource_publication(publication, accounts)
             await self._save_resource_publications(resources)
+            if body.kind == "mcp":
+                current_targets = (
+                    self._publication_targets(publication, accounts)
+                    if publication.get("enabled", True)
+                    else set()
+                )
+                revoked_user_ids = previous_targets - current_targets
+                if revoked_user_ids:
+                    await self._remove_mcp_from_workspaces(
+                        {publication["name"]},
+                        [
+                            account
+                            for account in accounts
+                            if account.id in revoked_user_ids
+                        ],
+                    )
             return ResourcePublicationView.model_validate(publication)
 
     async def remove_installed_skill(
@@ -1159,6 +1238,10 @@ class AdminService:
                     "enabled": False,
                 }
                 await self._sync_resource_publication(withdrawn, accounts)
+                await self._remove_mcp_from_workspaces(
+                    {str(publication["name"])},
+                    accounts,
+                )
 
             await self._storage.delete_mcp(actor.id, mcp_id)
             resources = [
@@ -1222,6 +1305,66 @@ class AdminService:
                         # administrator from removing the catalog record.
                         _logger.exception(
                             "Unable to remove deleted skill from workspace %s",
+                            key,
+                        )
+
+    async def _remove_mcp_from_workspaces(
+        self,
+        mcp_names: set[str],
+        accounts: list[AuthUser],
+    ) -> None:
+        """Immediately detach withdrawn managed MCPs from live workspaces."""
+
+        provider = self._workspace_service_provider
+        if not mcp_names or provider is None:
+            return
+        workspace_service = provider()
+        if workspace_service is None:
+            return
+        seen: set[tuple[str, str, str]] = set()
+        for account in accounts:
+            if account.status == "deleted":
+                continue
+            try:
+                agents = await self._storage.list_agents(account.id)
+            except Exception:
+                _logger.exception("Unable to enumerate agents for MCP cleanup")
+                continue
+            for agent in agents:
+                try:
+                    sessions = await self._storage.list_sessions(account.id, agent.id)
+                except Exception:
+                    _logger.exception(
+                        "Unable to enumerate sessions for MCP cleanup: %s",
+                        agent.id,
+                    )
+                    continue
+                for session in sessions:
+                    workspace_id = getattr(session.config, "workspace_id", None)
+                    key = (account.id, agent.id, workspace_id or "__agent__")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    try:
+                        workspace = await workspace_service.resolve(
+                            account.id,
+                            agent.id,
+                            session.id,
+                        )
+                        attached = await workspace.list_mcps(
+                            agent_id=agent.id,
+                            session_id=session.id,
+                        )
+                        for client in attached:
+                            if client.name in mcp_names:
+                                await workspace.remove_mcp(
+                                    client.name,
+                                    agent_id=agent.id,
+                                    session_id=session.id,
+                                )
+                    except Exception:
+                        _logger.exception(
+                            "Unable to remove withdrawn MCP from workspace %s",
                             key,
                         )
 

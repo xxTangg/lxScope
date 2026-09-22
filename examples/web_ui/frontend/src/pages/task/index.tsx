@@ -478,6 +478,13 @@ export function TaskPage() {
 		try {
 			const run = await taskApi.cancelRun(currentRun.id);
 			setCurrentRun(run);
+			setTasks((previous) =>
+				previous.map((task) =>
+					task.id === run.task_id
+						? { ...task, last_run_id: run.id, last_run_status: run.status }
+						: task,
+				),
+			);
 			setIsRunning(false);
 		} catch (requestError) {
 			setError(errorMessage(requestError));

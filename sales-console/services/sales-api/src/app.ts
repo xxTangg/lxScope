@@ -32,6 +32,7 @@ import {
   serial,
   updateJson,
   writeJson,
+  writeJsonBatch,
 } from './store.js';
 import type { IdempotencyRecord } from './store.js';
 import type { Customer, RechargeOrder, ReleaseMeta, Staff, UsageReport } from './types.js';
@@ -2004,6 +2005,15 @@ export async function createApp(): Promise<express.Express> {
         const order = orders.find((item) => item.id === req.params.id);
         if (!order || order.method !== 'online')
           throw Object.assign(new Error('申请不存在'), { status: 404 });
+        // The database commit may succeed while the client loses the response
+        // (or a best-effort audit write fails).  Returning the settled result
+        // makes a retry safe instead of falsely reporting "申请已处理".
+        if (
+          (action === 'approve' && order.status === 'approved') ||
+          (action === 'reject' && order.status === 'rejected')
+        ) {
+          return order;
+        }
         if (order.status !== 'pending')
           throw Object.assign(new Error('申请已处理'), { status: 409 });
         const strictContract = req.headers['x-canonical-api'] === '1';
@@ -2049,12 +2059,19 @@ export async function createApp(): Promise<express.Express> {
         order.processedBy = req.staff!.username;
         customer.totalRecharged += amount;
         customer.updatedAt = Date.now();
-        await writeJson(db.files.orders, orders);
-        await writeJson(db.files.customers, customers);
+        await writeJsonBatch([
+          [db.files.orders, orders],
+          [db.files.customers, customers],
+        ]);
         return order;
       });
-      await audit(req.staff!, req);
       res.json(result);
+      // Auditing is observability, not part of the financial decision.  Never
+      // turn a committed approval into a client-visible failure because an
+      // independent audit-log write has a transient database error.
+      void audit(req.staff!, req).catch((error: unknown) => {
+        console.error('充值审批审计日志写入失败（审批已完成）', error);
+      });
     } catch (error) {
       next(error);
     }
