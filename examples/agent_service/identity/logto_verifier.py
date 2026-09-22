@@ -7,6 +7,7 @@ import asyncio
 import os
 from typing import Any
 
+import httpx
 import jwt
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError, PyJWKClientError
@@ -64,6 +65,9 @@ class LogtoVerifier:
         self.jwks_url = (
             jwks_url or os.getenv("LOGTO_JWKS_URL", "")
         ).strip() or f"{self.issuer}{_LOGTO_JWKS_PATH}"
+        self.userinfo_url = (
+            os.getenv("LOGTO_USERINFO_URL", "")
+        ).strip() or f"{self.issuer}/me"
         self._jwks_client = jwks_client or PyJWKClient(self.jwks_url)
 
     @classmethod
@@ -76,6 +80,52 @@ class LogtoVerifier:
         """Verify a token without blocking the async request event loop."""
 
         return await asyncio.to_thread(self.verify_sync, token)
+
+    async def enrich_profile(
+        self,
+        principal: LogtoPrincipal,
+        token: str,
+    ) -> LogtoPrincipal:
+        """Best-effortly attach the Logto user display profile.
+
+        Resource-server access tokens commonly contain ``sub`` and tenant
+        claims but omit profile claims.  The OIDC userinfo endpoint fills that
+        presentation gap without affecting authorization: the JWT remains
+        the only source of identity and permissions.
+        """
+
+        if principal.display_name or principal.username or principal.email:
+            return principal
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    self.userinfo_url,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                response.raise_for_status()
+                profile = response.json()
+        except (httpx.HTTPError, ValueError, TypeError):
+            return principal
+        if not isinstance(profile, dict):
+            return principal
+
+        username = profile.get("username") or profile.get("preferred_username")
+        display_name = profile.get("name") or profile.get("display_name")
+        email = profile.get("email")
+        return LogtoPrincipal(
+            subject=principal.subject,
+            organization_id=principal.organization_id,
+            scopes=principal.scopes,
+            client_id=principal.client_id,
+            organization_roles=principal.organization_roles,
+            username=username if isinstance(username, str) and username.strip() else None,
+            display_name=(
+                display_name
+                if isinstance(display_name, str) and display_name.strip()
+                else None
+            ),
+            email=email if isinstance(email, str) and email.strip() else None,
+        )
 
     def verify_sync(self, token: str) -> LogtoPrincipal:
         """Verify claims and signature using PyJWT and Logto JWKS."""
@@ -133,15 +183,45 @@ class LogtoVerifier:
         else:
             scopes = frozenset()
 
+        organization_roles_claim = claims.get("organization_roles", [])
+        if isinstance(organization_roles_claim, str):
+            organization_roles = frozenset(
+                value.strip()
+                for value in organization_roles_claim.split()
+                if value.strip()
+            )
+        elif isinstance(organization_roles_claim, list):
+            organization_roles = frozenset(
+                value.strip()
+                for value in organization_roles_claim
+                if isinstance(value, str) and value.strip()
+            )
+        else:
+            organization_roles = frozenset()
+
         client_id = claims.get("client_id")
         if not isinstance(client_id, str) or not client_id.strip():
             client_id = None
+
+        username = claims.get("username") or claims.get("preferred_username")
+        if not isinstance(username, str) or not username.strip():
+            username = None
+        display_name = claims.get("name") or claims.get("display_name")
+        if not isinstance(display_name, str) or not display_name.strip():
+            display_name = None
+        email = claims.get("email")
+        if not isinstance(email, str) or not email.strip():
+            email = None
 
         return LogtoPrincipal(
             subject=subject,
             organization_id=organization_id,
             scopes=scopes,
+            organization_roles=organization_roles,
             client_id=client_id,
+            username=username,
+            display_name=display_name,
+            email=email,
         )
 
 

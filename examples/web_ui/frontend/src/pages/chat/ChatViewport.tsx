@@ -204,7 +204,7 @@ function closePanelInLayout(layout: PanelKey[][], key: PanelKey): PanelKey[][] {
  */
 export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatViewportProps) {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const { sessions, refetch: refetchSessions } = useSessions(agentId);
 	const { groups } = useAvailableModels();
 	const { mediaTypes: parserAttachmentMediaTypes, extensions: parserAttachmentExtensions } =
@@ -325,7 +325,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		loading: publishedSkillsLoading,
 	} = usePublishedResources('skill');
 	const visibleMcps =
-		user?.role === 'admin'
+		hasPermission('tenant:manage')
 			? mcps
 			: mcps.filter((mcp) => publishedMcps.some((resource) => resource.name === mcp.name));
 	const skillsPanelLoading =
@@ -484,7 +484,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 				content: (
 					<McpPanel
 						mcps={visibleMcps}
-						readOnly={user?.role !== 'admin'}
+						readOnly={!hasPermission('platform:integration')}
 						loading={mcpsLoading}
 						onAdd={addMcps}
 						onAddFromLibrary={addMcpsFromLibrary}
@@ -925,7 +925,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 										value={selectedModel}
 										onChange={handleLlmChange}
 										onAddCredential={
-										user?.role === 'admin'
+										hasPermission('platform:integration')
 											? () => setCredentialOpen(true)
 											: undefined
 									}
@@ -1065,7 +1065,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 					<PanelDock layout={panelLayout} panels={panels} onClosePanel={closePanel} />
 				</ResizablePanelGroup>
 			</main>
-			{user?.role === 'admin' && (
+			{hasPermission('platform:integration') && (
 				<CreateCredentialDialog
 					open={credentialOpen}
 					onOpenChange={setCredentialOpen}

@@ -1,0 +1,30 @@
+api_resource:
+  name: lxScope API
+  identifier: https://api.lxscope.local
+
+permissions:
+  - name: agent:use
+    description: Use lxScope agents
+  - name: resource:manage
+    description: Manage lxScope resources
+  - name: member:manage
+    description: Manage tenant members
+  - name: tenant:manage
+    description: Manage tenant settings
+  - name: resource:read
+    description: Read lxScope resources
+
+# Logto's organization template is shared by all organizations. The roles
+# below are created in that template and receive API resource permissions.
+roles:
+  - name: admin
+    permissions:
+      - tenant:manage
+      - resource:manage
+      - member:manage
+      - resource:read
+      - agent:use
+  - name: member
+    permissions:
+      - resource:read
+      - agent:use

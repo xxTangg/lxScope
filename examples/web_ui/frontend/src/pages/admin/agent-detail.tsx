@@ -49,7 +49,7 @@ function ExecutionList({ rows, onOpen }: { rows: AgentExecutionRecord[]; onOpen:
 
 export function AdminAgentDetailPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const navigate = useNavigate();
 	const { agentName: agentNameParam } = useParams<{ agentName: string }>();
 	const agentName = agentNameParam ?? '';
@@ -57,7 +57,7 @@ export function AdminAgentDetailPage() {
 	const detail = useQuery({
 		queryKey: ['admin', user?.id, 'observability-agent', agentName, days],
 		queryFn: () => adminApi.observabilityAgent(agentName, days),
-		enabled: user?.role === 'admin' && Boolean(agentName),
+		enabled: hasPermission('tenant:manage') && Boolean(agentName),
 	});
 	const data = detail.data;
 

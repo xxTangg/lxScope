@@ -15,13 +15,13 @@ import { useTranslation } from '@/i18n/useI18n';
 
 export function AdminSalesHubPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const queryClient = useQueryClient();
 	const [systemId, setSystemId] = useState('');
 	const [hubUrl, setHubUrl] = useState('');
 	const [hubToken, setHubToken] = useState('');
 	const [publicKey, setPublicKey] = useState('');
-	const hub = useQuery({ queryKey: ['admin', user?.id, 'sales-hub'], queryFn: adminApi.hubConfig, enabled: user?.role === 'admin' });
+	const hub = useQuery({ queryKey: ['admin', user?.id, 'sales-hub'], queryFn: adminApi.hubConfig, enabled: hasPermission('platform:integration') });
 	useEffect(() => { if (hub.data) { setSystemId(hub.data.system_id); setHubUrl(hub.data.hub_url); } }, [hub.data]);
 	const updateHub = useMutation({ mutationFn: adminApi.updateHubConfig, onSuccess: async () => { setHubToken(''); setPublicKey(''); await queryClient.invalidateQueries({ queryKey: ['admin', user?.id, 'sales-hub'] }); } });
 	const verifyHub = useMutation({ mutationFn: adminApi.verifyHub, onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id, 'sales-hub'] }) });

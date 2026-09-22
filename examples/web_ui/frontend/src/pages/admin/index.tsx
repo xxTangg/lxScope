@@ -81,7 +81,7 @@ function ErrorNotice({ message }: { message: string }) {
 
 export function AdminPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const queryClient = useQueryClient();
 	const [keyword, setKeyword] = useState('');
 	const [newUsername, setNewUsername] = useState('');
@@ -95,7 +95,7 @@ export function AdminPage() {
 	const [statusFilter, setStatusFilter] = useState('');
 	const [userPage, setUserPage] = useState(1);
 
-	const enabled = user?.role === 'admin';
+	const enabled = hasPermission('tenant:manage');
 	const overview = useQuery({
 		queryKey: ['admin', user?.id, 'overview'],
 		queryFn: adminApi.overview,
@@ -206,7 +206,7 @@ export function AdminPage() {
 		onSuccess: refresh,
 	});
 
-	if (!user || user.role !== 'admin') {
+	if (!user || !hasPermission('tenant:manage')) {
 		return <Navigate to="/chat" replace />;
 	}
 

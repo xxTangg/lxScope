@@ -44,11 +44,11 @@ function ProjectFailureList({ rows, empty, onOpen }: { rows: ObservabilityFailur
 
 export function AdminObservabilityPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const queryClient = useQueryClient();
 	const navigate = useNavigate();
 	const [days, setDays] = useState(14);
-	const runtimeAnalytics = useQuery({ queryKey: ['admin', user?.id, 'observability', days], queryFn: () => adminApi.observability(days), enabled: user?.role === 'admin' });
+	const runtimeAnalytics = useQuery({ queryKey: ['admin', user?.id, 'observability', days], queryFn: () => adminApi.observability(days), enabled: hasPermission('tenant:manage') });
 	const runtime = runtimeAnalytics.data;
 	const tokenUsage = runtime?.token_usage;
 	const refresh = () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id, 'observability'] });

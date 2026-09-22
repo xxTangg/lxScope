@@ -6,11 +6,12 @@ from __future__ import annotations
 from unittest import IsolatedAsyncioTestCase
 from uuid import uuid4
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from examples.agent_service.identity.models import (
     IdentityPrincipal,
+    TenantIdentityStatusError,
     TenantNotProvisionedError,
 )
 from examples.agent_service.identity.tenant_binding import (
@@ -23,6 +24,7 @@ async def _provision_tenant(
     repository: TenantBindingRepository,
     *,
     external_org_id: str,
+    status: str = "active",
 ) -> None:
     tenants = repository._table_definitions()["tenants"]
     async with engine.begin() as connection:
@@ -31,7 +33,7 @@ async def _provision_tenant(
                 id=uuid4(),
                 code=f"tenant-{external_org_id}",
                 name=f"Tenant {external_org_id}",
-                status="active",
+                status=status,
                 identity_provider="logto",
                 external_org_id=external_org_id,
             ),
@@ -143,3 +145,65 @@ class TenantBindingTest(IsolatedAsyncioTestCase):
             )
         self.assertEqual(user_count, 0)
         self.assertEqual(membership_count, 0)
+
+    async def test_inactive_tenant_is_rejected_before_shadow_user_creation(self) -> None:
+        await _provision_tenant(
+            self.engine,
+            self.repository,
+            external_org_id="org-suspended",
+            status="suspended",
+        )
+
+        with self.assertRaises(TenantIdentityStatusError) as error:
+            await self.repository.resolve(
+                IdentityPrincipal(
+                    external_org_id="org-suspended",
+                    external_user_id="user-42",
+                ),
+            )
+
+        self.assertEqual(error.exception.subject, "tenant")
+        tables = self.repository._table_definitions()
+        async with self.engine.connect() as connection:
+            user_count = await connection.scalar(
+                select(func.count()).select_from(tables["users"]),
+            )
+        self.assertEqual(user_count, 0)
+
+    async def test_inactive_user_and_membership_are_rejected(self) -> None:
+        await _provision_tenant(
+            self.engine,
+            self.repository,
+            external_org_id="org-status",
+        )
+        principal = IdentityPrincipal(
+            external_org_id="org-status",
+            external_user_id="user-42",
+        )
+        identity = await self.repository.resolve(principal)
+        tables = self.repository._table_definitions()
+
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(tables["users"])
+                .where(tables["users"].c.id == identity.user_id)
+                .values(status="locked"),
+            )
+        with self.assertRaises(TenantIdentityStatusError) as user_error:
+            await self.repository.resolve(principal)
+        self.assertEqual(user_error.exception.subject, "user")
+
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(tables["users"])
+                .where(tables["users"].c.id == identity.user_id)
+                .values(status="active"),
+            )
+            await connection.execute(
+                update(tables["memberships"])
+                .where(tables["memberships"].c.id == identity.membership_id)
+                .values(status="removed"),
+            )
+        with self.assertRaises(TenantIdentityStatusError) as membership_error:
+            await self.repository.resolve(principal)
+        self.assertEqual(membership_error.exception.subject, "membership")

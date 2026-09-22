@@ -14,6 +14,10 @@ export interface AuthOrganization {
 export interface AuthContextValue {
 	status: AuthStatus;
 	user: AuthUser | null;
+	permissions: string[];
+	hasPermission: (permission: string) => boolean;
+	tenantId: string | null;
+	membershipId: string | null;
 	login: (username: string, password: string) => Promise<void>;
 	register: (username: string, password: string) => Promise<void>;
 	logout: () => Promise<void>;

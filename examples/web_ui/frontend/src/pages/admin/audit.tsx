@@ -21,14 +21,14 @@ type AuditOverviewData = {
 
 export function AdminAuditPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const queryClient = useQueryClient();
 	const [targetUserId, setTargetUserId] = useState('');
 	const [reason, setReason] = useState('');
 	const [auditPage, setAuditPage] = useState(1);
 	const [selectedResource, setSelectedResource] = useState<Record<string, unknown> | null>(null);
-	const users = useQuery({ queryKey: ['admin', user?.id, 'audit-users'], queryFn: () => adminApi.users({ page: 1, page_size: 100 }), enabled: user?.role === 'admin' });
-	const events = useQuery({ queryKey: ['admin', user?.id, 'audit-events'], queryFn: () => adminApi.auditEvents(200), enabled: user?.role === 'admin' });
+	const users = useQuery({ queryKey: ['admin', user?.id, 'audit-users'], queryFn: () => adminApi.users({ page: 1, page_size: 100 }), enabled: hasPermission('tenant:manage') });
+	const events = useQuery({ queryKey: ['admin', user?.id, 'audit-events'], queryFn: () => adminApi.auditEvents(200), enabled: hasPermission('tenant:manage') });
 	const overview = useMutation({
 		mutationFn: adminApi.auditOverview,
 		onSuccess: async () => { setReason(''); await queryClient.invalidateQueries({ queryKey: ['admin', user?.id, 'audit-events'] }); },

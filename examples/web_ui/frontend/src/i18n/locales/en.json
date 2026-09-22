@@ -1174,6 +1174,8 @@
 		"readinessDescription": "Read-only status for the key runtime indicators.",
 		"unknown": "Unknown",
 		"memberModuleDescription": "Manage member accounts, plan assignment and plan approvals in one module.",
+		"memberIdentity": "Member",
+		"logtoMemberDirectoryNotice": "Members are managed by the current Logto organization. This page shows bound tenant members; create, disable and password actions belong in Logto.",
 		"pricingBoundaryNotice": "Plan prices remain demo-configured in this phase; real payments, refunds and production-grade cross-process transactions follow later.",
 		"quotaModuleDescription": "Maintain the test default, inspect the ledger and process system recharges.",
 		"ledgerTitle": "Quota ledger",

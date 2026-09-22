@@ -57,13 +57,13 @@ function TraceEvents({ rows }: { rows: ObservabilityTraceEvent[] }) {
 
 export function AdminTraceDetailPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const navigate = useNavigate();
 	const { traceId } = useParams<{ traceId: string }>();
 	const trace = useQuery({
 		queryKey: ['admin', user?.id, 'observability-trace', traceId],
 		queryFn: () => adminApi.observabilityTrace(traceId ?? ''),
-		enabled: user?.role === 'admin' && Boolean(traceId),
+		enabled: hasPermission('tenant:manage') && Boolean(traceId),
 	});
 	const data = trace.data;
 

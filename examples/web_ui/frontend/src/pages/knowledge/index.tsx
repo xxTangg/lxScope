@@ -191,7 +191,7 @@ export const KnowledgePage = () => {
 	const navigate = useNavigate();
 	const { kbId: urlKbId } = useParams<{ kbId?: string }>();
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { hasPermission } = useAuth();
 
 	const { knowledgeBases, remove, refetch } = useKnowledgeBases();
 	const [selectedKbId, setSelectedKbId] = useState<string | undefined>(urlKbId);
@@ -351,11 +351,11 @@ export const KnowledgePage = () => {
 				onOpenChange={setCreateDialogOpen}
 				onCreated={handleCreated}
 				onAddCredential={
-					user?.role === 'admin' ? () => setCredentialOpen(true) : undefined
+					hasPermission('platform:integration') ? () => setCredentialOpen(true) : undefined
 				}
 				credentialRefetchTrigger={credentialRefetchTrigger}
 			/>
-			{user?.role === 'admin' && (
+			{hasPermission('platform:integration') && (
 				<CreateCredentialDialog
 					open={credentialOpen}
 					onOpenChange={setCredentialOpen}

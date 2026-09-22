@@ -24,8 +24,16 @@ from agentscope.app.storage import MCPRecord, SkillRecord
 from agentscope.mcp import MCPClient
 from auth import AuthUser, JWTAuthService
 from identity.dependencies import (
+    get_bound_tenant_id,
+    get_bound_tenant_identity,
     get_current_application_user,
 )
+from identity.permissions import (
+    has_permission,
+    PLATFORM_INTEGRATION,
+    TENANT_MANAGE,
+)
+from identity.tenant_keys import tenant_scoped_key
 from longxin_admin.distributed_lock import DistributedLease
 from longxin_admin.plan_billing.catalog import (
     PLAN_VALUES,
@@ -213,6 +221,8 @@ def _load_ed25519_public_key(value: Any) -> Any:
 class AdminUserView(BaseModel):
     id: str
     username: str
+    display_name: str | None = None
+    external_user_id: str | None = None
     role: Literal["user", "admin"]
     status: Literal["active", "locked", "banned", "deleted"]
     plan_id: str
@@ -562,6 +572,7 @@ class AdminService:
         auth: JWTAuthService,
         plan_billing: Any | None = None,
         workspace_service_provider: Any | None = None,
+        tenant_member_provider: Any | None = None,
     ) -> None:
         self._storage = storage
         self._auth = auth
@@ -570,6 +581,9 @@ class AdminService:
         # service during its lifespan. This stays in the product layer and
         # avoids changing AgentScope's application factory.
         self._workspace_service_provider = workspace_service_provider
+        # In Logto mode this resolves to TenantBindingRepository.  Local mode
+        # keeps using JWTAuthService through the compatibility fallback below.
+        self._tenant_member_provider = tenant_member_provider
         self._lock = asyncio.Lock()
         self._sales_hub_client = SalesHubClient(self._hub_connection_config)
 
@@ -577,8 +591,106 @@ class AdminService:
         return DistributedLease(
             self._client,
             self._lock,
-            f"{_PREFIX}:mutation-lock",
+            self._key("mutation-lock"),
         )
+
+    @staticmethod
+    def _key(suffix: str) -> str:
+        """Return a tenant-scoped application key when a tenant is bound."""
+
+        return tenant_scoped_key(_PREFIX, suffix)
+
+    async def _accounts(self) -> list[AuthUser]:
+        """Return members from the active tenant, never another tenant's index."""
+
+        tenant_id = get_bound_tenant_id()
+        if tenant_id is None or self._tenant_member_provider is None:
+            return await self._auth.list_accounts()
+
+        repository = self._tenant_member_provider()
+        if repository is None:
+            raise _error(
+                "tenant_directory_unavailable",
+                "The tenant member directory is not ready.",
+                503,
+            )
+
+        rows = await repository.list_members(tenant_id)
+        identity = get_bound_tenant_identity()
+        accounts: list[AuthUser] = []
+        for row in rows:
+            membership_id = str(row["membership_id"])
+            membership_status = str(row.get("membership_status") or "active")
+            user_status = str(row.get("user_status") or "active")
+            if "deleted" in {membership_status, user_status}:
+                account_status = "deleted"
+            elif "banned" in {membership_status, user_status}:
+                account_status = "banned"
+            elif "locked" in {membership_status, user_status}:
+                account_status = "locked"
+            elif membership_status == "active" and user_status == "active":
+                account_status = "active"
+            else:
+                account_status = "banned"
+
+            role = str(row.get("membership_role") or "member").lower()
+            is_admin = role in {"admin", "owner"}
+            # TenantBindingRepository intentionally does not trust role claims
+            # when creating rows.  The current verified token is authoritative
+            # for the current administrator's UI projection.
+            if (
+                identity is not None
+                and membership_id == str(identity.membership_id)
+                and has_permission(identity.scopes, TENANT_MANAGE)
+            ):
+                is_admin = True
+
+            username = next(
+                (
+                    str(value).strip()
+                    for value in (
+                        row.get("display_name"),
+                        row.get("email"),
+                        row.get("external_user_id"),
+                        row.get("username"),
+                    )
+                    if value and str(value).strip()
+                ),
+                membership_id,
+            )
+            permissions = ["chat:read", "chat:write"]
+            if is_admin:
+                permissions.append(TENANT_MANAGE)
+            accounts.append(
+                AuthUser(
+                    id=membership_id,
+                    username=username,
+                    display_name=str(row.get("display_name") or username),
+                    external_user_id=(
+                        str(row["external_user_id"])
+                        if row.get("external_user_id")
+                        else None
+                    ),
+                    role="admin" if is_admin else "user",
+                    status=account_status,
+                    permissions=permissions,
+                    capabilities=permissions,
+                    tenant_id=str(tenant_id),
+                    membership_id=membership_id,
+                    identity_provider="logto",
+                ),
+            )
+        return accounts
+
+    def _reject_local_member_mutation(self) -> None:
+        """Prevent Logto requests from mutating the local auth directory."""
+
+        if get_bound_tenant_id() is not None and self._tenant_member_provider is not None:
+            raise _error(
+                "logto_member_management_external",
+                "Manage Logto members in the identity provider; local account mutation is disabled.",
+                409,
+            )
 
     def _client(self) -> Any:
         client = self._storage.get_client()
@@ -605,13 +717,11 @@ class AdminService:
         request.state.request_id = generated
         return generated
 
-    @staticmethod
-    def _user_key(user_id: str) -> str:
-        return f"{_PREFIX}:user:{user_id}"
+    def _user_key(self, user_id: str) -> str:
+        return self._key(f"user:{user_id}")
 
-    @staticmethod
-    def _order_key(order_id: str) -> str:
-        return f"{_PREFIX}:order:{order_id}"
+    def _order_key(self, order_id: str) -> str:
+        return self._key(f"order:{order_id}")
 
     @staticmethod
     def _sales_code_order(
@@ -638,10 +748,28 @@ class AdminService:
             "nonce": nonce,
         }
 
-    @staticmethod
-    def _idempotency_key(operation: str, key: str) -> str:
+    def _idempotency_key(self, operation: str, key: str) -> str:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
-        return f"{_PREFIX}:idempotency:{operation}:{digest}"
+        return self._key(f"idempotency:{operation}:{digest}")
+
+    def _system_key(self) -> str:
+        return self._key("system")
+
+    def _ledger_key(self) -> str:
+        return self._key("ledger")
+
+    def _audit_key(self) -> str:
+        return self._key("audit")
+
+    def _orders_key(self) -> str:
+        return self._key("orders")
+
+    def _resource_publications_key(self) -> str:
+        return self._key("resource-publications")
+
+    @staticmethod
+    def _global_resource_publications_key() -> str:
+        return _RESOURCE_PUBLICATIONS_KEY
 
     @staticmethod
     def _fingerprint(payload: dict[str, Any]) -> str:
@@ -701,7 +829,7 @@ class AdminService:
         await self._client().set(key, json.dumps(value, ensure_ascii=False))
 
     async def _system(self) -> dict[str, Any]:
-        value = await self._read_json(f"{_PREFIX}:system")
+        value = await self._read_json(self._system_key())
         if value is not None:
             return value
         return {
@@ -716,7 +844,7 @@ class AdminService:
 
     async def _save_system(self, value: dict[str, Any]) -> None:
         value["updated_at"] = _now()
-        await self._write_json(f"{_PREFIX}:system", value)
+        await self._write_json(self._system_key(), value)
 
     async def _profile(self, account: AuthUser) -> dict[str, Any]:
         value = await self._read_json(self._user_key(account.id))
@@ -756,6 +884,8 @@ class AdminService:
         return AdminUserView(
             id=account.id,
             username=account.username,
+            display_name=account.display_name or account.username,
+            external_user_id=account.external_user_id,
             role=account.role,
             status=account.status,
             plan_id=profile["plan_id"],
@@ -779,7 +909,7 @@ class AdminService:
     ) -> UserListResponse:
         accounts = [
             item
-            for item in await self._auth.list_accounts()
+            for item in await self._accounts()
             if item.status != "deleted"
         ]
         if keyword:
@@ -787,7 +917,14 @@ class AdminService:
             accounts = [
                 item
                 for item in accounts
-                if needle in item.username.casefold() or needle in item.id.casefold()
+                if (
+                    needle in item.username.casefold()
+                    or needle in item.id.casefold()
+                    or (
+                        item.external_user_id is not None
+                        and needle in item.external_user_id.casefold()
+                    )
+                )
             ]
         if account_status:
             accounts = [item for item in accounts if item.status == account_status]
@@ -805,15 +942,31 @@ class AdminService:
         )
 
     async def _resource_publications(self) -> list[dict[str, Any]]:
-        value = await self._read_json(_RESOURCE_PUBLICATIONS_KEY)
-        items = value.get("resources", []) if value else []
-        return [item for item in items if isinstance(item, dict)]
+        global_value = await self._read_json(
+            self._global_resource_publications_key(),
+        )
+        tenant_key = self._resource_publications_key()
+        tenant_value = (
+            global_value
+            if tenant_key == self._global_resource_publications_key()
+            else await self._read_json(tenant_key)
+        )
+        merged: dict[str, dict[str, Any]] = {}
+        for value in (global_value, tenant_value):
+            items = value.get("resources", []) if value else []
+            for item in items:
+                if isinstance(item, dict) and item.get("id"):
+                    merged[str(item["id"])] = item
+        return list(merged.values())
 
     async def _save_resource_publications(
         self,
         resources: list[dict[str, Any]],
     ) -> None:
-        await self._write_json(_RESOURCE_PUBLICATIONS_KEY, {"resources": resources})
+        await self._write_json(
+            self._resource_publications_key(),
+            {"resources": resources},
+        )
 
     async def ensure_default_builtin_publications(self) -> None:
         """Seed product-owned skills as visible to everyone on first boot."""
@@ -989,7 +1142,7 @@ class AdminService:
         self,
         resources: list[dict[str, Any]],
     ) -> None:
-        accounts = await self._auth.list_accounts()
+        accounts = await self._accounts()
         changed = False
         for publication in resources:
             changed = await self._sync_resource_publication(
@@ -1033,7 +1186,7 @@ class AdminService:
                 422,
             )
 
-        accounts = await self._auth.list_accounts()
+        accounts = await self._accounts()
         known_ids = {account.id for account in accounts if account.status == "active"}
         unknown_ids = set(body.user_ids) - known_ids
         if unknown_ids:
@@ -1096,7 +1249,7 @@ class AdminService:
         if source is None:
             raise _error("resource_not_found", "The administrator skill was not found.", 404)
 
-        accounts = await self._auth.list_accounts()
+        accounts = await self._accounts()
         resources = await self._resource_publications()
         publication_id = self._resource_publication_id("skill", skill_id)
         publication = next(
@@ -1145,7 +1298,7 @@ class AdminService:
         if source is None:
             raise _error("resource_not_found", "The administrator MCP was not found.", 404)
 
-        accounts = await self._auth.list_accounts()
+        accounts = await self._accounts()
         resources = await self._resource_publications()
         publication_id = self._resource_publication_id("mcp", mcp_id)
         publication = next(
@@ -1267,6 +1420,7 @@ class AdminService:
         request_id: str,
         idempotency_key: str,
     ) -> AdminUserView:
+        self._reject_local_member_mutation()
         if body.plan_id not in _PLANS:
             raise _error("plan_not_found", "The selected plan does not exist.", 409)
         request_fingerprint = {"operation": "user.create", **body.model_dump()}
@@ -1352,6 +1506,8 @@ class AdminService:
         request_id: str,
         idempotency_key: str,
     ) -> AdminUserView:
+        if body.status is not None:
+            self._reject_local_member_mutation()
         request_fingerprint = {
             "operation": "user.update",
             "user_id": user_id,
@@ -1362,20 +1518,29 @@ class AdminService:
             existing = await self._read_idempotent(idem_key, request_fingerprint)
             if existing is not None:
                 return AdminUserView.model_validate(existing)
-            account = await self._auth._account_by_id(user_id)
-            if account is None:
-                raise _error("user_not_found", "User not found.", 404)
+            if get_bound_tenant_id() is not None and self._tenant_member_provider is not None:
+                account_view = next(
+                    (item for item in await self._accounts() if item.id == user_id),
+                    None,
+                )
+                if account_view is None:
+                    raise _error("user_not_found", "User not found.", 404)
+                account = None
+            else:
+                account = await self._auth._account_by_id(user_id)
+                if account is None:
+                    raise _error("user_not_found", "User not found.", 404)
+                account_view = self._auth._public_user(account)
             if user_id == actor.id and body.status in {"banned", "locked"}:
                 raise _error("last_admin_protected", "The current admin cannot be disabled.", 409)
-            if account.role == "admin" and body.status in {"banned", "locked"}:
+            if account_view.role == "admin" and body.status in {"banned", "locked"}:
                 active_admins = [
                     item
-                    for item in await self._auth.list_accounts()
+                    for item in await self._accounts()
                     if item.role == "admin" and item.status == "active"
                 ]
                 if len(active_admins) <= 1:
                     raise _error("last_admin_protected", "At least one admin is required.", 409)
-            account_view = self._auth._public_user(account)
             profile = await self._profile(account_view)
             system = await self._system()
             if body.plan_id is not None:
@@ -1442,6 +1607,7 @@ class AdminService:
         request_id: str,
         idempotency_key: str,
     ) -> None:
+        self._reject_local_member_mutation()
         if not body.confirm:
             raise _error("confirmation_required", "Explicit confirmation is required.", 400)
         request_fingerprint = {
@@ -1484,6 +1650,7 @@ class AdminService:
         request_id: str = "",
         idempotency_key: str | None = None,
     ) -> ResetPasswordResponse:
+        self._reject_local_member_mutation()
         if not await self._auth.verify_password(actor.id, body.admin_password):
             raise _error("admin_password_invalid", "The current admin password is invalid.", 403)
         if not idempotency_key:
@@ -1572,7 +1739,7 @@ class AdminService:
     async def overview(self) -> dict[str, Any]:
         accounts = [
             item
-            for item in await self._auth.list_accounts()
+            for item in await self._accounts()
             if item.status != "deleted"
         ]
         system = await self._system()
@@ -1591,7 +1758,7 @@ class AdminService:
 
     async def quota(self) -> dict[str, Any]:
         system = await self._system()
-        accounts = await self._auth.list_accounts()
+        accounts = await self._accounts()
         return {
             "system_id": system["system_id"],
             "pool_tokens": int(system["pool_tokens"]),
@@ -1660,6 +1827,7 @@ class AdminService:
         request_id: str,
         idempotency_key: str,
     ) -> None:
+        self._reject_local_member_mutation()
         request_fingerprint = {"operation": "user.revoke_sessions", "user_id": user_id}
         idem_key = self._idempotency_key(f"revoke-sessions:{actor.id}", idempotency_key)
         async with self._mutation_lock():
@@ -1709,7 +1877,7 @@ class AdminService:
             source=source,
             created_at=_now(),
         )
-        await self._client().rpush(_LEDGER_KEY, entry.model_dump_json())
+        await self._client().rpush(self._ledger_key(), entry.model_dump_json())
         return entry
 
     async def ledger(
@@ -1722,7 +1890,7 @@ class AdminService:
         since: str | None = None,
         until: str | None = None,
     ) -> list[LedgerEntryView]:
-        raw_entries = await self._client().lrange(_LEDGER_KEY, 0, -1)
+        raw_entries = await self._client().lrange(self._ledger_key(), 0, -1)
         result: list[LedgerEntryView] = []
         for raw in reversed(raw_entries):
             try:
@@ -1746,7 +1914,7 @@ class AdminService:
 
     async def _cumulative_consumed(self) -> int:
         total = 0
-        for account in await self._auth.list_accounts():
+        for account in await self._accounts():
             if account.role != "user" or account.status == "deleted":
                 continue
             usage = await self._auth.get_token_usage(account.id)
@@ -1754,7 +1922,7 @@ class AdminService:
         return total
 
     async def audit_events(self, limit: int) -> list[AuditEventView]:
-        raw_events = await self._client().lrange(_AUDIT_KEY, -limit, -1)
+        raw_events = await self._client().lrange(self._audit_key(), -limit, -1)
         result: list[AuditEventView] = []
         for raw in reversed(raw_events):
             try:
@@ -1903,12 +2071,12 @@ class AdminService:
                 request_id=remote_request_id,
             )
             await self._write_json(self._order_key(order.order_id), order.model_dump())
-            await self._client().rpush(f"{_PREFIX}:orders", order.order_id)
+            await self._client().rpush(self._orders_key(), order.order_id)
             await self._write_idempotent(idem_key, request_fingerprint, order.model_dump())
             return order
 
     async def recharge_requests(self, limit: int) -> list[RechargeRequestView]:
-        ids = await self._client().lrange(f"{_PREFIX}:orders", -limit, -1)
+        ids = await self._client().lrange(self._orders_key(), -limit, -1)
         result: list[RechargeRequestView] = []
         for order_id in reversed(ids):
             value = await self._read_json(self._order_key(order_id))
@@ -2359,7 +2527,7 @@ class AdminService:
             ):
                 raise _error("code_already_redeemed", "The recharge order was already redeemed.", 409)
             order = current_order
-            nonce_key = f"{_PREFIX}:recharge-nonce:{nonce}"
+            nonce_key = self._key(f"recharge-nonce:{nonce}")
             created = await self._client().set(nonce_key, "1", nx=True)
             if not created:
                 raise _error("code_already_redeemed", "The recharge code was already redeemed.", 409)
@@ -2389,7 +2557,7 @@ class AdminService:
             )
             await self._write_json(self._order_key(order_id), order)
             if external_order:
-                await self._client().rpush(f"{_PREFIX}:orders", order_id)
+                await self._client().rpush(self._orders_key(), order_id)
             result = {
                 "operation_id": operation_id,
                 "state": "completed",
@@ -2751,7 +2919,7 @@ class AdminService:
         reason: str,
         request_id: str,
     ) -> None:
-        raw_events = await self._client().lrange(_AUDIT_KEY, 0, -1)
+        raw_events = await self._client().lrange(self._audit_key(), 0, -1)
         for raw in reversed(raw_events):
             try:
                 event = AuditEventView.model_validate_json(raw)
@@ -2828,7 +2996,7 @@ class AdminService:
         )
 
     async def _audit_target_from_event(self, event_id: str) -> str:
-        raw_events = await self._client().lrange(_AUDIT_KEY, 0, -1)
+        raw_events = await self._client().lrange(self._audit_key(), 0, -1)
         for raw in reversed(raw_events):
             try:
                 event = AuditEventView.model_validate_json(raw)
@@ -2922,7 +3090,10 @@ class AdminService:
             "result_summary": result_summary,
             "created_at": _now(),
         }
-        await self._client().rpush(_AUDIT_KEY, json.dumps(event, ensure_ascii=False))
+        await self._client().rpush(
+            self._audit_key(),
+            json.dumps(event, ensure_ascii=False),
+        )
 
     async def authorize_hub(self, authorization: str | None) -> None:
         scheme, _, token = (authorization or "").partition(" ")
@@ -2949,8 +3120,30 @@ async def require_admin(
     authorization: str | None = Header(default=None),
 ) -> AuthUser:
     user = await _auth_user(request, authorization)
-    if user.role != "admin" or user.status != "active":
+    if user.status != "active" or not has_permission(
+        user.permissions,
+        TENANT_MANAGE,
+    ):
         raise _error("admin_required", "Administrator access is required.", 403)
+    return user
+
+
+async def require_platform_integration(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> AuthUser:
+    """Require platform integration permission for global Sales Hub controls."""
+
+    user = await _auth_user(request, authorization)
+    if user.status != "active" or not has_permission(
+        user.permissions,
+        PLATFORM_INTEGRATION,
+    ):
+        raise _error(
+            "platform_permission_required",
+            "Platform integration permission is required.",
+            403,
+        )
     return user
 
 
@@ -3356,7 +3549,7 @@ async def list_recharge_requests(
 @admin_router.get("/sales-hub/config", response_model=SalesHubConfigView)
 async def get_sales_hub_config(
     request: Request,
-    _: AuthUser = Depends(require_admin),
+    _: AuthUser = Depends(require_platform_integration),
     service: AdminService = Depends(get_admin_service),
 ) -> SalesHubConfigView:
     return SalesHubConfigView(
@@ -3370,7 +3563,7 @@ async def update_sales_hub_config(
     body: SalesHubConfigUpdate,
     request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    actor: AuthUser = Depends(require_admin),
+    actor: AuthUser = Depends(require_platform_integration),
     service: AdminService = Depends(get_admin_service),
 ) -> SalesHubConfigView:
     if not idempotency_key:
@@ -3391,7 +3584,7 @@ async def update_sales_hub_config(
 async def verify_sales_hub(
     request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    _: AuthUser = Depends(require_admin),
+    _: AuthUser = Depends(require_platform_integration),
     service: AdminService = Depends(get_admin_service),
 ) -> OperationResponse:
     if not idempotency_key:
@@ -3404,7 +3597,7 @@ async def verify_sales_hub(
 async def report_sales_hub_usage(
     request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    _: AuthUser = Depends(require_admin),
+    _: AuthUser = Depends(require_platform_integration),
     service: AdminService = Depends(get_admin_service),
 ) -> OperationResponse:
     if not idempotency_key:

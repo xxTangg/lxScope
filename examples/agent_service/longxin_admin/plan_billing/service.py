@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from auth import AuthUser, JWTAuthService
+from identity.tenant_keys import tenant_scoped_key
 from longxin_admin.distributed_lock import DistributedLease
 
 from .catalog import (
@@ -68,8 +69,14 @@ class PlanBillingService:
         return DistributedLease(
             self._client,
             self._lock,
-            f"{PLAN_PREFIX}:mutation-lock",
+            self._key("mutation-lock"),
         )
+
+    @staticmethod
+    def _key(suffix: str) -> str:
+        """Return a tenant-scoped application key when a tenant is bound."""
+
+        return tenant_scoped_key(PLAN_PREFIX, suffix)
 
     def _client(self) -> Any:
         client = self._storage.get_client()
@@ -77,20 +84,32 @@ class PlanBillingService:
             raise _error("storage_not_ready", "Billing storage is not ready.", 503)
         return client
 
-    @staticmethod
-    def _profile_key(user_id: str) -> str:
+    def _profile_key(self, user_id: str) -> str:
         # Compatibility adapter: the old admin member screen already reads
         # these profile keys.  No AgentScope core module depends on this key.
-        return f"{LEGACY_ADMIN_PREFIX}:user:{user_id}"
+        return tenant_scoped_key(
+            LEGACY_ADMIN_PREFIX,
+            f"user:{user_id}",
+        )
 
-    @staticmethod
-    def _order_key(order_id: str) -> str:
-        return f"{PLAN_PREFIX}:order:{order_id}"
+    def _order_key(self, order_id: str) -> str:
+        return self._key(f"order:{order_id}")
 
-    @staticmethod
-    def _order_idempotency_key(actor_scope: str, key: str) -> str:
+    def _order_idempotency_key(self, actor_scope: str, key: str) -> str:
         digest = sha256(key.encode("utf-8")).hexdigest()
-        return f"{PLAN_PREFIX}:idempotency:{actor_scope}:{digest}"
+        return self._key(f"idempotency:{actor_scope}:{digest}")
+
+    def _system_key(self) -> str:
+        return tenant_scoped_key(LEGACY_ADMIN_PREFIX, "system")
+
+    def _ledger_key(self) -> str:
+        return tenant_scoped_key(LEGACY_ADMIN_PREFIX, "ledger")
+
+    def _audit_key(self) -> str:
+        return tenant_scoped_key(LEGACY_ADMIN_PREFIX, "audit")
+
+    def _orders_key(self) -> str:
+        return self._key("orders")
 
     @staticmethod
     def _fingerprint(payload: dict[str, Any]) -> str:
@@ -153,7 +172,7 @@ class PlanBillingService:
         )
 
     async def _system(self) -> dict[str, Any]:
-        value = await self._read_json(LEGACY_SYSTEM_KEY)
+        value = await self._read_json(self._system_key())
         if value is not None:
             return value
         return {
@@ -166,7 +185,7 @@ class PlanBillingService:
 
     async def _save_system(self, value: dict[str, Any]) -> None:
         value["updated_at"] = _now()
-        await self._write_json(LEGACY_SYSTEM_KEY, value)
+        await self._write_json(self._system_key(), value)
 
     async def _profile(self, user: AuthUser) -> dict[str, Any]:
         value = await self._read_json(self._profile_key(user.id))
@@ -316,7 +335,7 @@ class PlanBillingService:
     async def _orders(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         async for key in self._client().scan_iter(
-            match=f"{PLAN_PREFIX}:order:*",
+            match=self._key("order:*"),
             count=100,
         ):
             value = await self._read_json(key)
@@ -433,10 +452,7 @@ class PlanBillingService:
                 "requested_at": _now(),
             }
             await self._write_json(self._order_key(order["order_id"]), order)
-            await self._client().rpush(
-                f"{PLAN_PREFIX}:orders",
-                order["order_id"],
-            )
+            await self._client().rpush(self._orders_key(), order["order_id"])
             await self._write_idempotent(idem_key, request_fingerprint, order)
             await self._audit(
                 action="plan.order.created",
@@ -479,7 +495,7 @@ class PlanBillingService:
             "created_at": _now(),
         }
         await self._client().rpush(
-            LEGACY_LEDGER_KEY,
+            self._ledger_key(),
             json.dumps(entry, ensure_ascii=False),
         )
 
@@ -510,7 +526,7 @@ class PlanBillingService:
             "created_at": _now(),
         }
         await self._client().rpush(
-            LEGACY_AUDIT_KEY,
+            self._audit_key(),
             json.dumps(event, ensure_ascii=False),
         )
 

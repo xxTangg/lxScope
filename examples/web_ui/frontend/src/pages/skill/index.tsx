@@ -756,6 +756,6 @@ function AdminSkillHubPage() {
 /** Administrators browse/install from hubs; regular users see only the
  * catalog entries published to them by an administrator. */
 export function SkillHubPage() {
-	const { user } = useAuth();
-	return user?.role === 'admin' ? <AdminSkillHubPage /> : <PublishedResourcePage kind="skill" />;
+	const { hasPermission } = useAuth();
+	return hasPermission('tenant:manage') ? <AdminSkillHubPage /> : <PublishedResourcePage kind="skill" />;
 }

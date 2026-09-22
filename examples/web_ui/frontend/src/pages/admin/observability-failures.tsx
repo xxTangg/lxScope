@@ -30,7 +30,7 @@ function FailureRows({ rows }: { rows: ObservabilityFailure[] }) {
 
 export function AdminObservabilityFailuresPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const navigate = useNavigate();
 	const [days, setDays] = useState(14);
 	const [component, setComponent] = useState<(typeof componentOptions)[number]>('all');
@@ -39,7 +39,7 @@ export function AdminObservabilityFailuresPage() {
 	const failures = useQuery({
 		queryKey: ['admin', user?.id, 'observability-failures', days, component, errorType, userId],
 		queryFn: () => adminApi.observabilityFailures(days, { component: component === 'all' ? undefined : component, error_type: errorType === 'all' ? undefined : errorType, user_id: userId.trim() || undefined, limit: 500 }),
-		enabled: user?.role === 'admin',
+		enabled: hasPermission('tenant:manage'),
 	});
 	const data = failures.data;
 

@@ -86,6 +86,7 @@ from identity.dependencies import (
     reset_bound_tenant_identity,
     resolve_tenant_identity_from_authorization,
 )
+from identity.context_api import auth_context_router
 from identity.models import TenantIdentity
 from task import (
     AgentScopeTaskExecutor,
@@ -138,7 +139,7 @@ project_observability_store: PostgresProjectObservabilityStore | None = None
 application_database: ApplicationDatabase | None = None
 project_observability = ProjectObservability()
 
-_AUTH_PROVIDER = os.getenv("LXSCOPE_AUTH_PROVIDER", "local").strip().lower()
+_AUTH_PROVIDER = os.getenv("LXSCOPE_AUTH_PROVIDER", "logto").strip().lower()
 if _AUTH_PROVIDER not in {"local", "logto"}:
     raise RuntimeError(
         "LXSCOPE_AUTH_PROVIDER must be either 'local' or 'logto'.",
@@ -647,10 +648,16 @@ app.state.admin_service = AdminService(
     auth,
     plan_billing=app.state.plan_billing_service,
     workspace_service_provider=lambda: getattr(app.state, "workspace_service", None),
+    tenant_member_provider=lambda: getattr(
+        app.state,
+        "tenant_binding_repository",
+        None,
+    ),
 )
 app.state.upgrade_service = UpgradeService(storage, auth)
 app.state.sales_hub_authorizer = app.state.admin_service.authorize_hub
 app.include_router(auth.router)
+app.include_router(auth_context_router)
 app.include_router(admin_router)
 app.include_router(skill_analytics_router)
 app.include_router(observability_analytics_router)
@@ -695,7 +702,7 @@ async def _application_lifespan(app_instance):
 
     task_store_backend = os.getenv(
         "LXSCOPE_TASK_STORE_BACKEND",
-        "redis",
+        "postgres" if _AUTH_PROVIDER == "logto" else "redis",
     ).strip().lower()
     application_database_url = os.getenv(
         "LXSCOPE_DATABASE_URL",

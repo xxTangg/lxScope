@@ -44,9 +44,15 @@ class AuthUser(BaseModel):
 
     id: str
     username: str
+    display_name: str | None = None
+    external_user_id: str | None = None
     role: Literal["user", "admin"] = "user"
     status: Literal["active", "locked", "banned", "deleted"] = "active"
     capabilities: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
+    tenant_id: str | None = None
+    membership_id: str | None = None
+    identity_provider: str | None = None
     token_version: int = Field(default=0, exclude=True)
 
 
@@ -249,14 +255,30 @@ class JWTAuthService:
             ]
         return ["chat.read", "chat.write"]
 
+    @staticmethod
+    def _permissions(role: str) -> list[str]:
+        if role == "admin":
+            return [
+                "chat:read",
+                "chat:write",
+                "tenant:manage",
+                "platform:manage",
+                "platform:upgrade",
+                "platform:integration",
+                "platform:observe",
+            ]
+        return ["chat:read", "chat:write"]
+
     @classmethod
     def _public_user(cls, account: _Account) -> AuthUser:
         return AuthUser(
             id=account.user_id,
             username=account.username,
+            display_name=account.username,
             role=account.role,
             status=account.status,
             capabilities=cls._capabilities(account.role),
+            permissions=cls._permissions(account.role),
             token_version=account.token_version,
         )
 

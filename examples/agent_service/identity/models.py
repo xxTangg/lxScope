@@ -104,6 +104,12 @@ class LogtoPrincipal:
     organization_id: str
     scopes: frozenset[str] = field(default_factory=frozenset)
     client_id: str | None = None
+    # Added after the legacy positional fields to keep constructor
+    # compatibility for callers that supplied client_id positionally.
+    organization_roles: frozenset[str] = field(default_factory=frozenset)
+    username: str | None = None
+    display_name: str | None = None
+    email: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -117,12 +123,29 @@ class LogtoPrincipal:
             _required_text(self.organization_id, "organization_id"),
         )
         object.__setattr__(self, "scopes", frozenset(self.scopes))
+        object.__setattr__(
+            self,
+            "organization_roles",
+            frozenset(
+                value.strip()
+                for value in self.organization_roles
+                if isinstance(value, str) and value.strip()
+            ),
+        )
         if self.client_id is not None:
             object.__setattr__(
                 self,
                 "client_id",
                 _required_text(self.client_id, "client_id"),
             )
+        for field_name in ("username", "display_name", "email"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _required_text(value, field_name),
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +162,8 @@ class TenantIdentity:
     status: str
     display_name: str | None = None
     scopes: frozenset[str] = field(default_factory=frozenset)
+    tenant_status: str = "active"
+    user_status: str = "active"
 
 
 class TenantBindingError(RuntimeError):
@@ -172,6 +197,19 @@ class TenantNotProvisionedError(TenantBindingError):
         )
 
 
+class TenantIdentityStatusError(TenantBindingError):
+    """Raised when a tenant identity dimension is no longer active."""
+
+    code = "tenant_identity_inactive"
+
+    def __init__(self, *, subject: str, status: str) -> None:
+        self.subject = subject
+        self.status = status
+        super().__init__(
+            f"The {subject} identity is not active (status={status!r}).",
+        )
+
+
 # These aliases keep the public contract readable for callers that refer to
 # the input as an external or tenant principal.
 ExternalPrincipal = IdentityPrincipal
@@ -184,6 +222,7 @@ __all__ = [
     "LogtoPrincipal",
     "TenantBindingError",
     "TenantIdentity",
+    "TenantIdentityStatusError",
     "TenantNotProvisionedError",
     "TenantPrincipal",
 ]

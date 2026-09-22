@@ -182,6 +182,13 @@ class LogtoIdentityTest(TestCase):
         self.assertEqual(response.json()["external_org_id"], "logto-org-1")
         self.assertEqual(response.json()["external_user_id"], "logto-user-1")
 
+    def test_organization_roles_are_preserved_from_access_token(self) -> None:
+        token = self._token(organization_roles=["admin"])
+
+        principal = self.verifier.verify_sync(token)
+
+        self.assertEqual(principal.organization_roles, frozenset({"admin"}))
+
     def test_es384_token_returns_tenant_identity(self) -> None:
         private_key = ec.generate_private_key(ec.SECP384R1())
         verifier = LogtoVerifier(

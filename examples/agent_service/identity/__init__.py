@@ -7,6 +7,7 @@ from .models import (
     LogtoPrincipal,
     TenantBindingError,
     TenantIdentity,
+    TenantIdentityStatusError,
     TenantNotProvisionedError,
     TenantPrincipal,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "TenantBindingError",
     "TenantBindingRepository",
     "TenantIdentity",
+    "TenantIdentityStatusError",
     "TenantNotProvisionedError",
     "TenantPrincipal",
 ]

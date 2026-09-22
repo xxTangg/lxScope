@@ -3,9 +3,28 @@ import { clearAccessToken, client, setAccessToken } from './client';
 export interface AuthUser {
 	id: string;
 	username: string;
+	display_name?: string | null;
+	external_user_id?: string | null;
 	role: 'user' | 'admin';
 	status: 'active' | 'locked' | 'banned' | 'deleted';
 	capabilities: string[];
+	permissions: string[];
+	tenant_id?: string | null;
+	membership_id?: string | null;
+	identity_provider?: string | null;
+}
+
+export interface AuthContextResponse {
+	provider: 'local' | 'logto';
+	user: AuthUser;
+	permissions: string[];
+	tenant_id: string | null;
+	membership_id: string | null;
+	external_org_id: string | null;
+	membership_role: string | null;
+	tenant_status: string | null;
+	user_status: string | null;
+	membership_status: string | null;
 }
 
 export interface LoginResponse {
@@ -43,6 +62,7 @@ export const authApi = {
 	register: (username: string, password: string) =>
 		authenticate('/auth/register', username, password),
 	me: () => client.get<AuthUser>('/auth/me', undefined, { silent: true }),
+	context: () => client.get<AuthContextResponse>('/auth/context', undefined, { silent: true }),
 	usage: () => client.get<TokenUsage>('/auth/usage', undefined, { silent: true }),
 	logout: async () => {
 		try {

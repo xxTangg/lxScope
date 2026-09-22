@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, Header, Query, Request, UploadFile
 
 from auth import AuthUser
 from identity.dependencies import get_current_application_user
+from identity.permissions import has_permission, PLATFORM_UPGRADE
 
 from .models import (
     AdminApplyRequest,
@@ -42,8 +43,11 @@ async def _current_user(
 
 
 async def _require_admin(user: AuthUser = Depends(_current_user)) -> AuthUser:
-    if user.role != "admin" or user.status != "active":
-        raise _error("admin_required", "Administrator access is required.", 403)
+    if user.status != "active" or not has_permission(
+        user.permissions,
+        PLATFORM_UPGRADE,
+    ):
+        raise _error("platform_permission_required", "Platform upgrade permission is required.", 403)
     return user
 
 

@@ -1174,6 +1174,8 @@
 		"readinessDescription": "关键运行指标的只读状态。",
 		"unknown": "未知",
 		"memberModuleDescription": "成员账号、套餐分配和套餐审批集中在此模块。",
+		"memberIdentity": "成员",
+		"logtoMemberDirectoryNotice": "成员由当前 Logto 组织管理；此处仅展示已绑定的租户成员，账号创建、禁用和密码操作请在 Logto 中完成。",
 		"pricingBoundaryNotice": "套餐价格本阶段仍使用演示配置；真实支付、退款和生产级跨进程事务按后续阶段接入。",
 		"quotaModuleDescription": "维护测试默认额度、查看账本，并处理系统充值。",
 		"ledgerTitle": "额度流水",

@@ -75,7 +75,7 @@ function McpServers({ rows }: { rows: McpServerStatus[] }) {
 
 export function AdminToolObservabilityPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const navigate = useNavigate();
 	const { toolName: toolNameParam } = useParams<{ toolName: string }>();
 	const lockedTool = Boolean(toolNameParam);
@@ -85,7 +85,7 @@ export function AdminToolObservabilityPage() {
 	const detail = useQuery({
 		queryKey: ['admin', user?.id, 'observability-tool', days, toolName, userId],
 		queryFn: () => adminApi.observabilityComponent('tool', days, { name: toolName || undefined, user_id: userId || undefined }),
-		enabled: user?.role === 'admin',
+		enabled: hasPermission('tenant:manage'),
 	});
 	const data = detail.data;
 	const toolOptions = data?.items ?? [];

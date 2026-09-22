@@ -50,8 +50,12 @@ export function AppSidebar() {
 	const location = useLocation();
 	const { t } = useTranslation();
 	const { startOnborda } = useOnborda();
-	const { user, logout } = useAuth();
+	const { user, logout, hasPermission } = useAuth();
 	const isObservability = location.pathname.startsWith('/admin/observability');
+	const accountLabel = user?.display_name ?? user?.username ?? t('auth.accountCenter');
+	const accountExternalId = user?.external_user_id ?? (
+		user?.identity_provider === 'logto' ? user.id : null
+	);
 
 	const handleStartTour = () => {
 		if (!location.pathname.startsWith('/chat')) {
@@ -109,7 +113,7 @@ export function AppSidebar() {
 									<ClipboardList />
 								</SidebarMenuButton>
 							</SidebarMenuItem>
-							{user?.role === 'admin' && (
+							{hasPermission('tenant:manage') && (
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('admin.title'), hidden: false }}
@@ -147,7 +151,7 @@ export function AppSidebar() {
 				<SidebarGroup>
 					<SidebarGroupContent>
 						<SidebarMenu>
-							{user?.role === 'admin' && (
+							{hasPermission('platform:integration') && (
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('common.credential'), hidden: false }}
@@ -163,7 +167,7 @@ export function AppSidebar() {
 								<SidebarMenuButton
 									tooltip={{
 										children:
-											user?.role === 'admin'
+													hasPermission('tenant:manage')
 												? t('common.mcp-hub')
 												: t('resources.mcpTitle'),
 										hidden: false,
@@ -180,7 +184,7 @@ export function AppSidebar() {
 								<SidebarMenuButton
 									tooltip={{
 										children:
-											user?.role === 'admin'
+													hasPermission('tenant:manage')
 												? t('common.skill-hub')
 												: t('resources.skillTitle'),
 										hidden: false,
@@ -213,7 +217,7 @@ export function AppSidebar() {
 							<DropdownMenuTrigger asChild>
 								<SidebarMenuButton
 									tooltip={{
-										children: user?.username ?? t('auth.accountCenter'),
+										children: accountLabel,
 										hidden: false,
 									}}
 									isActive={location.pathname === '/account'}
@@ -225,10 +229,10 @@ export function AppSidebar() {
 							<DropdownMenuContent side="right" align="end" className="min-w-52">
 								<DropdownMenuLabel>
 									<div className="font-medium text-foreground">
-										{user?.username}
+										{accountLabel}
 									</div>
 									<div className="mt-0.5 font-sans text-xs font-normal">
-										{t('auth.brand')}
+										{accountExternalId ? `${t('auth.userId')}: ${accountExternalId}` : t('auth.brand')}
 									</div>
 								</DropdownMenuLabel>
 								<DropdownMenuSeparator />
@@ -238,7 +242,7 @@ export function AppSidebar() {
 									<UserRound />
 									{t('auth.accountAndUsage')}
 								</DropdownMenuItem>
-								{user?.role === 'admin' && (
+								{hasPermission('tenant:manage') && (
 									<DropdownMenuItem onSelect={() => navigate('/admin/observability')}>
 										<BarChart3 />
 										{t('admin.analyticsTitle')}

@@ -53,6 +53,14 @@ function clearLocalUserState() {
 	localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
 }
 
+function hasPermission(permissions: string[], required: string) {
+	if (permissions.includes(required)) return true;
+	const separator = required.indexOf(':');
+	if (separator < 0) return false;
+	const namespace = required.slice(0, separator);
+	return permissions.includes(`${namespace}:manage`);
+}
+
 function emptyOrganizationState(): Pick<
 	AuthContextValue,
 	'isLogto' | 'organizations' | 'activeOrganizationId' | 'organizationSelectionRequired' | 'noOrganizationAccess'
@@ -125,6 +133,11 @@ function LocalAuthProvider({ children }: { children: React.ReactNode }) {
 		() => ({
 			status,
 			user,
+			permissions: user?.permissions ?? [],
+			hasPermission: (permission: string) =>
+				hasPermission(user?.permissions ?? [], permission),
+			tenantId: user?.tenant_id ?? null,
+			membershipId: user?.membership_id ?? null,
 			login,
 			register,
 			logout,
@@ -154,26 +167,30 @@ function normalizeOrganizations(userInfo: UserInfoResponse): AuthOrganization[] 
 	}));
 }
 
-function toLogtoUser(userInfo: UserInfoResponse, organizationId: string | null): AuthUser {
-	const isOrganizationAdmin = Boolean(
-		organizationId &&
-		userInfo.organization_roles?.some(
-			(role) => role === `${organizationId}:admin`,
-		),
-	);
-	return {
-		id: userInfo.sub,
-		username: userInfo.username ?? userInfo.name ?? userInfo.email ?? userInfo.sub,
-		role: isOrganizationAdmin ? 'admin' : 'user',
-		status: 'active',
-		capabilities: [],
-	};
-}
-
 function hasLogtoCallbackParameters() {
 	if (window.location.pathname !== LOGTO_CALLBACK_PATH) return false;
 	const params = new URLSearchParams(window.location.search);
 	return Boolean(params.get('code') && params.get('state'));
+}
+
+function mergeLogtoProfile(user: AuthUser, userInfo: UserInfoResponse): AuthUser {
+	const profile = userInfo as UserInfoResponse & {
+		username?: string;
+		name?: string;
+		email?: string;
+		sub?: string;
+	};
+	const displayName =
+		profile.name?.trim() ||
+		profile.username?.trim() ||
+		profile.email?.trim() ||
+		user.display_name ||
+		user.username;
+	return {
+		...user,
+		display_name: displayName,
+		external_user_id: user.external_user_id || profile.sub || user.id,
+	};
 }
 
 function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
@@ -284,13 +301,18 @@ function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
 					activeOrganizationRef.current = desiredOrganizationId;
 					localStorage.setItem(ACTIVE_ORGANIZATION_STORAGE_KEY, desiredOrganizationId);
 					setActiveOrganizationIdState(desiredOrganizationId);
+					const backendContext = await authApi.context();
+					if (backendContext.provider !== 'logto') {
+						throw new Error('The backend authentication provider is not Logto.');
+					}
+					setUser(mergeLogtoProfile(backendContext.user, userInfo));
 				} else {
 					activeOrganizationRef.current = null;
 					localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
 					setActiveOrganizationIdState(null);
+					setUser(null);
 				}
 
-				setUser(toLogtoUser(userInfo, desiredOrganizationId));
 				setOrganizations(nextOrganizations);
 				setStatus('authenticated');
 			})
@@ -322,9 +344,14 @@ function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
 
 			const token = await getAccessToken(LOGTO_API_RESOURCE, organizationId);
 			if (!token) throw new Error('Logto did not return an organization access token.');
+			const backendContext = await authApi.context();
+			if (backendContext.provider !== 'logto') {
+				throw new Error('The backend authentication provider is not Logto.');
+			}
 
 			localStorage.setItem(ACTIVE_ORGANIZATION_STORAGE_KEY, organizationId);
 			setActiveOrganizationIdState(organizationId);
+			setUser(mergeLogtoProfile(backendContext.user, await fetchUserInfo()));
 			clearSessionPageState();
 			window.dispatchEvent(
 				new CustomEvent(ORGANIZATION_CHANGED_EVENT, {
@@ -361,6 +388,11 @@ function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
 		() => ({
 			status,
 			user,
+			permissions: user?.permissions ?? [],
+			hasPermission: (permission: string) =>
+				hasPermission(user?.permissions ?? [], permission),
+			tenantId: user?.tenant_id ?? null,
+			membershipId: user?.membership_id ?? null,
 			login,
 			register,
 			logout,

@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, uuid5
 from .models import (
     IdentityPrincipal,
     TenantIdentity,
+    TenantIdentityStatusError,
     TenantNotProvisionedError,
 )
 
@@ -241,7 +242,7 @@ class TenantBindingRepository:
         users = tables["users"]
         memberships = tables["memberships"]
 
-        from sqlalchemy import select
+        from sqlalchemy import select, update
 
         async with self._engine.begin() as connection:
             tenant_result = await connection.execute(
@@ -262,6 +263,11 @@ class TenantBindingRepository:
                     identity_provider=normalized.identity_provider,
                     external_org_id=normalized.external_org_id,
                 )
+            if tenant_row["status"] != "active":
+                raise TenantIdentityStatusError(
+                    subject="tenant",
+                    status=tenant_row["status"],
+                )
 
             user_id = uuid5(
                 NAMESPACE_URL,
@@ -269,7 +275,11 @@ class TenantBindingRepository:
                 f"{normalized.identity_provider}:"
                 f"{normalized.external_user_id}",
             )
-            username = f"{normalized.identity_provider}-{user_id.hex}"
+            username = (
+                normalized.username
+                or normalized.email
+                or f"{normalized.identity_provider}-{user_id.hex}"
+            )
             user_values = {
                 "id": user_id,
                 "username": username,
@@ -281,6 +291,16 @@ class TenantBindingRepository:
             }
             await connection.execute(
                 self._insert_ignore_conflicts(users, user_values, connection),
+            )
+            user_updates: dict[str, Any] = {"updated_at": _utc_now()}
+            if normalized.username:
+                user_updates["username"] = normalized.username
+            if normalized.email:
+                user_updates["email"] = normalized.email
+            await connection.execute(
+                update(users)
+                .where(users.c.external_user_id == normalized.external_user_id)
+                .values(**user_updates),
             )
             user_result = await connection.execute(
                 select(
@@ -295,6 +315,11 @@ class TenantBindingRepository:
             if user_row is None:
                 raise RuntimeError(
                     "Shadow user insert did not produce a user row",
+                )
+            if user_row["status"] != "active":
+                raise TenantIdentityStatusError(
+                    subject="user",
+                    status=user_row["status"],
                 )
 
             actual_user_id = user_row["id"]
@@ -327,6 +352,18 @@ class TenantBindingRepository:
                     connection,
                 ),
             )
+            if normalized.display_name or normalized.username or normalized.email:
+                await connection.execute(
+                    update(memberships)
+                    .where(
+                        memberships.c.tenant_id == tenant_id,
+                        memberships.c.user_id == actual_user_id,
+                    )
+                    .values(
+                        display_name=display_name,
+                        updated_at=_utc_now(),
+                    ),
+                )
             membership_result = await connection.execute(
                 select(
                     memberships.c.id,
@@ -343,6 +380,11 @@ class TenantBindingRepository:
                 raise RuntimeError(
                     "Membership insert did not produce a membership row",
                 )
+            if membership_row["status"] != "active":
+                raise TenantIdentityStatusError(
+                    subject="membership",
+                    status=membership_row["status"],
+                )
 
             return TenantIdentity(
                 tenant_id=tenant_id,
@@ -354,7 +396,53 @@ class TenantBindingRepository:
                 role=membership_row["role"],
                 status=membership_row["status"],
                 display_name=membership_row["display_name"],
+                tenant_status=tenant_row["status"],
+                user_status=user_row["status"],
             )
+
+    async def list_members(self, tenant_id: Any) -> list[dict[str, Any]]:
+        """List application-bound members for one trusted tenant.
+
+        This is deliberately backed by the lxScope binding tables rather than
+        the legacy local-auth Redis account index.  It returns only members
+        that have crossed the verified Logto identity boundary; it does not
+        invent or import accounts from another tenant.
+        """
+
+        tables = self._table_definitions()
+        users = tables["users"]
+        memberships = tables["memberships"]
+
+        from sqlalchemy import select
+
+        statement = (
+            select(
+                memberships.c.id.label("membership_id"),
+                memberships.c.role.label("membership_role"),
+                memberships.c.status.label("membership_status"),
+                memberships.c.display_name,
+                users.c.id.label("user_id"),
+                users.c.username,
+                users.c.external_user_id,
+                users.c.email,
+                users.c.status.label("user_status"),
+            )
+            .select_from(
+                memberships.join(
+                    users,
+                    memberships.c.user_id == users.c.id,
+                ),
+            )
+            .where(memberships.c.tenant_id == tenant_id)
+            .order_by(
+                memberships.c.display_name,
+                users.c.username,
+            )
+        )
+
+        async with self._engine.connect() as connection:
+            result = await connection.execute(statement)
+            return [dict(row) for row in result.mappings().all()]
 
 
 __all__ = ["TenantBindingRepository"]

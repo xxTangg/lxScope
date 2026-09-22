@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request, status
 
 from auth import AuthUser
 from identity.dependencies import get_current_application_user
+from identity.permissions import has_permission, TENANT_MANAGE
 
 from .models import (
     CreatePlanOrderRequest,
@@ -30,7 +31,10 @@ async def _current_user(
 
 
 async def _require_admin(user: AuthUser = Depends(_current_user)) -> AuthUser:
-    if user.role != "admin" or user.status != "active":
+    if user.status != "active" or not has_permission(
+        user.permissions,
+        TENANT_MANAGE,
+    ):
         raise _error("admin_required", "Administrator access is required.", 403)
     return user
 

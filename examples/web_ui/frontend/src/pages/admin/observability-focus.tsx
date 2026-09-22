@@ -64,7 +64,7 @@ function TokenUserTable({ rows }: { rows: TokenUserUsage[] }) {
 
 export function AdminObservabilityFocusPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const navigate = useNavigate();
 	const { pathname } = useLocation();
 	const focusParam = pathname.split('/').pop();
@@ -78,7 +78,7 @@ export function AdminObservabilityFocusPage() {
 		// different snapshots for the same period.
 		queryKey: ['admin', user?.id, 'observability', days],
 		queryFn: () => adminApi.observability(days),
-		enabled: user?.role === 'admin' && isValidFocus,
+		enabled: hasPermission('tenant:manage') && isValidFocus,
 	});
 	const data = analytics.data;
 	const tokenUsage = data?.token_usage;

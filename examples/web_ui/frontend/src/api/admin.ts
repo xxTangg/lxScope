@@ -6,6 +6,8 @@ export type AdminUserStatus = 'active' | 'locked' | 'banned' | 'deleted';
 export interface AdminUser {
 	id: string;
 	username: string;
+	display_name?: string | null;
+	external_user_id?: string | null;
 	role: 'user' | 'admin';
 	status: AdminUserStatus;
 	plan_id: string;

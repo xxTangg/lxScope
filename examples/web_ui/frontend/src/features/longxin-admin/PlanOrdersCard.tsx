@@ -22,7 +22,7 @@ function orderStatusVariant(status: PlanOrder['status']) {
 
 export function PlanOrdersCard() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, hasPermission } = useAuth();
 	const queryClient = useQueryClient();
 	const [adminPassword, setAdminPassword] = useState('');
 	const [status, setStatus] = useState<PlanOrder['status'] | ''>('');
@@ -31,7 +31,7 @@ export function PlanOrdersCard() {
 	const orders = useQuery({
 		queryKey: ['longxin-plan-billing', user?.id, 'admin-orders', status],
 		queryFn: () => planBillingApi.adminOrders(status || undefined),
-		enabled: user?.role === 'admin',
+		enabled: hasPermission('tenant:manage'),
 	});
 	const decide = useMutation({
 		mutationFn: ({ order, action }: { order: PlanOrder; action: 'approve' | 'reject' }) => {

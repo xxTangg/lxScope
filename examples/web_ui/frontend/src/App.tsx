@@ -100,8 +100,24 @@ function LogtoCallbackRoute() {
 }
 
 function AdminOnlyRoute({ children }: { children: React.ReactNode }) {
-	const { user } = useAuth();
-	return user?.role === 'admin' ? children : <Navigate to="/chat" replace />;
+	const { hasPermission } = useAuth();
+	const canAccess =
+		hasPermission('tenant:manage') ||
+		hasPermission('platform:manage') ||
+		hasPermission('platform:upgrade') ||
+		hasPermission('platform:integration');
+	return canAccess ? children : <Navigate to="/chat" replace />;
+}
+
+function PermissionRoute({
+	permission,
+	children,
+}: {
+	permission: string;
+	children: React.ReactNode;
+}) {
+	const { hasPermission } = useAuth();
+	return hasPermission(permission) ? children : <Navigate to="/chat" replace />;
 }
 
 const router = createBrowserRouter([
@@ -131,9 +147,9 @@ const router = createBrowserRouter([
 					{
 						path: '/credential',
 						element: (
-							<AdminOnlyRoute>
+							<PermissionRoute permission="platform:integration">
 								<CredentialPage />
-							</AdminOnlyRoute>
+							</PermissionRoute>
 						),
 					},
 					{ path: '/mcp', element: <MCPHubPage /> },
@@ -170,13 +186,34 @@ const router = createBrowserRouter([
 							{ path: 'members', element: <AdminMembersPage /> },
 							{ path: 'quota', element: <AdminQuotaPage /> },
 							{ path: 'models', element: <AdminModelsPage /> },
-							{ path: 'models/config', element: <CredentialPage /> },
+							{
+								path: 'models/config',
+								element: (
+									<PermissionRoute permission="platform:integration">
+										<CredentialPage />
+									</PermissionRoute>
+								),
+							},
 							{ path: 'skills', element: <AdminSkillsPage /> },
 							{ path: 'mcp', element: <AdminMcpPage /> },
 							{ path: 'policy', element: <AdminPolicyPage /> },
 							{ path: 'audit', element: <AdminAuditPage /> },
-							{ path: 'upgrades', element: <AdminUpgradesPage /> },
-							{ path: 'sales-hub', element: <AdminSalesHubPage /> },
+							{
+								path: 'upgrades',
+								element: (
+									<PermissionRoute permission="platform:upgrade">
+										<AdminUpgradesPage />
+									</PermissionRoute>
+								),
+							},
+							{
+								path: 'sales-hub',
+								element: (
+									<PermissionRoute permission="platform:integration">
+										<AdminSalesHubPage />
+									</PermissionRoute>
+								),
+							},
 						],
 					},
 				],
