@@ -50,7 +50,13 @@ export function AppSidebar() {
 	const location = useLocation();
 	const { t } = useTranslation();
 	const { startOnborda } = useOnborda();
-	const { user, logout, hasPermission } = useAuth();
+	const { user, logout, isLogto, hasPermission } = useAuth();
+	const canAccessAdmin =
+		hasPermission('tenant:manage') ||
+		hasPermission('platform:manage') ||
+		hasPermission('platform:upgrade') ||
+		hasPermission('platform:integration') ||
+		hasPermission('platform:observe');
 	const isObservability = location.pathname.startsWith('/admin/observability');
 	const accountLabel = user?.display_name ?? user?.username ?? t('auth.accountCenter');
 	const accountExternalId = user?.external_user_id ?? (
@@ -75,7 +81,20 @@ export function AppSidebar() {
 
 	const handleLogout = async () => {
 		await logout();
-		navigate('/login', { replace: true });
+		// Logto's signOut starts a full-page redirect to its end-session
+		// endpoint. Navigating to /login here would overwrite that redirect and
+		// immediately start a new SSO login, making logout appear ineffective.
+		if (!isLogto) navigate('/login', { replace: true });
+	};
+
+	const handleSwitchAccount = async () => {
+		if (isLogto) {
+			// End the Logto SSO session before starting the next login. Calling
+			// signIn directly can reuse the current Logto account.
+			await logout();
+			return;
+		}
+		await handleLogout();
 	};
 
 	return (
@@ -113,7 +132,7 @@ export function AppSidebar() {
 									<ClipboardList />
 								</SidebarMenuButton>
 							</SidebarMenuItem>
-							{hasPermission('tenant:manage') && (
+							{canAccessAdmin && (
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('admin.title'), hidden: false }}
@@ -253,7 +272,7 @@ export function AppSidebar() {
 									{t('common.settings')}
 								</DropdownMenuItem>
 								<DropdownMenuSeparator />
-								<DropdownMenuItem onSelect={() => void handleLogout()}>
+								<DropdownMenuItem onSelect={() => void handleSwitchAccount()}>
 									<Repeat2 />
 									{t('auth.switchAccount')}
 								</DropdownMenuItem>

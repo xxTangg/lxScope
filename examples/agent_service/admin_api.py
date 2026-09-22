@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import secrets
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
@@ -18,23 +19,32 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from agentscope.app.storage import MCPRecord, SkillRecord
 from agentscope.mcp import MCPClient
 from auth import AuthUser, JWTAuthService
 from identity.dependencies import (
+    get_bound_membership_id,
     get_bound_tenant_id,
     get_bound_tenant_identity,
     get_current_application_user,
 )
 from identity.permissions import (
     has_permission,
+    is_platform_admin,
+    PLATFORM_MANAGE,
     PLATFORM_INTEGRATION,
+    PLATFORM_OBSERVE,
+    SKILL_MANAGE,
     TENANT_MANAGE,
 )
 from identity.tenant_keys import tenant_scoped_key
+from identity.logto_directory import LogtoDirectoryClient
+from resource_isolation import ResourceScope, resource_is_visible
 from longxin_admin.distributed_lock import DistributedLease
+from longxin_admin.credential_policy import configured_credential_scope
 from longxin_admin.plan_billing.catalog import (
     PLAN_VALUES,
     UNASSIGNED_MONTHLY_QUOTA,
@@ -224,6 +234,9 @@ class AdminUserView(BaseModel):
     display_name: str | None = None
     external_user_id: str | None = None
     role: Literal["user", "admin"]
+    membership_role: str | None = None
+    membership_status: str | None = None
+    permissions: list[str] = Field(default_factory=list)
     status: Literal["active", "locked", "banned", "deleted"]
     plan_id: str
     plan_name: str
@@ -237,6 +250,42 @@ class AdminUserView(BaseModel):
 
 class UserListResponse(BaseModel):
     users: list[AdminUserView]
+    total: int
+    page: int
+    page_size: int
+    request_id: str
+
+
+class CreateTenantMemberRequest(BaseModel):
+    external_user_id: str = Field(min_length=1, max_length=255)
+    role: str = Field(default="member", min_length=1, max_length=32)
+    username: str | None = Field(default=None, max_length=128)
+    display_name: str | None = Field(default=None, max_length=128)
+    email: str | None = Field(default=None, max_length=255)
+
+
+class UpdateTenantMemberRequest(BaseModel):
+    role: str | None = Field(default=None, min_length=1, max_length=32)
+    status: Literal["active", "disabled", "removed"] | None = None
+
+
+class TenantMemberView(BaseModel):
+    id: str
+    user_id: str
+    external_user_id: str
+    username: str
+    display_name: str | None = None
+    email: str | None = None
+    organization_roles: list[str] = Field(default_factory=list)
+    role: str
+    status: Literal["active", "disabled", "removed"]
+    permissions: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class TenantMemberListResponse(BaseModel):
+    members: list[TenantMemberView]
     total: int
     page: int
     page_size: int
@@ -305,6 +354,9 @@ class LedgerEntryView(BaseModel):
     idempotency_key: str | None = None
     source: str
     created_at: str
+    model: str | None = None
+    tokens: int | None = None
+    cost: str | None = None
 
 
 class LedgerListResponse(BaseModel):
@@ -315,6 +367,8 @@ class LedgerListResponse(BaseModel):
 
 class AuditEventView(BaseModel):
     event_id: str
+    tenant_id: str | None = None
+    actor_membership_id: str | None = None
     actor_type: Literal["admin", "user", "system"] = "admin"
     actor_id: str
     actor_name: str
@@ -323,6 +377,7 @@ class AuditEventView(BaseModel):
     action: str
     resource_type: str | None = None
     resource_id: str | None = None
+    resource: dict[str, Any] = Field(default_factory=dict)
     reason: str
     request_id: str = ""
     status: Literal["completed", "failed"] = "completed"
@@ -394,6 +449,10 @@ class ResourcePublicationRequest(BaseModel):
     author: str | None = Field(default=None, max_length=256)
     icon_url: str | None = Field(default=None, max_length=2000)
     version: str | None = Field(default=None, max_length=128)
+    # ``scope`` below remains the legacy publication visibility field.  The
+    # resource ownership boundary is explicit and cannot be inferred from it.
+    resource_scope: ResourceScope = "tenant"
+    visibility: PublicationScope | None = None
     scope: PublicationScope = "none"
     user_ids: list[str] = Field(default_factory=list, max_length=5000)
     enabled: bool = True
@@ -411,6 +470,9 @@ class ResourcePublicationView(BaseModel):
     author: str | None = None
     icon_url: str | None = None
     version: str | None = None
+    resource_scope: ResourceScope = "tenant"
+    tenant_id: str | None = None
+    visibility: PublicationScope | None = None
     scope: PublicationScope
     user_ids: list[str]
     enabled: bool
@@ -531,6 +593,7 @@ class SalesHubConfigUpdate(BaseModel):
 class AdminPolicyView(BaseModel):
     admin_api_requires_admin_role: bool
     credential_management: Literal["admin_only"]
+    credential_scope: Literal["platform", "tenant"]
     sales_hub_authentication: Literal["customer_bearer_token"]
     recharge_legacy_hmac_enabled: bool
     high_risk_plugin_installation: Literal["disabled"]
@@ -573,6 +636,8 @@ class AdminService:
         plan_billing: Any | None = None,
         workspace_service_provider: Any | None = None,
         tenant_member_provider: Any | None = None,
+        resource_registry_provider: Any | None = None,
+        audit_store_provider: Any | None = None,
     ) -> None:
         self._storage = storage
         self._auth = auth
@@ -584,6 +649,9 @@ class AdminService:
         # In Logto mode this resolves to TenantBindingRepository.  Local mode
         # keeps using JWTAuthService through the compatibility fallback below.
         self._tenant_member_provider = tenant_member_provider
+        self._logto_directory = LogtoDirectoryClient.from_env()
+        self._resource_registry_provider = resource_registry_provider
+        self._audit_store_provider = audit_store_provider
         self._lock = asyncio.Lock()
         self._sales_hub_client = SalesHubClient(self._hub_connection_config)
 
@@ -601,9 +669,11 @@ class AdminService:
         return tenant_scoped_key(_PREFIX, suffix)
 
     async def _accounts(self) -> list[AuthUser]:
-        """Return members from the active tenant, never another tenant's index."""
+        """Return the active tenant, or every tenant for Platform Admins."""
 
         tenant_id = get_bound_tenant_id()
+        identity = get_bound_tenant_identity()
+        platform_admin = identity is not None and is_platform_admin(identity.permissions)
         if tenant_id is None or self._tenant_member_provider is None:
             return await self._auth.list_accounts()
 
@@ -615,8 +685,10 @@ class AdminService:
                 503,
             )
 
-        rows = await repository.list_members(tenant_id)
-        identity = get_bound_tenant_identity()
+        if platform_admin and hasattr(repository, "list_all_members"):
+            rows = await repository.list_all_members()
+        else:
+            rows = await repository.list_members(tenant_id)
         accounts: list[AuthUser] = []
         for row in rows:
             membership_id = str(row["membership_id"])
@@ -633,17 +705,20 @@ class AdminService:
             else:
                 account_status = "banned"
 
-            role = str(row.get("membership_role") or "member").lower()
-            is_admin = role in {"admin", "owner"}
-            # TenantBindingRepository intentionally does not trust role claims
-            # when creating rows.  The current verified token is authoritative
-            # for the current administrator's UI projection.
+            permissions = [
+                str(permission)
+                for permission in row.get("permissions", [])
+                if permission
+            ]
+            # The role is a display dimension.  Authorization is decided from
+            # the database role-permission mapping, never from a role name.
             if (
                 identity is not None
                 and membership_id == str(identity.membership_id)
                 and has_permission(identity.scopes, TENANT_MANAGE)
             ):
-                is_admin = True
+                permissions = sorted(set(permissions) | set(identity.scopes))
+            is_admin = has_permission(permissions, TENANT_MANAGE)
 
             username = next(
                 (
@@ -658,9 +733,7 @@ class AdminService:
                 ),
                 membership_id,
             )
-            permissions = ["chat:read", "chat:write"]
-            if is_admin:
-                permissions.append(TENANT_MANAGE)
+            permissions = sorted(set(permissions) | {"chat:read", "chat:write"})
             accounts.append(
                 AuthUser(
                     id=membership_id,
@@ -672,10 +745,12 @@ class AdminService:
                         else None
                     ),
                     role="admin" if is_admin else "user",
+                    membership_role=str(row.get("membership_role") or "member"),
+                    membership_status=membership_status,
                     status=account_status,
                     permissions=permissions,
                     capabilities=permissions,
-                    tenant_id=str(tenant_id),
+                    tenant_id=str(row.get("tenant_id") or tenant_id),
                     membership_id=membership_id,
                     identity_provider="logto",
                 ),
@@ -692,11 +767,43 @@ class AdminService:
                 409,
             )
 
+    @staticmethod
+    def _require_resource_permission(kind: ResourceKind, actor: AuthUser) -> None:
+        required = SKILL_MANAGE if kind == "skill" else TENANT_MANAGE
+        if actor.status != "active" or not has_permission(actor.permissions, required):
+            raise _error(
+                "resource_permission_required",
+                f"{kind} resource management permission is required.",
+                403,
+            )
+
     def _client(self) -> Any:
         client = self._storage.get_client()
         if client is None:
             raise _error("storage_not_ready", "Admin storage is not ready.", 503)
         return client
+
+    def _resource_registry(self) -> Any | None:
+        provider = self._resource_registry_provider
+        return provider() if provider is not None else None
+
+    def _audit_store(self) -> Any | None:
+        provider = self._audit_store_provider
+        return provider() if provider is not None else None
+
+    @staticmethod
+    def _audit_tenant_scope(actor: AuthUser | None) -> str | None:
+        """Return the server-derived audit scope for a viewer."""
+
+        if actor is not None and (
+            has_permission(actor.permissions, PLATFORM_MANAGE)
+            or has_permission(actor.permissions, PLATFORM_OBSERVE)
+        ):
+            return None
+        tenant_id = get_bound_tenant_id()
+        if tenant_id is not None:
+            return str(tenant_id)
+        return actor.tenant_id if actor is not None else None
 
     async def _hub_connection_config(self) -> dict[str, Any]:
         value = await self._read_json(_SALES_HUB_KEY) or {}
@@ -829,6 +936,10 @@ class AdminService:
         await self._client().set(key, json.dumps(value, ensure_ascii=False))
 
     async def _system(self) -> dict[str, Any]:
+        if self._plan_billing is not None:
+            quota = self._plan_billing.tenant_quota_service
+            if quota.enabled:
+                return await quota.snapshot()
         value = await self._read_json(self._system_key())
         if value is not None:
             return value
@@ -843,6 +954,11 @@ class AdminService:
         }
 
     async def _save_system(self, value: dict[str, Any]) -> None:
+        if self._plan_billing is not None:
+            quota = self._plan_billing.tenant_quota_service
+            if quota.enabled:
+                await quota.set_balance(int(value.get("pool_tokens", 0)))
+                return
         value["updated_at"] = _now()
         await self._write_json(self._system_key(), value)
 
@@ -887,6 +1003,9 @@ class AdminService:
             display_name=account.display_name or account.username,
             external_user_id=account.external_user_id,
             role=account.role,
+            membership_role=account.membership_role,
+            membership_status=account.membership_status,
+            permissions=account.permissions,
             status=account.status,
             plan_id=profile["plan_id"],
             plan_name=profile["plan_name"],
@@ -941,6 +1060,278 @@ class AdminService:
             request_id="",
         )
 
+    def _tenant_repository(self) -> Any:
+        if get_bound_tenant_id() is None or self._tenant_member_provider is None:
+            raise _error(
+                "tenant_directory_unavailable",
+                "Tenant member management requires Logto tenant authentication.",
+                409,
+            )
+        repository = self._tenant_member_provider()
+        if repository is None:
+            raise _error(
+                "tenant_directory_unavailable",
+                "The tenant member directory is not ready.",
+                503,
+            )
+        return repository
+
+    @staticmethod
+    def _tenant_member_view(row: dict[str, Any]) -> TenantMemberView:
+        member_status = str(row["membership_status"])
+        if member_status == "suspended":
+            member_status = "disabled"
+        return TenantMemberView(
+            id=str(row["membership_id"]),
+            user_id=str(row["user_id"]),
+            external_user_id=str(row["external_user_id"]),
+            username=str(row["username"]),
+            display_name=row.get("display_name"),
+            email=row.get("email"),
+            role=str(row["membership_role"]),
+            status=member_status,
+            permissions=sorted(str(value) for value in row.get("permissions", [])),
+            created_at=(
+                row["created_at"].isoformat()
+                if hasattr(row.get("created_at"), "isoformat")
+                else str(row.get("created_at") or "")
+            ),
+            updated_at=(
+                row["updated_at"].isoformat()
+                if hasattr(row.get("updated_at"), "isoformat")
+                else str(row.get("updated_at") or "")
+            ),
+        )
+
+    async def _enrich_tenant_member_profiles(
+        self,
+        rows: list[dict[str, Any]],
+        organization_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """Overlay current Logto names while keeping local data as fallback."""
+
+        if self._logto_directory is None or not organization_id:
+            return rows
+        try:
+            profiles = await self._logto_directory.list_organization_users(
+                organization_id,
+            )
+        except (httpx.HTTPError, OSError, ValueError) as exc:
+            _logger.warning(
+                "logto_member_profile_sync_failed organization_id=%s error=%s",
+                organization_id,
+                exc,
+            )
+            return rows
+
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            profile = profiles.get(str(row.get("external_user_id")))
+            if profile is None:
+                enriched.append(row)
+                continue
+            item = dict(row)
+            username = profile.get("username")
+            name = profile.get("name")
+            email = profile.get("primaryEmail") or profile.get("email")
+            if isinstance(username, str) and username.strip():
+                item["username"] = username.strip()
+            if isinstance(name, str) and name.strip():
+                item["display_name"] = name.strip()
+            elif isinstance(username, str) and username.strip():
+                item["display_name"] = username.strip()
+            if isinstance(email, str) and email.strip():
+                item["email"] = email.strip()
+            organization_roles = profile.get("organizationRoles")
+            if isinstance(organization_roles, list):
+                item["organization_roles"] = sorted(
+                    {
+                        str(role.get("name")).strip()
+                        for role in organization_roles
+                        if isinstance(role, Mapping)
+                        and isinstance(role.get("name"), str)
+                        and role.get("name").strip()
+                    },
+                )
+            enriched.append(item)
+        return enriched
+
+    async def list_tenant_members(
+        self,
+        *,
+        keyword: str | None,
+        member_status: str | None,
+        page: int,
+        page_size: int,
+    ) -> TenantMemberListResponse:
+        repository = self._tenant_repository()
+        tenant_id = get_bound_tenant_id()
+        rows = await repository.list_members(tenant_id)
+        current_identity = get_bound_tenant_identity()
+        rows = await self._enrich_tenant_member_profiles(
+            rows,
+            current_identity.external_org_id if current_identity else None,
+        )
+        if keyword:
+            needle = keyword.casefold()
+            rows = [
+                row
+                for row in rows
+                if any(
+                    needle in str(row.get(field) or "").casefold()
+                    for field in ("username", "display_name", "email", "external_user_id")
+                )
+            ]
+        if member_status:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("membership_status")) == member_status
+            ]
+        total = len(rows)
+        start = (page - 1) * page_size
+        return TenantMemberListResponse(
+            members=[
+                self._tenant_member_view(row)
+                for row in rows[start : start + page_size]
+            ],
+            total=total,
+            page=page,
+            page_size=page_size,
+            request_id="",
+        )
+
+    async def add_tenant_member(
+        self,
+        body: CreateTenantMemberRequest,
+        *,
+        idempotency_key: str,
+    ) -> TenantMemberView:
+        repository = self._tenant_repository()
+        tenant_id = get_bound_tenant_id()
+        fingerprint = {"operation": "tenant-member.create", **body.model_dump()}
+        idem_key = self._idempotency_key("tenant-member-create", idempotency_key)
+        async with self._mutation_lock():
+            existing = await self._read_json(idem_key)
+            if existing is not None:
+                if existing.get("fingerprint") != self._fingerprint(fingerprint):
+                    raise _error(
+                        "idempotency_key_reused",
+                        "The idempotency key was already used with another request.",
+                        409,
+                    )
+                return TenantMemberView.model_validate(existing["result"])
+            try:
+                row = await repository.add_member(
+                    tenant_id,
+                    external_user_id=body.external_user_id,
+                    role=body.role,
+                    username=body.username,
+                    display_name=body.display_name,
+                    email=body.email,
+                )
+            except ValueError as exc:
+                raise _error("invalid_tenant_member", str(exc), 409) from exc
+            view = self._tenant_member_view(row)
+            await self._write_json(
+                idem_key,
+                {
+                    "fingerprint": self._fingerprint(fingerprint),
+                    "result": view.model_dump(),
+                },
+            )
+            return view
+
+    async def update_tenant_member(
+        self,
+        membership_id: str,
+        body: UpdateTenantMemberRequest,
+        *,
+        idempotency_key: str,
+    ) -> TenantMemberView:
+        repository = self._tenant_repository()
+        tenant_id = get_bound_tenant_id()
+        fingerprint = {
+            "operation": "tenant-member.update",
+            "membership_id": membership_id,
+            **body.model_dump(),
+        }
+        idem_key = self._idempotency_key("tenant-member-update", idempotency_key)
+        async with self._mutation_lock():
+            existing = await self._read_json(idem_key)
+            if existing is not None:
+                if existing.get("fingerprint") != self._fingerprint(fingerprint):
+                    raise _error(
+                        "idempotency_key_reused",
+                        "The idempotency key was already used with another request.",
+                        409,
+                    )
+                return TenantMemberView.model_validate(existing["result"])
+            current_identity = get_bound_tenant_identity()
+            target = await repository.get_member(tenant_id, membership_id)
+            if target is None:
+                raise _error("member_not_found", "Tenant member not found.", 404)
+            target_has_manage = has_permission(
+                target.get("permissions", []),
+                TENANT_MANAGE,
+            )
+            requested_permissions = (
+                await repository.permissions_for_role(body.role)
+                if body.role is not None
+                else frozenset(target.get("permissions", []))
+            )
+            target_loses_manage = (
+                body.status in {"disabled", "removed"}
+                or (
+                    body.role is not None
+                    and target_has_manage
+                    and not has_permission(requested_permissions, TENANT_MANAGE)
+                )
+            )
+            if (
+                current_identity is not None
+                and membership_id == str(current_identity.membership_id)
+                and target_loses_manage
+            ):
+                raise _error(
+                    "current_admin_protected",
+                    "The current tenant administrator cannot be disabled or demoted.",
+                    409,
+                )
+            if target_has_manage and target_loses_manage:
+                active_admins = [
+                    member
+                    for member in await repository.list_members(tenant_id)
+                    if member.get("membership_status") == "active"
+                    and has_permission(member.get("permissions", []), TENANT_MANAGE)
+                ]
+                if len(active_admins) <= 1:
+                    raise _error(
+                        "last_admin_protected",
+                        "At least one active tenant administrator is required.",
+                        409,
+                    )
+            try:
+                row = await repository.update_member(
+                    tenant_id,
+                    membership_id,
+                    role=body.role,
+                    status=body.status,
+                )
+            except ValueError as exc:
+                raise _error("invalid_tenant_member", str(exc), 409) from exc
+            if row is None:
+                raise _error("member_not_found", "Tenant member not found.", 404)
+            view = self._tenant_member_view(row)
+            await self._write_json(
+                idem_key,
+                {
+                    "fingerprint": self._fingerprint(fingerprint),
+                    "result": view.model_dump(),
+                },
+            )
+            return view
+
     async def _resource_publications(self) -> list[dict[str, Any]]:
         global_value = await self._read_json(
             self._global_resource_publications_key(),
@@ -952,20 +1343,55 @@ class AdminService:
             else await self._read_json(tenant_key)
         )
         merged: dict[str, dict[str, Any]] = {}
-        for value in (global_value, tenant_value):
+        sources = [(global_value, "platform", None)]
+        if tenant_key != self._global_resource_publications_key():
+            sources.append(
+                (
+                    tenant_value,
+                    "tenant",
+                    str(get_bound_tenant_id()) if get_bound_tenant_id() else None,
+                ),
+            )
+        for value, default_scope, default_tenant in sources:
             items = value.get("resources", []) if value else []
             for item in items:
                 if isinstance(item, dict) and item.get("id"):
-                    merged[str(item["id"])] = item
+                    normalized = dict(item)
+                    normalized.setdefault("resource_scope", default_scope)
+                    normalized.setdefault("tenant_id", default_tenant)
+                    normalized.setdefault("visibility", normalized.get("scope", "all"))
+                    if normalized["resource_scope"] == "platform":
+                        normalized["tenant_id"] = None
+                    merged[str(item["id"])] = normalized
         return list(merged.values())
 
     async def _save_resource_publications(
         self,
         resources: list[dict[str, Any]],
     ) -> None:
+        # A tenant request reads a merged view. Persist each ownership scope
+        # back to its own catalog so a tenant cannot overwrite the platform
+        # catalog or another tenant's resources.
+        if get_bound_tenant_id() is None:
+            await self._write_json(
+                self._global_resource_publications_key(),
+                {"resources": resources},
+            )
+            return
+
+        platform_resources = [
+            item for item in resources if item.get("resource_scope") == "platform"
+        ]
+        tenant_resources = [
+            item for item in resources if item.get("resource_scope") != "platform"
+        ]
+        await self._write_json(
+            self._global_resource_publications_key(),
+            {"resources": platform_resources},
+        )
         await self._write_json(
             self._resource_publications_key(),
-            {"resources": resources},
+            {"resources": tenant_resources},
         )
 
     async def ensure_default_builtin_publications(self) -> None:
@@ -1002,6 +1428,9 @@ class AdminService:
                     "author": "Longxin",
                     "icon_url": None,
                     "version": "builtin",
+                    "resource_scope": "platform",
+                    "tenant_id": None,
+                    "visibility": "all",
                     "scope": "all",
                     "user_ids": [],
                     "enabled": True,
@@ -1011,6 +1440,17 @@ class AdminService:
             )
             existing_ids.add(publication_id)
             changed = True
+        registry = self._resource_registry()
+        if registry is not None:
+            for source_id, _, _ in _DEFAULT_BUILTIN_SKILLS:
+                await registry.register(
+                    "skill",
+                    self._resource_publication_id("skill", source_id),
+                    scope="platform",
+                    tenant_id=None,
+                    owner_membership_id=None,
+                    visibility="all",
+                )
         if changed:
             await self._save_resource_publications(resources)
 
@@ -1024,6 +1464,9 @@ class AdminService:
         accounts: list[AuthUser],
     ) -> set[str]:
         active_ids = {account.id for account in accounts if account.status == "active"}
+        if publication.get("resource_scope") == "personal":
+            owner = publication.get("owner_membership_id")
+            return {str(owner)} & active_ids if owner else set()
         scope = publication.get("scope")
         if scope == "all":
             return active_ids
@@ -1179,16 +1622,35 @@ class AdminService:
         body: ResourcePublicationRequest,
         actor: AuthUser,
     ) -> ResourcePublicationView:
-        if body.scope == "selected" and not body.user_ids:
+        self._require_resource_permission(body.kind, actor)
+        visibility = body.visibility or body.scope
+        if visibility == "selected" and not body.user_ids:
             raise _error(
                 "users_required",
                 "Select at least one user for a selected publication.",
                 422,
             )
 
+        if body.resource_scope == "platform" and not has_permission(
+            actor.permissions,
+            PLATFORM_MANAGE,
+        ):
+            raise _error(
+                "platform_permission_required",
+                "Platform resource publication requires platform:manage.",
+                403,
+            )
+
+        tenant_id = (
+            str(get_bound_tenant_id())
+            if body.resource_scope in {"tenant", "personal"}
+            and get_bound_tenant_id() is not None
+            else None
+        )
         accounts = await self._accounts()
         known_ids = {account.id for account in accounts if account.status == "active"}
-        unknown_ids = set(body.user_ids) - known_ids
+        selected_user_ids = body.user_ids if visibility == "selected" else []
+        unknown_ids = set(selected_user_ids) - known_ids
         if unknown_ids:
             raise _error(
                 "user_not_found",
@@ -1218,6 +1680,11 @@ class AdminService:
                 **(existing or {}),
                 **body.model_dump(),
                 "id": publication_id,
+                "scope": visibility,
+                "visibility": visibility,
+                "resource_scope": body.resource_scope,
+                "tenant_id": tenant_id,
+                "owner_membership_id": actor.id,
                 "source_user_id": actor.id,
                 "updated_at": _now(),
             }
@@ -1229,6 +1696,22 @@ class AdminService:
                 resources[resources.index(existing)] = publication
             await self._sync_resource_publication(publication, accounts)
             await self._save_resource_publications(resources)
+            registry = self._resource_registry()
+            if registry is not None and (
+                body.resource_scope != "tenant" or tenant_id is not None
+            ):
+                await registry.register(
+                    body.kind,
+                    publication_id,
+                    scope=body.resource_scope,
+                    tenant_id=(
+                        get_bound_tenant_id()
+                        if body.resource_scope in {"tenant", "personal"}
+                        else None
+                    ),
+                    owner_membership_id=actor.id,
+                    visibility=visibility,
+                )
             return ResourcePublicationView.model_validate(publication)
 
     async def remove_installed_skill(
@@ -1245,6 +1728,8 @@ class AdminService:
         service API.
         """
 
+        self._require_resource_permission("skill", actor)
+
         source = await self._storage.get_skill(actor.id, skill_id)
         if source is None:
             raise _error("resource_not_found", "The administrator skill was not found.", 404)
@@ -1256,6 +1741,15 @@ class AdminService:
             (item for item in resources if item.get("id") == publication_id),
             None,
         )
+        if publication is not None and publication.get("resource_scope") == "platform" and not has_permission(
+            actor.permissions,
+            PLATFORM_MANAGE,
+        ):
+            raise _error(
+                "platform_permission_required",
+                "Platform resources require platform:manage.",
+                403,
+            )
 
         async with self._mutation_lock():
             # Withdraw first so no new user-library copy can be provisioned
@@ -1294,6 +1788,8 @@ class AdminService:
     ) -> None:
         """Remove an administrator MCP and withdraw its publication."""
 
+        self._require_resource_permission("mcp", actor)
+
         source = await self._storage.get_mcp(actor.id, mcp_id)
         if source is None:
             raise _error("resource_not_found", "The administrator MCP was not found.", 404)
@@ -1305,6 +1801,15 @@ class AdminService:
             (item for item in resources if item.get("id") == publication_id),
             None,
         )
+        if publication is not None and publication.get("resource_scope") == "platform" and not has_permission(
+            actor.permissions,
+            PLATFORM_MANAGE,
+        ):
+            raise _error(
+                "platform_permission_required",
+                "Platform resources require platform:manage.",
+                403,
+            )
 
         async with self._mutation_lock():
             if publication is not None:
@@ -1388,12 +1893,18 @@ class AdminService:
     ) -> PublishedResourceListResponse:
         resources = await self._resource_publications()
         await self._sync_resource_publications(resources)
+        tenant_id = str(get_bound_tenant_id()) if get_bound_tenant_id() else user.tenant_id
+        membership_id = user.membership_id or user.id
         visible = [
             item
             for item in resources
-            if item.get("enabled", True)
-            and item.get("scope") in {"all", "selected"}
-            and (item.get("scope") == "all" or user.id in item.get("user_ids", []))
+            if resource_is_visible(
+                item,
+                tenant_id=tenant_id,
+                membership_id=membership_id,
+                scope_field="resource_scope",
+                visibility_field="scope",
+            )
             and (kind is None or item.get("kind") == kind)
         ]
         views = [
@@ -1773,6 +2284,7 @@ class AdminService:
         return AdminPolicyView(
             admin_api_requires_admin_role=True,
             credential_management="admin_only",
+            credential_scope=configured_credential_scope(),
             sales_hub_authentication="customer_bearer_token",
             recharge_legacy_hmac_enabled=(
                 os.getenv("LONGXIN_ALLOW_LEGACY_HMAC_CODES", "false").lower() == "true"
@@ -1864,6 +2376,34 @@ class AdminService:
         source: str,
         idempotency_key: str | None = None,
     ) -> LedgerEntryView:
+        if self._plan_billing is not None:
+            quota = self._plan_billing.tenant_quota_service
+            if quota.enabled:
+                stored = await quota.append_entry(
+                    entry_type=entry_type,
+                    delta_tokens=delta,
+                    balance_after=balance_after,
+                    membership_id=related_user_id or get_bound_membership_id(),
+                    created_by_membership_id=operator_id
+                    or get_bound_membership_id(),
+                    source_type=source,
+                    source_id=order_id,
+                    idempotency_key=idempotency_key,
+                    cost=Decimal(str(amount or 0)),
+                )
+                return LedgerEntryView(
+                    ledger_id=stored["ledger_id"],
+                    type=entry_type,
+                    delta_tokens=delta,
+                    balance_after=balance_after,
+                    amount=amount,
+                    order_id=order_id,
+                    related_user_id=related_user_id,
+                    operator_id=operator_id,
+                    idempotency_key=idempotency_key,
+                    source=source,
+                    created_at=stored["created_at"],
+                )
         entry = LedgerEntryView(
             ledger_id=f"led-{uuid4().hex}",
             type=entry_type,
@@ -1890,6 +2430,60 @@ class AdminService:
         since: str | None = None,
         until: str | None = None,
     ) -> list[LedgerEntryView]:
+        if self._plan_billing is not None:
+            quota = self._plan_billing.tenant_quota_service
+            if quota.enabled:
+                rows = await quota.list_ledger(
+                    limit=limit,
+                    entry_type=entry_type,
+                    membership_id=related_user_id,
+                )
+                result: list[LedgerEntryView] = []
+                for row in rows:
+                    created_at = str(row.get("created_at") or "")
+                    if since and created_at < since:
+                        continue
+                    if until and created_at > until:
+                        continue
+                    if order_id and str(row.get("source_id") or "") != order_id:
+                        continue
+                    result.append(
+                        LedgerEntryView(
+                            ledger_id=str(row.get("id") or ""),
+                            type=str(row.get("entry_type") or ""),
+                            delta_tokens=int(row.get("delta_tokens") or 0),
+                            balance_after=int(row.get("balance_after") or 0),
+                            amount=(
+                                str(row.get("cost"))
+                                if row.get("cost") is not None
+                                else None
+                            ),
+                            order_id=str(row.get("source_id"))
+                            if row.get("source_type") == "plan_order"
+                            else None,
+                            related_user_id=str(row.get("membership_id"))
+                            if row.get("membership_id")
+                            else None,
+                            operator_id=str(row.get("created_by_membership_id"))
+                            if row.get("created_by_membership_id")
+                            else None,
+                            idempotency_key=row.get("idempotency_key"),
+                            source=str(row.get("source_type") or "quota"),
+                            created_at=created_at,
+                            model=row.get("model"),
+                            tokens=(
+                                int(row["tokens"])
+                                if row.get("tokens") is not None
+                                else None
+                            ),
+                            cost=(
+                                str(row["cost"])
+                                if row.get("cost") is not None
+                                else None
+                            ),
+                        ),
+                    )
+                return result
         raw_entries = await self._client().lrange(self._ledger_key(), 0, -1)
         result: list[LedgerEntryView] = []
         for raw in reversed(raw_entries):
@@ -1913,6 +2507,11 @@ class AdminService:
         return result
 
     async def _cumulative_consumed(self) -> int:
+        if self._plan_billing is not None:
+            quota = self._plan_billing.tenant_quota_service
+            if quota.enabled:
+                snapshot = await quota.snapshot()
+                return int(snapshot.get("cumulative_consumed", 0))
         total = 0
         for account in await self._accounts():
             if account.role != "user" or account.status == "deleted":
@@ -1921,14 +2520,38 @@ class AdminService:
             total += max(0, int(usage.total_tokens))
         return total
 
-    async def audit_events(self, limit: int) -> list[AuditEventView]:
+    async def audit_events(
+        self,
+        limit: int,
+        actor: AuthUser | None = None,
+    ) -> list[AuditEventView]:
+        """Return only the audit scope allowed for the current viewer."""
+
+        tenant_scope = self._audit_tenant_scope(actor)
+        store = self._audit_store()
+        if store is not None:
+            try:
+                rows = await store.list_events(
+                    limit=limit,
+                    tenant_id=tenant_scope,
+                )
+                return [AuditEventView.model_validate(row) for row in rows]
+            except Exception:
+                _logger.warning(
+                    "audit.database_query_failed; using compatibility stream",
+                    exc_info=True,
+                )
+
         raw_events = await self._client().lrange(self._audit_key(), -limit, -1)
         result: list[AuditEventView] = []
         for raw in reversed(raw_events):
             try:
-                result.append(AuditEventView.model_validate_json(raw))
+                event = AuditEventView.model_validate_json(raw)
             except ValueError:
                 continue
+            if tenant_scope is not None and event.tenant_id != tenant_scope:
+                continue
+            result.append(event)
         return result
 
     async def _hub_request(
@@ -2070,12 +2693,49 @@ class AdminService:
                 created_at=_now(),
                 request_id=remote_request_id,
             )
+            if self._plan_billing is not None:
+                quota = self._plan_billing.tenant_quota_service
+                if quota.enabled:
+                    await quota.create_recharge_order(
+                        external_order_id=order_id,
+                        amount=amount,
+                        requested_by_membership_id=get_bound_membership_id(),
+                        metadata={
+                            "note": body.note,
+                            "request_id": remote_request_id,
+                        },
+                    )
             await self._write_json(self._order_key(order.order_id), order.model_dump())
             await self._client().rpush(self._orders_key(), order.order_id)
             await self._write_idempotent(idem_key, request_fingerprint, order.model_dump())
             return order
 
     async def recharge_requests(self, limit: int) -> list[RechargeRequestView]:
+        if self._plan_billing is not None:
+            quota = self._plan_billing.tenant_quota_service
+            if quota.enabled:
+                rows = await quota.list_recharge_orders(limit=limit)
+                return [
+                    RechargeRequestView(
+                        order_id=str(row.get("external_order_id") or row.get("id")),
+                        system_id=f"tenant-{get_bound_tenant_id()}",
+                        amount=_format_money(str(row.get("amount") or "0")),
+                        status=(
+                            "approved"
+                            if row.get("status") in {"approved", "completed"}
+                            else "rejected"
+                            if row.get("status") in {"rejected", "cancelled"}
+                            else "pending"
+                        ),
+                        delivery_status=(
+                            "delivered"
+                            if row.get("status") in {"approved", "completed"}
+                            else "not_delivered"
+                        ),
+                        created_at=str(row.get("created_at") or _now()),
+                    )
+                    for row in rows
+                ]
         ids = await self._client().lrange(self._orders_key(), -limit, -1)
         result: list[RechargeRequestView] = []
         for order_id in reversed(ids):
@@ -2503,6 +3163,17 @@ class AdminService:
             ) from exc
         if local_amount != amount:
             raise _error("amount_mismatch", "The recharge code amount does not match the order.", 409)
+        quota = None
+        if self._plan_billing is not None:
+            candidate = self._plan_billing.tenant_quota_service
+            if candidate.enabled:
+                quota = candidate
+                await quota.create_recharge_order(
+                    external_order_id=order_id,
+                    amount=amount,
+                    requested_by_membership_id=get_bound_membership_id(),
+                    metadata={"source": "sales_hub_code", "nonce": nonce},
+                )
         operation_id = f"op-{uuid4().hex}"
         async with self._mutation_lock():
             existing = await self._read_idempotent(idem_key, request_fingerprint)
@@ -2547,6 +3218,12 @@ class AdminService:
                 source="sales_hub",
                 idempotency_key=idempotency_key,
             )
+            if quota is not None:
+                await quota.mark_recharge_completed(
+                    external_order_id=order_id,
+                    tokens=tokens,
+                    amount=amount,
+                )
             order.update(
                 {
                     "status": "approved",
@@ -2821,6 +3498,18 @@ class AdminService:
             return result
 
     async def _audit_target(self, target_user_id: str) -> AuthUser:
+        if get_bound_tenant_id() is not None and self._tenant_member_provider is not None:
+            target = next(
+                (
+                    account
+                    for account in await self._accounts()
+                    if account.id == target_user_id
+                ),
+                None,
+            )
+            if target is None:
+                raise _error("user_not_found", "The audit target user was not found.", 404)
+            return target
         account = await self._auth._account_by_id(target_user_id)
         if account is None or account.status == "deleted":
             raise _error("user_not_found", "The audit target user was not found.", 404)
@@ -2919,6 +3608,38 @@ class AdminService:
         reason: str,
         request_id: str,
     ) -> None:
+        store = self._audit_store()
+        if store is not None:
+            try:
+                rows = await store.list_events(
+                    limit=500,
+                    tenant_id=self._audit_tenant_scope(actor),
+                )
+                for row in rows:
+                    event = AuditEventView.model_validate(row)
+                    if (
+                        event.event_id == event_id
+                        and event.action == "audit.overview"
+                        and event.target_user_id == target_user_id
+                        and event.status == "completed"
+                    ):
+                        await self._audit(
+                            actor=actor,
+                            action="audit.resource_access",
+                            target_id=target_user_id,
+                            reason=reason,
+                            request_id=request_id,
+                            resource_type="audit",
+                            resource_id=event_id,
+                            result_summary="Second-step audit access granted.",
+                        )
+                        return
+            except Exception:
+                _logger.warning(
+                    "audit.database_lookup_failed event_id=%s",
+                    event_id,
+                    exc_info=True,
+                )
         raw_events = await self._client().lrange(self._audit_key(), 0, -1)
         for raw in reversed(raw_events):
             try:
@@ -2956,7 +3677,10 @@ class AdminService:
         *,
         request_id: str,
     ) -> AuditResourceResponse:
-        target = await self._audit_target_from_event(body.overview_event_id)
+        target = await self._audit_target_from_event(
+            body.overview_event_id,
+            actor,
+        )
         await self._require_audit_overview(
             actor,
             body.overview_event_id,
@@ -2995,7 +3719,30 @@ class AdminService:
             request_id=request_id,
         )
 
-    async def _audit_target_from_event(self, event_id: str) -> str:
+    async def _audit_target_from_event(
+        self,
+        event_id: str,
+        actor: AuthUser | None = None,
+    ) -> str:
+        store = self._audit_store()
+        if store is not None:
+            try:
+                rows = await store.list_events(
+                    limit=500,
+                    tenant_id=self._audit_tenant_scope(actor),
+                )
+                for row in rows:
+                    event = AuditEventView.model_validate(row)
+                    if event.event_id == event_id and event.action == "audit.overview":
+                        if event.target_user_id:
+                            return event.target_user_id
+                        break
+            except Exception:
+                _logger.warning(
+                    "audit.database_lookup_failed event_id=%s",
+                    event_id,
+                    exc_info=True,
+                )
         raw_events = await self._client().lrange(self._audit_key(), 0, -1)
         for raw in reversed(raw_events):
             try:
@@ -3020,7 +3767,10 @@ class AdminService:
         *,
         request_id: str,
     ) -> AuditResourceResponse:
-        target = await self._audit_target_from_event(body.overview_event_id)
+        target = await self._audit_target_from_event(
+            body.overview_event_id,
+            actor,
+        )
         await self._require_audit_overview(
             actor,
             body.overview_event_id,
@@ -3076,6 +3826,12 @@ class AdminService:
             target_name = account.username if account is not None else None
         event = {
             "event_id": f"evt-{uuid4().hex}",
+            "tenant_id": (
+                str(get_bound_tenant_id())
+                if get_bound_tenant_id() is not None
+                else actor.tenant_id
+            ),
+            "actor_membership_id": actor.membership_id or actor.id,
             "actor_type": actor_type,
             "actor_id": actor.id,
             "actor_name": actor.username,
@@ -3084,12 +3840,29 @@ class AdminService:
             "action": action,
             "resource_type": resource_type or action.split(".", 1)[0],
             "resource_id": resource_id or target_id,
+            "resource": {
+                "type": resource_type or action.split(".", 1)[0],
+                "id": resource_id or target_id,
+            },
             "reason": reason,
             "request_id": request_id,
             "status": status_value,
             "result_summary": result_summary,
             "created_at": _now(),
         }
+        store = self._audit_store()
+        if store is not None:
+            try:
+                await store.record(event)
+            except Exception:
+                # Audit persistence must not turn the business mutation into
+                # an unknown outcome; the compatibility stream remains a
+                # local fallback while the database recovers.
+                _logger.warning(
+                    "audit.database_write_failed action=%s",
+                    action,
+                    exc_info=True,
+                )
         await self._client().rpush(
             self._audit_key(),
             json.dumps(event, ensure_ascii=False),
@@ -3128,20 +3901,88 @@ async def require_admin(
     return user
 
 
+async def require_audit_viewer(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> AuthUser:
+    """Allow tenant administrators and platform observers to read audit data."""
+
+    user = await _auth_user(request, authorization)
+    if user.status != "active" or not (
+        has_permission(user.permissions, TENANT_MANAGE)
+        or has_permission(user.permissions, PLATFORM_OBSERVE)
+        or has_permission(user.permissions, PLATFORM_MANAGE)
+    ):
+        raise _error("admin_required", "Administrator access is required.", 403)
+    return user
+
+
+# Read-only observability dashboards use the same tenant/platform visibility
+# boundary as audit queries, while keeping the dependency name explicit at
+# the API surface.
+require_observability_admin = require_audit_viewer
+
+
+async def require_resource_admin(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> AuthUser:
+    """Require tenant resource management authority, not a role name."""
+
+    user = await _auth_user(request, authorization)
+    if user.status != "active" or not (
+        has_permission(user.permissions, TENANT_MANAGE)
+        or has_permission(user.permissions, SKILL_MANAGE)
+    ):
+        raise _error(
+            "resource_permission_required",
+            "A tenant resource management permission is required.",
+            403,
+        )
+    return user
+
+
 async def require_platform_integration(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> AuthUser:
-    """Require platform integration permission for global Sales Hub controls."""
+    """Require administrator access for Sales Hub controls.
+
+    Tenant administrators may configure the Sales Hub connection for their
+    deployment.  A dedicated platform:integration scope remains accepted for
+    callers that are not tenant administrators.
+    """
 
     user = await _auth_user(request, authorization)
-    if user.status != "active" or not has_permission(
-        user.permissions,
-        PLATFORM_INTEGRATION,
+    if user.status != "active" or not (
+        has_permission(user.permissions, TENANT_MANAGE)
+        or has_permission(user.permissions, PLATFORM_INTEGRATION)
     ):
         raise _error(
-            "platform_permission_required",
-            "Platform integration permission is required.",
+            "admin_required",
+            "Administrator access is required for Sales Hub controls.",
+            403,
+        )
+    return user
+
+
+async def require_platform_admin(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> AuthUser:
+    """Require explicit all-tenant Platform Admin authority.
+
+    Platform capability scopes are intentionally not enough for this
+    dependency.  This guard is used by operations that can address more than
+    the tenant bound to the request, while tenant administrators continue to
+    use ``require_admin`` for tenant-local operations.
+    """
+
+    user = await _auth_user(request, authorization)
+    if user.status != "active" or not is_platform_admin(user.permissions):
+        raise _error(
+            "platform_admin_required",
+            "Platform Admin access is required.",
             403,
         )
     return user
@@ -3173,7 +4014,7 @@ async def list_published_resources(
 )
 async def list_resource_publications(
     kind: ResourceKind | None = Query(default=None),
-    _: AuthUser = Depends(require_admin),
+    _: AuthUser = Depends(require_resource_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> ResourcePublicationListResponse:
     return await service.list_resource_publications(kind)
@@ -3185,7 +4026,7 @@ async def list_resource_publications(
 )
 async def publish_resource(
     body: ResourcePublicationRequest,
-    actor: AuthUser = Depends(require_admin),
+    actor: AuthUser = Depends(require_resource_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> ResourcePublicationView:
     return await service.publish_resource(body, actor)
@@ -3194,7 +4035,7 @@ async def publish_resource(
 @admin_router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_installed_skill(
     skill_id: str,
-    actor: AuthUser = Depends(require_admin),
+    actor: AuthUser = Depends(require_resource_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> None:
     await service.remove_installed_skill(skill_id, actor)
@@ -3203,7 +4044,7 @@ async def remove_installed_skill(
 @admin_router.delete("/mcps/{mcp_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_installed_mcp(
     mcp_id: str,
-    actor: AuthUser = Depends(require_admin),
+    actor: AuthUser = Depends(require_resource_admin),
     service: AdminService = Depends(get_admin_service),
 ) -> None:
     await service.remove_installed_mcp(mcp_id, actor)
@@ -3245,6 +4086,62 @@ async def list_users(
     )
     response.request_id = service._request_id(request)
     return response
+
+
+@admin_router.get("/tenant-members", response_model=TenantMemberListResponse)
+async def list_tenant_members(
+    request: Request,
+    keyword: str | None = Query(default=None, max_length=128),
+    member_status: str | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    _: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> TenantMemberListResponse:
+    response = await service.list_tenant_members(
+        keyword=keyword,
+        member_status=member_status,
+        page=page,
+        page_size=page_size,
+    )
+    response.request_id = service._request_id(request)
+    return response
+
+
+@admin_router.post(
+    "/tenant-members",
+    response_model=TenantMemberView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_tenant_member(
+    body: CreateTenantMemberRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    _: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> TenantMemberView:
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    return await service.add_tenant_member(body, idempotency_key=idempotency_key)
+
+
+@admin_router.patch(
+    "/tenant-members/{membership_id}",
+    response_model=TenantMemberView,
+)
+async def update_tenant_member(
+    membership_id: str,
+    body: UpdateTenantMemberRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    _: AuthUser = Depends(require_admin),
+    service: AdminService = Depends(get_admin_service),
+) -> TenantMemberView:
+    if not idempotency_key:
+        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
+    return await service.update_tenant_member(
+        membership_id,
+        body,
+        idempotency_key=idempotency_key,
+    )
 
 
 @admin_router.post(
@@ -3411,10 +4308,10 @@ async def get_ledger(
 async def get_audit_events(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
-    _: AuthUser = Depends(require_admin),
+    actor: AuthUser = Depends(require_audit_viewer),
     service: AdminService = Depends(get_admin_service),
 ) -> AuditEventListResponse:
-    events = await service.audit_events(limit)
+    events = await service.audit_events(limit, actor)
     return AuditEventListResponse(
         events=events,
         total=len(events),
@@ -3426,7 +4323,7 @@ async def get_audit_events(
 async def audit_overview(
     body: AuditOverviewRequest,
     request: Request,
-    actor: AuthUser = Depends(require_admin),
+    actor: AuthUser = Depends(require_audit_viewer),
     service: AdminService = Depends(get_admin_service),
 ) -> AuditResourceResponse:
     return await service.audit_overview(
@@ -3444,7 +4341,7 @@ async def audit_session(
     session_id: str,
     body: AuditSessionAccessRequest,
     request: Request,
-    actor: AuthUser = Depends(require_admin),
+    actor: AuthUser = Depends(require_audit_viewer),
     service: AdminService = Depends(get_admin_service),
 ) -> AuditResourceResponse:
     return await service.audit_session(
@@ -3463,7 +4360,7 @@ async def audit_document(
     document_id: str,
     body: AuditDocumentAccessRequest,
     request: Request,
-    actor: AuthUser = Depends(require_admin),
+    actor: AuthUser = Depends(require_audit_viewer),
     service: AdminService = Depends(get_admin_service),
 ) -> AuditResourceResponse:
     return await service.audit_document(

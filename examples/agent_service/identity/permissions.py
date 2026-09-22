@@ -5,10 +5,24 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 TENANT_MANAGE = "tenant:manage"
+SKILL_MANAGE = "skill:manage"
 PLATFORM_MANAGE = "platform:manage"
 PLATFORM_UPGRADE = "platform:upgrade"
 PLATFORM_INTEGRATION = "platform:integration"
 PLATFORM_OBSERVE = "platform:observe"
+
+# Platform authority is deliberately represented by the explicit manage
+# permission.  ``has_permission`` treats it as the parent of the other
+# platform capabilities, but a single capability such as
+# ``platform:upgrade`` must never be mistaken for a Platform Admin.
+PLATFORM_ADMIN_PERMISSIONS = frozenset(
+    {
+        PLATFORM_MANAGE,
+        PLATFORM_UPGRADE,
+        PLATFORM_INTEGRATION,
+        PLATFORM_OBSERVE,
+    },
+)
 
 # These are Logto organization roles, not application authorization checks.
 # They are translated once at the identity boundary into the explicit
@@ -53,6 +67,23 @@ def has_permission(permissions: Iterable[str], required: str) -> bool:
     if required.startswith("platform:") and PLATFORM_MANAGE in normalized:
         return True
     return False
+
+
+def is_platform_admin(permissions: Iterable[str]) -> bool:
+    """Return whether the caller has the explicit all-tenant authority.
+
+    Platform capability scopes are intentionally not interchangeable with
+    platform administration.  In particular, a token carrying only
+    ``platform:upgrade`` is a capability token, not a Platform Admin token.
+    The explicit ``platform:manage`` permission grants the four declared
+    platform capabilities through the normal parent-scope rule.
+    """
+
+    normalized = normalize_permissions(permissions)
+    return PLATFORM_MANAGE in normalized and all(
+        has_permission(normalized, permission)
+        for permission in PLATFORM_ADMIN_PERMISSIONS
+    )
 
 
 def permissions_from_logto_claims(
@@ -101,12 +132,15 @@ __all__ = [
     "LOCAL_ADMIN_PERMISSIONS",
     "LOCAL_USER_PERMISSIONS",
     "PLATFORM_INTEGRATION",
+    "PLATFORM_ADMIN_PERMISSIONS",
     "PLATFORM_MANAGE",
     "PLATFORM_OBSERVE",
     "PLATFORM_UPGRADE",
     "TENANT_ADMIN_ORGANIZATION_ROLES",
     "TENANT_MANAGE",
+    "SKILL_MANAGE",
     "has_permission",
+    "is_platform_admin",
     "normalize_permissions",
     "permissions_from_logto_claims",
 ]

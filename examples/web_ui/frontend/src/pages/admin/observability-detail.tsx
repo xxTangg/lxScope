@@ -83,9 +83,9 @@ export function AdminObservabilityDetailPage() {
 	const component: ObservabilityComponent = isValidComponent ? componentParam : 'model';
 	const config = componentKeys[component] ?? componentKeys.model;
 	const detail = useQuery({
-		queryKey: ['admin', user?.id, 'observability-component', component],
+		queryKey: ['admin', user?.id, user?.tenant_id, 'observability-component', component],
 		queryFn: () => adminApi.observabilityComponent(component),
-		enabled: hasPermission('tenant:manage') && isValidComponent,
+		enabled: (hasPermission('tenant:manage') || hasPermission('platform:observe')) && isValidComponent,
 	});
 	const data = detail.data;
 	const Icon = component === 'agent' ? Bot : component === 'tool' ? Network : Network;

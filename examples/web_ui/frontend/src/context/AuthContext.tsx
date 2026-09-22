@@ -1,4 +1,5 @@
 import {
+	Prompt,
 	useHandleSignInCallback,
 	useLogto,
 	type UserInfoResponse,
@@ -28,6 +29,7 @@ import {
 import {
 	AuthContext,
 	ORGANIZATION_CHANGED_EVENT,
+	type SignInOptions,
 	type AuthContextValue,
 	type AuthOrganization,
 	type AuthStatus,
@@ -125,7 +127,7 @@ function LocalAuthProvider({ children }: { children: React.ReactNode }) {
 		}
 	}, [becomeAnonymous]);
 
-	const signIn = useCallback(async () => {
+	const signIn = useCallback(async (_options?: SignInOptions) => {
 		await login('', '');
 	}, [login]);
 
@@ -344,6 +346,10 @@ function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
 
 			const token = await getAccessToken(LOGTO_API_RESOURCE, organizationId);
 			if (!token) throw new Error('Logto did not return an organization access token.');
+			// The context request below obtains its token through the shared
+			// provider. Update the ref before requesting it so the backend resolves
+			// the newly selected tenant immediately.
+			activeOrganizationRef.current = organizationId;
 			const backendContext = await authApi.context();
 			if (backendContext.provider !== 'logto') {
 				throw new Error('The backend authentication provider is not Logto.');
@@ -351,7 +357,9 @@ function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
 
 			localStorage.setItem(ACTIVE_ORGANIZATION_STORAGE_KEY, organizationId);
 			setActiveOrganizationIdState(organizationId);
-			setUser(mergeLogtoProfile(backendContext.user, await fetchUserInfo()));
+			const userInfo = await fetchUserInfo();
+			if (!userInfo) throw new Error('Logto user information was unavailable.');
+			setUser(mergeLogtoProfile(backendContext.user, userInfo));
 			clearSessionPageState();
 			window.dispatchEvent(
 				new CustomEvent(ORGANIZATION_CHANGED_EVENT, {
@@ -359,15 +367,19 @@ function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
 				}),
 			);
 		},
-		[getAccessToken, organizations],
+		[fetchUserInfo, getAccessToken, organizations],
 	);
 
-	const signIn = useCallback(async () => {
+	const signIn = useCallback(async (options?: SignInOptions) => {
+		if (options?.force) becomeAnonymous();
 		await logtoSignIn({
 			redirectUri: getLogtoRedirectUri(),
 			postRedirectUri: new URL('/chat', window.location.origin).toString(),
+			clearTokens: true,
+			prompt: options?.force ? Prompt.Login : undefined,
+			extraParams: { ui_locales: 'zh-CN' },
 		});
-	}, [logtoSignIn]);
+	}, [becomeAnonymous, logtoSignIn]);
 
 	const login = useCallback(async () => signIn(), [signIn]);
 	const register = useCallback(async () => signIn(), [signIn]);
@@ -379,8 +391,12 @@ function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
 			// localhost and 127.0.0.1; the router then redirects anonymous users
 			// to /login.
 			await logtoSignOut(new URL('/', window.location.origin).toString());
-		} finally {
+		} catch (error) {
+			// signOut starts a full-page redirect on success, so changing the
+			// React auth state in a finally block can trigger the auto-login page
+			// before the browser reaches Logto's end-session endpoint.
 			becomeAnonymous();
+			throw error;
 		}
 	}, [becomeAnonymous, logtoSignOut]);
 

@@ -51,8 +51,12 @@ from agentscope.workspace import WorkspaceBase
 
 from admin_api import AdminService, admin_router, resource_router, sales_hub_router
 from auth import AuthUser, load_auth_from_env
-from longxin_admin.credential_policy import AdminManagedCredentialPolicy
+from longxin_admin.credential_policy import (
+    AdminManagedCredentialPolicy,
+    credential_manager_allowed,
+)
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
+from longxin_admin.tenant_quota import TenantQuotaMiddleware, TenantQuotaService
 from longxin_admin.upgrade import UpgradeService, upgrade_router
 from skill_analytics_api import skill_analytics_router
 from skill_observability import (
@@ -78,13 +82,21 @@ from project_observability import (
 from observability_analytics_api import observability_analytics_router
 from mcp_management import management_mcp_router
 from persistence import ApplicationDatabase
+from audit_store import AuditEventStore
 from identity.dependencies import (
+    application_user_from_tenant_identity,
     clear_bound_tenant_identity,
+    get_bound_tenant_identity,
     get_current_tenant_identity,
     get_logto_verifier,
     get_tenant_binding_repository,
     reset_bound_tenant_identity,
     resolve_tenant_identity_from_authorization,
+)
+from resource_isolation import (
+    TenantResourceRegistry,
+    TenantScopedKnowledgeBaseService,
+    TenantScopedResourceAccessService,
 )
 from identity.context_api import auth_context_router
 from identity.models import TenantIdentity
@@ -236,14 +248,22 @@ async def _sync_current_user_skills(
         ),
     )
     try:
-        if _AUTH_PROVIDER == "logto":
+        application = globals().get("app")
+        if application is None:
             summary.result = "skipped"
-            summary.error_code = "logto_identity_skill_sync_deferred"
+            summary.error_code = "application_unavailable"
             return summary
 
-        account = await auth.get_user_by_id(user_id)
-        application = globals().get("app")
-        if account is None or account.status != "active" or application is None:
+        if _AUTH_PROVIDER == "logto":
+            identity = get_bound_tenant_identity()
+            account = (
+                application_user_from_tenant_identity(identity)
+                if identity is not None
+                else None
+            )
+        else:
+            account = await auth.get_user_by_id(user_id)
+        if account is None or account.status != "active":
             summary.result = "skipped"
             summary.error_code = "account_not_active"
             return summary
@@ -397,6 +417,17 @@ async def longterm_memory_factory(
                 TracingMiddleware(),
             ],
         )
+    quota_service = getattr(app.state, "tenant_quota_service", None)
+    tenant_identity = get_bound_tenant_identity()
+    if quota_service is not None and tenant_identity is not None and quota_service.enabled:
+        middlewares.append(
+            TenantQuotaMiddleware(
+                quota_service,
+                tenant_id=tenant_identity.tenant_id,
+                membership_id=tenant_identity.membership_id,
+                source_id=f"chat:{session_id}",
+            ),
+        )
     middlewares.append(SkillUsageMiddleware(summary))
     return middlewares
 
@@ -449,7 +480,14 @@ app = create_app(
     # only raises the rate limit.
     mcp_hubs=[GitHubMCPHub()],
     skill_hubs=[ClawSkillHub(api_token=os.getenv("CLAWHUB_API_TOKEN"))],
-    resource_access_policy=AdminManagedCredentialPolicy(auth),
+    resource_access_policy=AdminManagedCredentialPolicy(
+        auth,
+        tenant_member_provider=lambda: getattr(
+            app.state,
+            "tenant_binding_repository",
+            None,
+        ),
+    ),
     # Customize your own subagent templates
     custom_subagent_templates=[
         SubAgentTemplate(
@@ -640,8 +678,22 @@ app.state.auth = auth
 app.state.auth_provider = _AUTH_PROVIDER
 app.state.application_database = None
 app.state.tenant_binding_repository = None
-app.state.plan_billing_service = PlanBillingService(storage, auth)
-app.state.credential_access_check = auth.is_admin_user
+app.state.audit_event_store = None
+app.state.tenant_quota_service = TenantQuotaService(lambda: application_database)
+app.state.plan_billing_service = PlanBillingService(
+    storage,
+    auth,
+    database_provider=lambda: application_database,
+    audit_store_provider=lambda: getattr(
+        app.state,
+        "audit_event_store",
+        None,
+    ),
+)
+app.state.credential_access_check = lambda user_id: credential_manager_allowed(
+    auth,
+    user_id,
+)
 app.state.chat_access_check = app.state.plan_billing_service.ensure_chat_allowed
 app.state.admin_service = AdminService(
     storage,
@@ -653,8 +705,26 @@ app.state.admin_service = AdminService(
         "tenant_binding_repository",
         None,
     ),
+    resource_registry_provider=lambda: getattr(
+        app.state,
+        "resource_registry",
+        None,
+    ),
+    audit_store_provider=lambda: getattr(
+        app.state,
+        "audit_event_store",
+        None,
+    ),
 )
-app.state.upgrade_service = UpgradeService(storage, auth)
+app.state.upgrade_service = UpgradeService(
+    storage,
+    auth,
+    audit_store_provider=lambda: getattr(
+        app.state,
+        "audit_event_store",
+        None,
+    ),
+)
 app.state.sales_hub_authorizer = app.state.admin_service.authorize_hub
 app.include_router(auth.router)
 app.include_router(auth_context_router)
@@ -710,6 +780,7 @@ async def _application_lifespan(app_instance):
     ).strip()
     app_instance.state.application_database = None
     app_instance.state.tenant_binding_repository = None
+    app_instance.state.audit_event_store = None
     if _AUTH_PROVIDER == "logto" and not application_database_url:
         raise RuntimeError(
             "LXSCOPE_AUTH_PROVIDER=logto requires LXSCOPE_DATABASE_URL.",
@@ -721,6 +792,9 @@ async def _application_lifespan(app_instance):
             await local_application_database.initialize()
             application_database = local_application_database
             app_instance.state.application_database = local_application_database
+            app_instance.state.audit_event_store = AuditEventStore(
+                local_application_database,
+            )
             logger.info(
                 "lxscope.persistence.database_ready backend=postgres "
                 "schema=longxin_app",
@@ -795,6 +869,41 @@ async def _application_lifespan(app_instance):
 
     try:
         async with _base_lifespan(app_instance):
+            # Keep AgentScope Core's user_id storage contract intact while
+            # resolving business resources through the current tenant first.
+            resource_registry = (
+                TenantResourceRegistry(local_application_database)
+                if local_application_database is not None
+                else None
+            )
+            app_instance.state.resource_registry = resource_registry
+            core_knowledge_service = getattr(
+                app_instance.state,
+                "knowledge_base_service",
+                None,
+            )
+            if core_knowledge_service is not None:
+                app_instance.state.knowledge_base_service = (
+                    TenantScopedKnowledgeBaseService(
+                        core_knowledge_service,
+                        resource_registry,
+                    )
+                )
+            core_access_service = getattr(
+                app_instance.state,
+                "resource_access_service",
+                None,
+            )
+            if core_access_service is not None:
+                tenant_access_service = TenantScopedResourceAccessService(
+                    core_access_service,
+                    resource_registry,
+                )
+                app_instance.state.resource_access_service = tenant_access_service
+                chat_service = getattr(app_instance.state, "chat_service", None)
+                if chat_service is not None:
+                    chat_service._access = tenant_access_service
+            app_instance.state.task_knowledge_gateway = None
             await app_instance.state.admin_service.ensure_default_builtin_publications()
             await _ensure_siliconflow_credential(auth.admin_user_ids)
             if (
@@ -826,9 +935,8 @@ async def _application_lifespan(app_instance):
                 app_instance.state.task_store,
                 agentscope_executor=AgentScopeTaskExecutor(
                     storage=storage,
-                    resource_access_service=(
-                        app_instance.state.resource_access_service
-                    ),
+                    resource_access_service=app_instance.state.resource_access_service,
+                    quota_service=app_instance.state.tenant_quota_service,
                     workspace_manager=app_instance.state.workspace_manager,
                     scheduler_manager=app_instance.state.scheduler_manager,
                     background_task_manager=(
@@ -842,9 +950,8 @@ async def _application_lifespan(app_instance):
                 ),
                 planner=AgentScopeTaskPlanner(
                     storage=storage,
-                    resource_access_service=(
-                        app_instance.state.resource_access_service
-                    ),
+                    resource_access_service=app_instance.state.resource_access_service,
+                    quota_service=app_instance.state.tenant_quota_service,
                 ),
             )
             recharge_sync_task = asyncio.create_task(
@@ -865,6 +972,7 @@ async def _application_lifespan(app_instance):
             await local_application_database.close()
         app_instance.state.application_database = None
         app_instance.state.tenant_binding_repository = None
+        app_instance.state.audit_event_store = None
         application_database = None
         project_observability.shutdown()
         skill_observation_store = None

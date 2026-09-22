@@ -1,6 +1,8 @@
 api_resource:
   name: lxScope API
-  identifier: https://api.lxscope.local
+  # Keep this identifier identical across Logto, backend JWT audience, and
+  # frontend token requests. Override it per deployment through .env.
+  identifier: ${LOGTO_API_RESOURCE:-https://api.lxscope.local}
 
 permissions:
   - name: agent:use
@@ -13,6 +15,14 @@ permissions:
     description: Manage tenant settings
   - name: resource:read
     description: Read lxScope resources
+  - name: platform:manage
+    description: Manage platform-wide lxScope resources
+  - name: platform:upgrade
+    description: Run platform upgrade operations
+  - name: platform:integration
+    description: Manage platform integrations
+  - name: platform:observe
+    description: Observe platform-wide metrics and audit data
 
 # Logto's organization template is shared by all organizations. The roles
 # below are created in that template and receive API resource permissions.
@@ -24,7 +34,88 @@ roles:
       - member:manage
       - resource:read
       - agent:use
+  - name: platform_admin
+    description: Manage the lxScope platform and the selected tenant
+    permissions:
+      - tenant:manage
+      - resource:manage
+      - member:manage
+      - resource:read
+      - agent:use
+      - platform:manage
+      - platform:upgrade
+      - platform:integration
+      - platform:observe
   - name: member
     permissions:
       - resource:read
       - agent:use
+
+# Official Logto Sign-in Experience branding. The logo is served by the
+# lxScope frontend so the hosted Logto page can use the same product mark.
+# Set LXSCOPE_PUBLIC_URL to the browser-accessible frontend origin in a
+# non-local deployment.
+sign_in_experience:
+  public_app_url_env: LXSCOPE_PUBLIC_URL
+  public_app_url: http://localhost:8000
+  application_id_env: VITE_LOGTO_APP_ID
+  display_name: 龙信助手
+  color:
+    primary_color: "#0265CB"
+    dark_primary_color: "#4E9BFF"
+    is_dark_mode_enabled: true
+  branding:
+    logo_path: /lxscope-logo.svg
+    dark_logo_path: /lxscope-logo.svg
+    favicon_path: /lxscope-logo.svg
+    dark_favicon_path: /lxscope-logo.svg
+  hide_logto_branding: true
+  language:
+    auto_detect: false
+    fallback_language: zh-CN
+  custom_css: |
+    #app > div[class$="viewBox"] {
+      background: #f4f5f6;
+    }
+
+    #app main[class*="main"] {
+      background: #ffffff !important;
+      border: 1px solid rgba(24, 25, 28, 0.08);
+      border-radius: 16px;
+      box-shadow: 0 18px 40px -30px rgba(24, 25, 28, 0.28);
+    }
+
+    #app main[class*="main"] img[class*="logo"] {
+      content: url("{{LXSCOPE_PUBLIC_URL}}/lxscope-logo.svg") !important;
+      height: 48px !important;
+      width: auto !important;
+    }
+
+    #app button[type="submit"] {
+      background: #0265CB !important;
+      border-radius: 10px !important;
+      font-weight: 600 !important;
+    }
+
+    #app button[type="submit"]:hover {
+      background: #0056B3 !important;
+    }
+
+    #app a {
+      color: #0265CB !important;
+    }
+
+    /* Logto OSS does not apply the Cloud-only hideLogtoBranding switch. */
+    #app footer,
+    #app [class*="footer"],
+    #app [class*="poweredBy"],
+    #app [data-logto-signature-container] {
+      display: none !important;
+    }
+  custom_phrases:
+    zh-CN:
+      action:
+        sign_in: 登录
+      description:
+        sign_in_to_your_account: 登录龙信助手企业智能工作台
+        identifier_sign_in_description: 使用企业账号登录龙信助手，进入安全的企业智能工作台。

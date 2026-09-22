@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { adminApi, skillApi } from '@/api';
-import type { AdminUser, PublicationScope, ResourcePublication, SkillView } from '@/api';
+import type { PublicationScope, ResourcePublication, SkillView, TenantMember } from '@/api';
 import { AdminHeader } from './shared';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -33,6 +33,7 @@ import {
 } from '@/components/ui/popover';
 import { Spinner } from '@/components/ui/spinner';
 import { useTranslation } from '@/i18n/useI18n';
+import { ORGANIZATION_CHANGED_EVENT } from '@/context/auth-context';
 
 type BuiltinSkill = {
 	id: string;
@@ -45,6 +46,12 @@ type BuiltinSkill = {
 	sourceRecordId?: string;
 	resourceName?: string;
 	tags?: string[];
+};
+
+type ScopeUser = {
+	id: string;
+	username: string;
+	status: string;
 };
 
 const BUILTIN_SKILLS: BuiltinSkill[] = [
@@ -171,7 +178,7 @@ export function UserScopePicker({
 	userIds,
 	onChange,
 }: {
-	users: AdminUser[];
+	users: ScopeUser[];
 	userIds: string[];
 	onChange: (userIds: string[]) => void;
 }) {
@@ -245,7 +252,7 @@ function BuiltinSkillCard({
 }: {
 	skill: BuiltinSkill;
 	publication?: ResourcePublication;
-	users: AdminUser[];
+	users: TenantMember[];
 	onSaved: () => void;
 	onOpen: () => void;
 	onRemove?: () => void;
@@ -359,7 +366,7 @@ export function AdminSkillsPage() {
 	const [query, setQuery] = useState('');
 	const [category, setCategory] = useState(CATEGORY_ALL);
 	const [publications, setPublications] = useState<ResourcePublication[]>([]);
-	const [users, setUsers] = useState<AdminUser[]>([]);
+	const [users, setUsers] = useState<TenantMember[]>([]);
 	const [installedSkills, setInstalledSkills] = useState<SkillView[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [bulkScope, setBulkScope] = useState<Exclude<PublicationScope, 'selected'> | null>(null);
@@ -373,11 +380,11 @@ export function AdminSkillsPage() {
 		try {
 			const [nextPublications, nextUsers, nextInstalledSkills] = await Promise.all([
 				adminApi.resourcePublications('skill'),
-				adminApi.users({ page: 1, page_size: 100 }),
+				adminApi.tenantMembers({ page: 1, page_size: 100 }),
 				skillApi.list(),
 			]);
 			setPublications(nextPublications.resources);
-			setUsers(nextUsers.users);
+			setUsers(nextUsers.members);
 			setInstalledSkills(nextInstalledSkills);
 		} finally {
 			setLoading(false);
@@ -386,6 +393,12 @@ export function AdminSkillsPage() {
 
 	useEffect(() => {
 		void refetch();
+	}, []);
+
+	useEffect(() => {
+		const refreshForOrganization = () => void refetch();
+		window.addEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
+		return () => window.removeEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
 	}, []);
 
 	const publicationBySource = useMemo(

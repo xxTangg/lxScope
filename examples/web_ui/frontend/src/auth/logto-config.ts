@@ -19,6 +19,10 @@ export const LOGTO_API_SCOPES = [
 	'member:manage',
 	'tenant:manage',
 	'resource:read',
+	'platform:manage',
+	'platform:upgrade',
+	'platform:integration',
+	'platform:observe',
 ];
 
 export const logtoConfig: LogtoConfig = {

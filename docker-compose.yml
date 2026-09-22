@@ -136,6 +136,11 @@ services:
       LOGTO_JWKS_URL: ${LOGTO_JWKS_URL:-http://logto:3001/oidc/jwks}
       LOGTO_USERINFO_URL: ${LOGTO_USERINFO_URL:-http://logto:3001/oidc/me}
       LOGTO_API_RESOURCE: ${LOGTO_API_RESOURCE:-https://api.lxscope.local}
+      # Optional read-only Logto profile lookup for the tenant member page.
+      LOGTO_MANAGEMENT_ENDPOINT: ${LOGTO_MANAGEMENT_ENDPOINT:-http://logto:3001}
+      LOGTO_M2M_APP_ID: ${LOGTO_M2M_APP_ID:-}
+      LOGTO_M2M_APP_SECRET: ${LOGTO_M2M_APP_SECRET:-}
+      LOGTO_MANAGEMENT_API_RESOURCE: ${LOGTO_MANAGEMENT_API_RESOURCE:-}
       # Project-level observability. Metrics are exposed at
       # /observability/metrics for authenticated administrators.
       LXSCOPE_OBSERVABILITY_ENABLED: ${LXSCOPE_OBSERVABILITY_ENABLED:-true}

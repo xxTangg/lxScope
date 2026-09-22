@@ -188,6 +188,17 @@ class TenantBindingRepository:
                     name="uq_tenant_memberships_tenant_user",
                 ),
             ),
+            "role_permissions": Table(
+                "role_permission_mapping",
+                metadata,
+                Column("role", String(32), nullable=False),
+                Column("permission", String(128), nullable=False),
+                UniqueConstraint(
+                    "role",
+                    "permission",
+                    name="uq_role_permission_mapping_role_permission",
+                ),
+            ),
         }
         return self._tables
 
@@ -241,6 +252,7 @@ class TenantBindingRepository:
         tenants = tables["tenants"]
         users = tables["users"]
         memberships = tables["memberships"]
+        role_permissions = tables["role_permissions"]
 
         from sqlalchemy import select, update
 
@@ -338,7 +350,7 @@ class TenantBindingRepository:
                 "id": membership_id,
                 "tenant_id": tenant_id,
                 "user_id": actual_user_id,
-                "role": "member",
+                "role": self._initial_role(normalized),
                 "status": "active",
                 "display_name": display_name,
                 "joined_at": _utc_now(),
@@ -386,6 +398,17 @@ class TenantBindingRepository:
                     status=membership_row["status"],
                 )
 
+            permission_result = await connection.execute(
+                select(role_permissions.c.permission).where(
+                    role_permissions.c.role == membership_row["role"],
+                ),
+            )
+            permissions = frozenset(
+                str(row[0])
+                for row in permission_result
+                if row[0]
+            )
+
             return TenantIdentity(
                 tenant_id=tenant_id,
                 user_id=actual_user_id,
@@ -398,7 +421,31 @@ class TenantBindingRepository:
                 display_name=membership_row["display_name"],
                 tenant_status=tenant_row["status"],
                 user_status=user_row["status"],
+                permissions=permissions,
+                scopes=permissions,
             )
+
+    @staticmethod
+    def _initial_role(principal: IdentityPrincipal) -> str:
+        """Select the bootstrap role only when the membership is first created.
+
+        Subsequent authorization is driven by the persisted membership role and
+        ``role_permission_mapping``.  Logto organization roles are therefore
+        used only to bootstrap an unbound user into a tenant-admin membership.
+        """
+
+        organization_id = principal.external_org_id.strip().lower()
+        for value in principal.organization_roles:
+            role = value.strip().lower()
+            if role in {"admin", "owner"}:
+                return "tenant_admin"
+            prefix = f"{organization_id}:"
+            if role.startswith(prefix) and role.removeprefix(prefix) in {
+                "admin",
+                "owner",
+            }:
+                return "tenant_admin"
+        return "member"
 
     async def list_members(self, tenant_id: Any) -> list[dict[str, Any]]:
         """List application-bound members for one trusted tenant.
@@ -412,6 +459,7 @@ class TenantBindingRepository:
         tables = self._table_definitions()
         users = tables["users"]
         memberships = tables["memberships"]
+        role_permissions = tables["role_permissions"]
 
         from sqlalchemy import select
 
@@ -426,6 +474,8 @@ class TenantBindingRepository:
                 users.c.external_user_id,
                 users.c.email,
                 users.c.status.label("user_status"),
+                memberships.c.created_at,
+                memberships.c.updated_at,
             )
             .select_from(
                 memberships.join(
@@ -442,7 +492,285 @@ class TenantBindingRepository:
 
         async with self._engine.connect() as connection:
             result = await connection.execute(statement)
-            return [dict(row) for row in result.mappings().all()]
+            rows = [dict(row) for row in result.mappings().all()]
+            permission_result = await connection.execute(
+                select(
+                    role_permissions.c.role,
+                    role_permissions.c.permission,
+                ),
+            )
+            permission_map: dict[str, list[str]] = {}
+            for role, permission in permission_result:
+                permission_map.setdefault(str(role), []).append(str(permission))
+            for row in rows:
+                row["permissions"] = sorted(
+                    permission_map.get(str(row["membership_role"]), []),
+                )
+            return rows
 
+    async def list_all_members(self) -> list[dict[str, Any]]:
+        """Return active-tenant memberships for Platform Admin views.
+
+        This is the only repository method that intentionally omits a tenant
+        predicate.  Callers must already have passed the explicit
+        ``is_platform_admin`` authorization check.  The returned rows retain
+        ``tenant_id`` so downstream profile, quota, and audit operations can
+        keep their original tenant namespace instead of collapsing all
+        tenants into the requester's current tenant.
+        """
+
+        tables = self._table_definitions()
+        tenants = tables["tenants"]
+        users = tables["users"]
+        memberships = tables["memberships"]
+        role_permissions = tables["role_permissions"]
+
+        from sqlalchemy import select
+
+        statement = (
+            select(
+                memberships.c.id.label("membership_id"),
+                memberships.c.tenant_id.label("tenant_id"),
+                memberships.c.role.label("membership_role"),
+                memberships.c.status.label("membership_status"),
+                memberships.c.display_name,
+                users.c.id.label("user_id"),
+                users.c.username,
+                users.c.external_user_id,
+                users.c.email,
+                users.c.status.label("user_status"),
+                memberships.c.created_at,
+                memberships.c.updated_at,
+            )
+            .select_from(
+                memberships.join(users, memberships.c.user_id == users.c.id).join(
+                    tenants,
+                    memberships.c.tenant_id == tenants.c.id,
+                ),
+            )
+            .where(tenants.c.status == "active")
+            .order_by(memberships.c.tenant_id, memberships.c.display_name, users.c.username)
+        )
+
+        async with self._engine.connect() as connection:
+            result = await connection.execute(statement)
+            rows = [dict(row) for row in result.mappings().all()]
+            permission_result = await connection.execute(
+                select(role_permissions.c.role, role_permissions.c.permission),
+            )
+            permission_map: dict[str, list[str]] = {}
+            for role, permission in permission_result:
+                permission_map.setdefault(str(role), []).append(str(permission))
+            for row in rows:
+                row["permissions"] = sorted(
+                    permission_map.get(str(row["membership_role"]), []),
+                )
+            return rows
+
+    async def get_member(
+        self,
+        tenant_id: Any,
+        membership_id: Any,
+    ) -> dict[str, Any] | None:
+        """Return one membership, always constrained by both tenant and ID."""
+
+        return next(
+            (
+                row
+                for row in await self.list_members(tenant_id)
+                if str(row["membership_id"]) == str(membership_id)
+            ),
+            None,
+        )
+
+    async def _role_exists(self, connection: Any, role: str) -> bool:
+        from sqlalchemy import select
+
+        mapping = self._table_definitions()["role_permissions"]
+        result = await connection.execute(
+            select(mapping.c.role).where(mapping.c.role == role).limit(1),
+        )
+        return result.first() is not None
+
+    async def permissions_for_role(self, role: str) -> frozenset[str]:
+        """Return the database-defined permissions for one tenant role."""
+
+        mapping = self._table_definitions()["role_permissions"]
+        from sqlalchemy import select
+
+        async with self._engine.connect() as connection:
+            result = await connection.execute(
+                select(mapping.c.permission).where(mapping.c.role == role),
+            )
+            return frozenset(str(row[0]) for row in result if row[0])
+
+    async def add_member(
+        self,
+        tenant_id: Any,
+        *,
+        external_user_id: str,
+        role: str = "member",
+        username: str | None = None,
+        display_name: str | None = None,
+        email: str | None = None,
+    ) -> dict[str, Any]:
+        """Bind an existing Logto subject to the current tenant."""
+
+        external_user_id = external_user_id.strip()
+        role = role.strip().lower()
+        if not external_user_id:
+            raise ValueError("external_user_id must be a non-empty string")
+        if not role:
+            raise ValueError("role must be a non-empty string")
+
+        tables = self._table_definitions()
+        tenants = tables["tenants"]
+        users = tables["users"]
+        memberships = tables["memberships"]
+        from sqlalchemy import select, update
+
+        async with self._engine.begin() as connection:
+            tenant = await connection.execute(
+                select(tenants.c.id, tenants.c.status).where(
+                    tenants.c.id == tenant_id,
+                ),
+            )
+            tenant_row = tenant.mappings().first()
+            if tenant_row is None:
+                raise ValueError("Tenant not found")
+            if tenant_row["status"] != "active":
+                raise TenantIdentityStatusError(
+                    subject="tenant",
+                    status=tenant_row["status"],
+                )
+            if not await self._role_exists(connection, role):
+                raise ValueError(f"Unknown tenant role: {role}")
+
+            user_id = uuid5(
+                NAMESPACE_URL,
+                f"lxscope:shadow-user:{self._identity_provider}:{external_user_id}",
+            )
+            safe_username = (username or email or external_user_id).strip()
+            await connection.execute(
+                self._insert_ignore_conflicts(
+                    users,
+                    {
+                        "id": user_id,
+                        "username": safe_username,
+                        "external_user_id": external_user_id,
+                        "email": email,
+                        "system_role": "user",
+                        "created_at": _utc_now(),
+                        "updated_at": _utc_now(),
+                    },
+                    connection,
+                ),
+            )
+            updates: dict[str, Any] = {"updated_at": _utc_now()}
+            if username:
+                updates["username"] = username.strip()
+            if email:
+                updates["email"] = email.strip()
+            if len(updates) > 1:
+                await connection.execute(
+                    update(users)
+                    .where(users.c.external_user_id == external_user_id)
+                    .values(**updates),
+                )
+
+            user_result = await connection.execute(
+                select(users.c.id, users.c.status).where(
+                    users.c.external_user_id == external_user_id,
+                ),
+            )
+            user_row = user_result.mappings().first()
+            if user_row is None:
+                raise RuntimeError("Member mapping was not created")
+            if user_row["status"] != "active":
+                raise TenantIdentityStatusError(
+                    subject="user",
+                    status=user_row["status"],
+                )
+
+            membership_id = uuid5(
+                NAMESPACE_URL,
+                f"lxscope:membership:{tenant_id}:{user_row['id']}",
+            )
+            await connection.execute(
+                self._insert_ignore_conflicts(
+                    memberships,
+                    {
+                        "id": membership_id,
+                        "tenant_id": tenant_id,
+                        "user_id": user_row["id"],
+                        "role": role,
+                        "status": "active",
+                        "display_name": display_name or username or email or external_user_id,
+                        "joined_at": _utc_now(),
+                        "created_at": _utc_now(),
+                        "updated_at": _utc_now(),
+                    },
+                    connection,
+                ),
+            )
+            await connection.execute(
+                update(memberships)
+                .where(
+                    memberships.c.tenant_id == tenant_id,
+                    memberships.c.user_id == user_row["id"],
+                )
+                .values(
+                    role=role,
+                    status="active",
+                    display_name=display_name or username or email or external_user_id,
+                    updated_at=_utc_now(),
+                ),
+            )
+
+        member = await self.get_member(tenant_id, membership_id)
+        if member is None:
+            raise RuntimeError("Membership was not created")
+        return member
+
+    async def update_member(
+        self,
+        tenant_id: Any,
+        membership_id: Any,
+        *,
+        role: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Update one member using a tenant-qualified membership key."""
+
+        allowed_statuses = {"active", "disabled", "removed"}
+        if status is not None and status not in allowed_statuses:
+            raise ValueError(f"Unknown membership status: {status}")
+        if role is not None:
+            role = role.strip().lower()
+
+        tables = self._table_definitions()
+        memberships = tables["memberships"]
+        from sqlalchemy import select, update
+
+        async with self._engine.begin() as connection:
+            if role is not None and not await self._role_exists(connection, role):
+                raise ValueError(f"Unknown tenant role: {role}")
+            values: dict[str, Any] = {"updated_at": _utc_now()}
+            if role is not None:
+                values["role"] = role
+            if status is not None:
+                values["status"] = status
+            result = await connection.execute(
+                update(memberships)
+                .where(
+                    memberships.c.tenant_id == tenant_id,
+                    memberships.c.id == membership_id,
+                )
+                .values(**values),
+            )
+            if result.rowcount == 0:
+                return None
+
+        return await self.get_member(tenant_id, membership_id)
 
 __all__ = ["TenantBindingRepository"]

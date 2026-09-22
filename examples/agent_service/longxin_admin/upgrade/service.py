@@ -23,6 +23,8 @@ import httpx
 from fastapi import HTTPException, UploadFile
 
 from auth import AuthUser, JWTAuthService
+from identity.dependencies import get_bound_membership_id, get_bound_tenant_id
+from identity.tenant_keys import tenant_scoped_key
 from longxin_admin.distributed_lock import DistributedLease
 
 from .models import (
@@ -102,9 +104,15 @@ def _directory_size(path: Path) -> int:
 class UpgradeService:
     """Replaceable application service for app/core releases."""
 
-    def __init__(self, storage: Any, auth: JWTAuthService) -> None:
+    def __init__(
+        self,
+        storage: Any,
+        auth: JWTAuthService,
+        audit_store_provider: Any | None = None,
+    ) -> None:
         self._storage = storage
         self._auth = auth
+        self._audit_store_provider = audit_store_provider
         data_root = Path(
             os.getenv("LONGXIN_DATA_DIR", os.getenv("LONGXIN_UPGRADE_DATA_DIR", "data")),
         ).expanduser().resolve()
@@ -127,6 +135,14 @@ class UpgradeService:
         if client is None:
             raise _error("storage_not_ready", "Upgrade storage is not ready.", 503)
         return client
+
+    def _audit_store(self) -> Any | None:
+        provider = self._audit_store_provider
+        return provider() if provider is not None else None
+
+    @staticmethod
+    def _audit_key() -> str:
+        return tenant_scoped_key("longxin:admin:v1", "audit")
 
     @staticmethod
     def _release_key(artifact_type: str, version: str) -> str:
@@ -974,27 +990,45 @@ class UpgradeService:
             backup["deleted"] = True
             backup["deleted_at"] = _now()
             await self._write_json(self._backup_key(backup_id), backup)
-            await client.rpush(
-                "longxin:admin:v1:audit",
-                json.dumps(
-                    {
-                        "event_id": f"evt-{uuid4().hex}",
-                        "actor_type": "admin",
-                        "actor_id": actor.id,
-                        "actor_name": actor.username,
-                        "target_user_id": None,
-                        "target_user_name": None,
-                        "action": "backup.delete",
-                        "resource_type": "backup",
-                        "resource_id": backup_id,
-                        "reason": body.reason,
-                        "request_id": request_id,
-                        "status": "completed",
-                        "result_summary": "Backup metadata and payload removed.",
-                        "created_at": _now(),
-                    },
-                    ensure_ascii=False,
+            event = {
+                "event_id": f"evt-{uuid4().hex}",
+                "tenant_id": (
+                    str(get_bound_tenant_id())
+                    if get_bound_tenant_id() is not None
+                    else actor.tenant_id
                 ),
+                "actor_membership_id": (
+                    actor.membership_id
+                    or (
+                        str(get_bound_membership_id())
+                        if get_bound_membership_id() is not None
+                        else actor.id
+                    )
+                ),
+                "actor_type": "admin",
+                "actor_id": actor.id,
+                "actor_name": actor.username,
+                "target_user_id": None,
+                "target_user_name": None,
+                "action": "backup.delete",
+                "resource_type": "backup",
+                "resource_id": backup_id,
+                "resource": {"type": "backup", "id": backup_id},
+                "reason": body.reason,
+                "request_id": request_id,
+                "status": "completed",
+                "result_summary": "Backup metadata and payload removed.",
+                "created_at": _now(),
+            }
+            store = self._audit_store()
+            if store is not None:
+                try:
+                    await store.record(event)
+                except Exception:
+                    pass
+            await client.rpush(
+                self._audit_key(),
+                json.dumps(event, ensure_ascii=False),
             )
             await self._write_json(
                 idem_key,

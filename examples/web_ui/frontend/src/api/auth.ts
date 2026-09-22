@@ -11,6 +11,8 @@ export interface AuthUser {
 	permissions: string[];
 	tenant_id?: string | null;
 	membership_id?: string | null;
+	membership_role?: string | null;
+	membership_status?: string | null;
 	identity_provider?: string | null;
 }
 

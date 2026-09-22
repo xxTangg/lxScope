@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { publishedApi } from '@/api';
 import type { PublishedResource, ResourceKind } from '@/api';
+import { ORGANIZATION_CHANGED_EVENT } from '@/context/auth-context';
 
 export function usePublishedResources(kind: ResourceKind) {
 	const [resources, setResources] = useState<PublishedResource[]>([]);
@@ -23,6 +24,12 @@ export function usePublishedResources(kind: ResourceKind) {
 
 	useEffect(() => {
 		void refetch();
+	}, [refetch]);
+
+	useEffect(() => {
+		const refreshForOrganization = () => void refetch();
+		window.addEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
+		return () => window.removeEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
 	}, [refetch]);
 
 	useEffect(() => {

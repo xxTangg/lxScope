@@ -38,6 +38,7 @@ class AgentScopeTaskExecutor:
         *,
         storage: "StorageBase",
         resource_access_service: "ResourceAccessService",
+        quota_service: Any | None = None,
         workspace_manager: Any | None = None,
         scheduler_manager: Any | None = None,
         background_task_manager: Any | None = None,
@@ -49,6 +50,7 @@ class AgentScopeTaskExecutor:
 
         self._storage = storage
         self._access = resource_access_service
+        self._quota = quota_service
         self._workspace_manager = workspace_manager
         self._scheduler_manager = scheduler_manager
         self._background_task_manager = background_task_manager
@@ -229,6 +231,8 @@ class AgentScopeTaskExecutor:
             session.config.chat_model_config,
             self._access,
         )
+        if self._quota is not None and self._quota.enabled:
+            await self._quota.ensure_available()
         response = await _collect_response(
             await model(messages=model_messages),
         )
@@ -236,6 +240,18 @@ class AgentScopeTaskExecutor:
 
         usage = None
         if response.usage is not None:
+            if self._quota is not None and self._quota.enabled:
+                await self._quota.record_model_usage(
+                    model=getattr(model, "model", None),
+                    input_tokens=int(response.usage.input_tokens),
+                    output_tokens=int(response.usage.output_tokens),
+                    cache_input_tokens=int(response.usage.cache_input_tokens),
+                    cache_creation_input_tokens=int(
+                        response.usage.cache_creation_input_tokens,
+                    ),
+                    membership_id=context.user_id,
+                    source_id=f"task:{context.run_id}:{node.id}",
+                )
             usage = Usage(
                 input_tokens=int(response.usage.input_tokens),
                 output_tokens=int(response.usage.output_tokens),
@@ -243,6 +259,14 @@ class AgentScopeTaskExecutor:
                 cache_creation_input_tokens=int(
                     response.usage.cache_creation_input_tokens,
                 ),
+            )
+        elif self._quota is not None and self._quota.enabled:
+            await self._quota.record_model_usage(
+                model=getattr(model, "model", None),
+                input_tokens=0,
+                output_tokens=0,
+                membership_id=context.user_id,
+                source_id=f"task:{context.run_id}:{node.id}",
             )
         await self._storage.upsert_message(
             context.user_id,

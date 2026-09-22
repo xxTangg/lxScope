@@ -68,7 +68,7 @@ export function AdminModelObservabilityPage() {
 	const [modelName, setModelName] = useState(modelNameParam ?? '');
 	const [userId, setUserId] = useState('');
 	const detail = useQuery({
-		queryKey: ['admin', user?.id, 'observability-model', days, modelName, userId],
+		queryKey: ['admin', user?.id, user?.tenant_id, 'observability-model', days, modelName, userId],
 		queryFn: () => adminApi.observabilityComponent('model', days, { name: modelName || undefined, user_id: userId || undefined }),
 		enabled: hasPermission('tenant:manage'),
 	});

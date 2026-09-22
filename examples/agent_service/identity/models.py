@@ -28,6 +28,7 @@ class IdentityPrincipal:
     username: str | None = None
     display_name: str | None = None
     email: str | None = None
+    organization_roles: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -56,6 +57,19 @@ class IdentityPrincipal:
                     field_name,
                     _required_text(value, field_name),
                 )
+        object.__setattr__(
+            self,
+            "organization_roles",
+            frozenset(
+                value.strip()
+                for value in (
+                    [self.organization_roles]
+                    if isinstance(self.organization_roles, str)
+                    else self.organization_roles
+                )
+                if isinstance(value, str) and value.strip()
+            ),
+        )
 
     @classmethod
     def from_mapping(
@@ -93,6 +107,7 @@ class IdentityPrincipal:
             ),
             display_name=claims.get("display_name") or claims.get("name"),
             email=claims.get("email"),
+            organization_roles=claims.get("organization_roles", ()),
         )
 
 
@@ -128,7 +143,11 @@ class LogtoPrincipal:
             "organization_roles",
             frozenset(
                 value.strip()
-                for value in self.organization_roles
+                for value in (
+                    [self.organization_roles]
+                    if isinstance(self.organization_roles, str)
+                    else self.organization_roles
+                )
                 if isinstance(value, str) and value.strip()
             ),
         )
@@ -164,6 +183,7 @@ class TenantIdentity:
     scopes: frozenset[str] = field(default_factory=frozenset)
     tenant_status: str = "active"
     user_status: str = "active"
+    permissions: frozenset[str] = field(default_factory=frozenset)
 
 
 class TenantBindingError(RuntimeError):

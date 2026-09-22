@@ -3,6 +3,51 @@ import crypto from 'node:crypto';
 import { getSigningKeyPair } from './store.js';
 import type { Customer, RechargeOrder, UsageReport } from './types.js';
 
+export type SalesIdentityMapping = {
+  tenantId: string;
+  customerId: string;
+  systemId: string;
+};
+
+function nonEmptyIdentity(value: unknown, field: string): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || text.length > 255) throw new Error(`${field} 不能为空且长度不能超过 255`);
+  return text;
+}
+
+/**
+ * Build the canonical commercial mapping used by both admin and integration
+ * paths.  A customer is the Sales Hub record, a system is the deployed
+ * Longxin instance, and tenant is the application ownership boundary.
+ */
+export function customerIdentityMapping(customer: Customer): SalesIdentityMapping {
+  return {
+    tenantId: nonEmptyIdentity(customer.tenantId || customer.systemId || customer.id, 'tenant_id'),
+    customerId: nonEmptyIdentity(customer.id, 'customer_id'),
+    systemId: customer.systemId.trim(),
+  };
+}
+
+/** Enforce the one-tenant/one-customer/one-system mapping invariant. */
+export function assertCustomerIdentityMapping(
+  customers: Customer[],
+  candidate: Customer,
+  excludedCustomerId?: string,
+): SalesIdentityMapping {
+  const mapping = customerIdentityMapping(candidate);
+  for (const existing of customers) {
+    if (existing.id === excludedCustomerId || existing.id === candidate.id) continue;
+    const current = customerIdentityMapping(existing);
+    if (current.tenantId === mapping.tenantId) {
+      throw new Error('一个 tenant 只能映射一个 Sales Hub customer');
+    }
+    if (mapping.systemId && current.systemId && current.systemId === mapping.systemId) {
+      throw new Error('一个 system 只能映射一个 Sales Hub customer');
+    }
+  }
+  return mapping;
+}
+
 export function tierFor(totalRecharged: number): { admins: number; accounts: number } {
   if (totalRecharged < 4000) return { admins: 1, accounts: 1 };
   if (totalRecharged < 10000) return { admins: 1, accounts: 2 };

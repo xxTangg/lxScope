@@ -14,18 +14,24 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 try:
-    from admin_api import require_admin
+    from admin_api import require_observability_admin
     from auth import AuthUser
     from token_usage_analytics import collect_token_usage
 except ModuleNotFoundError:
-    from examples.agent_service.admin_api import require_admin
+    from examples.agent_service.admin_api import require_observability_admin
     from examples.agent_service.auth import AuthUser
     from examples.agent_service.token_usage_analytics import collect_token_usage
 
 try:
     from identity.dependencies import get_bound_tenant_id
+    from identity.permissions import has_permission, PLATFORM_MANAGE, PLATFORM_OBSERVE
 except ModuleNotFoundError:
     from examples.agent_service.identity.dependencies import get_bound_tenant_id
+    from examples.agent_service.identity.permissions import (
+        has_permission,
+        PLATFORM_MANAGE,
+        PLATFORM_OBSERVE,
+    )
 
 
 class SkillDailyAnalytics(BaseModel):
@@ -64,6 +70,7 @@ class SkillFailureRecord(BaseModel):
 
 
 class TokenUserUsage(BaseModel):
+    tenant_id: str | None = None
     user_id: str
     username: str
     role: str
@@ -74,9 +81,11 @@ class TokenUserUsage(BaseModel):
     total_tokens: int
     message_count: int
     session_count: int
+    cost: str = "0"
 
 
 class TokenUsageAnalytics(BaseModel):
+    tenant_id: str | None = None
     input_tokens: int
     output_tokens: int
     cache_input_tokens: int
@@ -86,6 +95,7 @@ class TokenUsageAnalytics(BaseModel):
     session_count: int
     user_count: int
     users: list[TokenUserUsage]
+    cost: str = "0"
 
 
 class SkillAnalyticsResponse(BaseModel):
@@ -116,8 +126,14 @@ skill_analytics_router = APIRouter(
 )
 
 
-def _current_tenant_id() -> str | None:
+def _current_tenant_id(viewer: AuthUser | None = None) -> str | None:
     """Return only the verified tenant bound by the authentication layer."""
+
+    if viewer is not None and (
+        has_permission(viewer.permissions, PLATFORM_MANAGE)
+        or has_permission(viewer.permissions, PLATFORM_OBSERVE)
+    ):
+        return None
 
     tenant_id = get_bound_tenant_id()
     return str(tenant_id) if tenant_id is not None else None
@@ -166,7 +182,7 @@ async def get_skill_analytics(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     days: int = Query(default=14, ge=1, le=90),
-    _: AuthUser = Depends(require_admin),
+    viewer: AuthUser = Depends(require_observability_admin),
 ) -> SkillAnalyticsResponse:
     """Return aggregate Skill usage metrics for the admin dashboard."""
     normalized_end = _utc(end) if end is not None else datetime.now(timezone.utc)
@@ -181,6 +197,7 @@ async def get_skill_analytics(
             detail="The analytics start time must be before the end time.",
         )
 
+    tenant_id = _current_tenant_id(viewer)
     store: Any = getattr(request.app.state, "skill_observation_store", None)
     skill_data_available = store is not None
     if store is None:
@@ -190,7 +207,7 @@ async def get_skill_analytics(
             result = await store.query_skill_analytics(
                 start=normalized_start,
                 end=normalized_end,
-                tenant_id=_current_tenant_id(),
+                tenant_id=tenant_id,
             )
         except Exception as exc:
             raise HTTPException(
@@ -209,6 +226,20 @@ async def get_skill_analytics(
             auth,
             start=normalized_start,
             end=normalized_end,
+            tenant_id=tenant_id,
+            platform_admin=(
+                tenant_id is None
+                and (
+                    has_permission(viewer.permissions, PLATFORM_MANAGE)
+                    or has_permission(viewer.permissions, PLATFORM_OBSERVE)
+                )
+            ),
+            quota_service=getattr(request.app.state, "tenant_quota_service", None),
+            tenant_member_provider=getattr(
+                request.app.state,
+                "tenant_binding_repository",
+                None,
+            ),
         )
     except Exception as exc:
         raise HTTPException(
@@ -220,7 +251,7 @@ async def get_skill_analytics(
         start=normalized_start,
         end=normalized_end,
         skill_data_available=skill_data_available,
-        token_usage=token_usage,
+        token_usage={"tenant_id": tenant_id, **token_usage},
         **result,
     )
 

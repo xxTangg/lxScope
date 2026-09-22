@@ -5,6 +5,11 @@ import type { AuthUser } from '@/api';
 export type AuthStatus = 'loading' | 'authenticated' | 'anonymous';
 export const ORGANIZATION_CHANGED_EVENT = 'lxscope:organization-changed';
 
+export interface SignInOptions {
+	/** Force Logto to show the credential screen for account switching. */
+	force?: boolean;
+}
+
 export interface AuthOrganization {
 	id: string;
 	name: string;
@@ -21,7 +26,7 @@ export interface AuthContextValue {
 	login: (username: string, password: string) => Promise<void>;
 	register: (username: string, password: string) => Promise<void>;
 	logout: () => Promise<void>;
-	signIn: () => Promise<void>;
+	signIn: (options?: SignInOptions) => Promise<void>;
 	isLogto: boolean;
 	organizations: AuthOrganization[];
 	activeOrganizationId: string | null;

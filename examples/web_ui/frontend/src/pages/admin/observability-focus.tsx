@@ -76,9 +76,9 @@ export function AdminObservabilityFocusPage() {
 		// Request analysis is another view of the overview projection. Reuse
 		// the overview cache so navigating between the two pages cannot show
 		// different snapshots for the same period.
-		queryKey: ['admin', user?.id, 'observability', days],
+		queryKey: ['admin', user?.id, user?.tenant_id, 'observability', days],
 		queryFn: () => adminApi.observability(days),
-		enabled: hasPermission('tenant:manage') && isValidFocus,
+		enabled: (hasPermission('tenant:manage') || hasPermission('platform:observe')) && isValidFocus,
 	});
 	const data = analytics.data;
 	const tokenUsage = data?.token_usage;

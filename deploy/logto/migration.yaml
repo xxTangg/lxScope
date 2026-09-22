@@ -1,0 +1,52 @@
+# Copy this file or override values through environment variables before
+# running scripts/migrate-logto.sh. Empty organizations means that the static
+# Logto setup and SPA are migrated without creating business tenants.
+logto_tenant_id: ${LOGTO_TENANT_ID:-default}
+
+browser_application:
+  enabled: true
+  id_env: VITE_LOGTO_APP_ID
+  name: lxScope Web
+  description: lxScope browser application
+  public_url: ${LXSCOPE_PUBLIC_URL:-http://localhost:8000}
+  redirect_paths:
+    - /callback
+  post_logout_redirect_paths:
+    - /
+
+# Add one entry per business tenant. The code is also written to
+# longxin_app.tenants.code, while the Logto organization id becomes
+# external_org_id. Users are matched by id, username, or primary_email.
+# A new user needs password_env; passwords are never stored in this file and
+# never written by export.
+organizations: []
+
+# Safe demo seed. It is ignored during a normal `apply` and only used when
+# the command includes `--seed-demo`. Passwords must be supplied through the
+# two environment variables below; they are never stored in this file.
+demo_data:
+  code: demo
+  name: Demo tenant
+  description: lxScope demo organization
+  users:
+    - username: admin
+      primary_email: admin@example.com
+      name: Demo administrator
+      password_env: LOGTO_DEMO_ADMIN_PASSWORD
+      role: admin
+    - username: member
+      primary_email: member@example.com
+      name: Demo member
+      password_env: LOGTO_DEMO_MEMBER_PASSWORD
+      role: member
+# Example:
+# organizations:
+#   - code: demo
+#     name: Demo tenant
+#     description: Demo organization
+#     users:
+#       - username: admin
+#         primary_email: admin@example.com
+#         name: Demo administrator
+#         password_env: LOGTO_DEMO_ADMIN_PASSWORD
+#         role: admin

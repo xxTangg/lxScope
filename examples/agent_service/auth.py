@@ -52,6 +52,8 @@ class AuthUser(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     tenant_id: str | None = None
     membership_id: str | None = None
+    membership_role: str | None = None
+    membership_status: str | None = None
     identity_provider: str | None = None
     token_version: int = Field(default=0, exclude=True)
 

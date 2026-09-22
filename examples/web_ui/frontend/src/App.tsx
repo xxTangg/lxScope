@@ -63,7 +63,12 @@ function SetupPageRoute() {
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-	const { status, noOrganizationAccess, organizationSelectionRequired } = useAuth();
+	const {
+		status,
+		isLogto,
+		noOrganizationAccess,
+		organizationSelectionRequired,
+	} = useAuth();
 	const location = useLocation();
 
 	if (status === 'loading') {
@@ -74,6 +79,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 		);
 	}
 	if (status === 'anonymous') {
+		// Logto owns the hosted sign-in experience. Rendering the entry route
+		// directly lets it start the OIDC redirect without showing a second
+		// lxScope login page first.
+		if (isLogto) return <LoginPage />;
 		return (
 			<Navigate
 				to="/login"
@@ -103,9 +112,10 @@ function AdminOnlyRoute({ children }: { children: React.ReactNode }) {
 	const { hasPermission } = useAuth();
 	const canAccess =
 		hasPermission('tenant:manage') ||
-		hasPermission('platform:manage') ||
+		 hasPermission('platform:manage') ||
 		hasPermission('platform:upgrade') ||
-		hasPermission('platform:integration');
+		hasPermission('platform:integration') ||
+		hasPermission('platform:observe');
 	return canAccess ? children : <Navigate to="/chat" replace />;
 }
 
@@ -118,6 +128,19 @@ function PermissionRoute({
 }) {
 	const { hasPermission } = useAuth();
 	return hasPermission(permission) ? children : <Navigate to="/chat" replace />;
+}
+
+function AdminFeatureRoute({
+	permission,
+	children,
+}: {
+	permission: string;
+	children: React.ReactNode;
+}) {
+	const { hasPermission } = useAuth();
+	const canAccess =
+		hasPermission('tenant:manage') || hasPermission(permission);
+	return canAccess ? children : <Navigate to="/chat" replace />;
 }
 
 const router = createBrowserRouter([
@@ -201,17 +224,17 @@ const router = createBrowserRouter([
 							{
 								path: 'upgrades',
 								element: (
-									<PermissionRoute permission="platform:upgrade">
+									<AdminFeatureRoute permission="platform:upgrade">
 										<AdminUpgradesPage />
-									</PermissionRoute>
+									</AdminFeatureRoute>
 								),
 							},
 							{
 								path: 'sales-hub',
 								element: (
-									<PermissionRoute permission="platform:integration">
+									<AdminFeatureRoute permission="platform:integration">
 										<AdminSalesHubPage />
-									</PermissionRoute>
+									</AdminFeatureRoute>
 								),
 							},
 						],

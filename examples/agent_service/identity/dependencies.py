@@ -176,6 +176,7 @@ async def _resolve_tenant_identity(
                 username=principal.username,
                 display_name=principal.display_name,
                 email=principal.email,
+                organization_roles=principal.organization_roles,
             ),
         )
         for subject, identity_status in (
@@ -191,11 +192,21 @@ async def _resolve_tenant_identity(
         # Materialize the application permission set at the identity boundary.
         # Logto organization roles can grant tenant permissions only; platform
         # permissions must remain explicit API-resource scopes.
-        permissions = permissions_from_logto_claims(
-            principal.scopes,
-            principal.organization_roles,
-            principal.organization_id,
-        )
+        # Tenant permissions come from the persisted membership role mapping.
+        # Verified token scopes remain available for platform permissions.  The
+        # claim-derived fallback is retained only for lightweight Phase 1
+        # repository adapters that do not yet return a permission set.
+        permissions = set(identity.permissions or identity.scopes)
+        permissions.update(principal.scopes)
+        if not identity.permissions and not identity.scopes:
+            permissions.update(
+                permissions_from_logto_claims(
+                    (),
+                    principal.organization_roles,
+                    principal.organization_id,
+                ),
+            )
+        permissions = frozenset(permissions)
         _logger.warning(
             "lxscope.logto_identity_permissions "
             "organization_id=%s subject=%s roles=%s scopes=%s permissions=%s",
@@ -218,6 +229,7 @@ async def _resolve_tenant_identity(
             scopes=permissions,
             tenant_status=identity.tenant_status,
             user_status=identity.user_status,
+            permissions=permissions,
         )
         _tenant_identity_context.set(identity)
         return identity
@@ -282,6 +294,8 @@ def application_user_from_tenant_identity(identity: TenantIdentity) -> Any:
         permissions=permissions,
         tenant_id=str(identity.tenant_id),
         membership_id=str(identity.membership_id),
+        membership_role=identity.role,
+        membership_status=identity.status,
         identity_provider=identity.identity_provider,
     )
 

@@ -61,9 +61,9 @@ export function AdminTraceDetailPage() {
 	const navigate = useNavigate();
 	const { traceId } = useParams<{ traceId: string }>();
 	const trace = useQuery({
-		queryKey: ['admin', user?.id, 'observability-trace', traceId],
+		queryKey: ['admin', user?.id, user?.tenant_id, 'observability-trace', traceId],
 		queryFn: () => adminApi.observabilityTrace(traceId ?? ''),
-		enabled: hasPermission('tenant:manage') && Boolean(traceId),
+		enabled: (hasPermission('tenant:manage') || hasPermission('platform:observe')) && Boolean(traceId),
 	});
 	const data = trace.data;
 

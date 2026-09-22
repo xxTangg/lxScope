@@ -113,6 +113,22 @@ class LogtoBootstrapTest(unittest.TestCase):
                     "resource:read",
                     "Read lxScope resources",
                 ),
+                bootstrap_module.PermissionSpec(
+                    "platform:manage",
+                    "Manage platform-wide lxScope resources",
+                ),
+                bootstrap_module.PermissionSpec(
+                    "platform:upgrade",
+                    "Run platform upgrade operations",
+                ),
+                bootstrap_module.PermissionSpec(
+                    "platform:integration",
+                    "Manage platform integrations",
+                ),
+                bootstrap_module.PermissionSpec(
+                    "platform:observe",
+                    "Observe platform-wide metrics and audit data",
+                ),
             ],
             [
                 bootstrap_module.RoleSpec(
@@ -129,6 +145,20 @@ class LogtoBootstrapTest(unittest.TestCase):
                     "member",
                     ("resource:read", "agent:use"),
                 ),
+                bootstrap_module.RoleSpec(
+                    "platform_admin",
+                    (
+                        "tenant:manage",
+                        "resource:manage",
+                        "member:manage",
+                        "resource:read",
+                        "agent:use",
+                        "platform:manage",
+                        "platform:upgrade",
+                        "platform:integration",
+                        "platform:observe",
+                    ),
+                ),
             ],
         )
 
@@ -137,11 +167,11 @@ class LogtoBootstrapTest(unittest.TestCase):
         first_request_count = client.created_requests
 
         self.assertEqual(len(client.resources), 1)
-        self.assertEqual(len(client.scopes), 5)
-        self.assertEqual(len(client.roles), 2)
+        self.assertEqual(len(client.scopes), 9)
+        self.assertEqual(len(client.roles), 3)
         self.assertEqual(
             sorted(len(role["resourceScopes"]) for role in client.roles),
-            [2, 5],
+            [2, 5, 9],
         )
 
         with patch.object(bootstrap_module, "load_config", return_value=config):
@@ -149,8 +179,8 @@ class LogtoBootstrapTest(unittest.TestCase):
 
         self.assertEqual(client.created_requests, first_request_count)
         self.assertEqual(len(client.resources), 1)
-        self.assertEqual(len(client.scopes), 5)
-        self.assertEqual(len(client.roles), 2)
+        self.assertEqual(len(client.scopes), 9)
+        self.assertEqual(len(client.roles), 3)
 
     @unittest.skipUnless(
         importlib.util.find_spec("yaml") is not None,
@@ -171,7 +201,10 @@ class LogtoBootstrapTest(unittest.TestCase):
                 "resource:read",
             ],
         )
-        self.assertEqual([role.name for role in roles], ["admin", "member"])
+        self.assertEqual(
+            [role.name for role in roles],
+            ["admin", "platform_admin", "member"],
+        )
 
 
 if __name__ == "__main__":

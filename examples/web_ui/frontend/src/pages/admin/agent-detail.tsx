@@ -55,7 +55,7 @@ export function AdminAgentDetailPage() {
 	const agentName = agentNameParam ?? '';
 	const [days, setDays] = useState(14);
 	const detail = useQuery({
-		queryKey: ['admin', user?.id, 'observability-agent', agentName, days],
+		queryKey: ['admin', user?.id, user?.tenant_id, 'observability-agent', agentName, days],
 		queryFn: () => adminApi.observabilityAgent(agentName, days),
 		enabled: hasPermission('tenant:manage') && Boolean(agentName),
 	});

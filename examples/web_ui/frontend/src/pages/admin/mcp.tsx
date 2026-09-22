@@ -5,13 +5,14 @@ import { useNavigate } from 'react-router-dom';
 import { AdminHeader } from './shared';
 import { UserScopePicker } from './skills';
 import { adminApi, mcpApi } from '@/api';
-import type { AdminUser, MCPView, PublicationScope, ResourcePublication } from '@/api';
+import type { MCPView, PublicationScope, ResourcePublication, TenantMember } from '@/api';
 import { DeleteDialog } from '@/components/dialog/DeleteDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Spinner } from '@/components/ui/spinner';
 import { useTranslation } from '@/i18n/useI18n';
+import { ORGANIZATION_CHANGED_EVENT } from '@/context/auth-context';
 
 function PublishScopeSelect({
 	value,
@@ -43,7 +44,7 @@ function McpPublishRow({
 }: {
 	mcp: MCPView;
 	publication?: ResourcePublication;
-	users: AdminUser[];
+	users: TenantMember[];
 	onSaved: () => void;
 	onRemove: () => void;
 }) {
@@ -147,7 +148,7 @@ export function AdminMcpPage() {
 	const navigate = useNavigate();
 	const [mcps, setMcps] = useState<MCPView[]>([]);
 	const [publications, setPublications] = useState<ResourcePublication[]>([]);
-	const [users, setUsers] = useState<AdminUser[]>([]);
+	const [users, setUsers] = useState<TenantMember[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [removeTarget, setRemoveTarget] = useState<MCPView | null>(null);
 
@@ -157,11 +158,11 @@ export function AdminMcpPage() {
 			const [nextMcps, nextPublications, nextUsers] = await Promise.all([
 				mcpApi.list(),
 				adminApi.resourcePublications('mcp'),
-				adminApi.users({ page: 1, page_size: 100 }),
+				adminApi.tenantMembers({ page: 1, page_size: 100 }),
 			]);
 			setMcps(nextMcps);
 			setPublications(nextPublications.resources);
-			setUsers(nextUsers.users);
+			setUsers(nextUsers.members);
 		} finally {
 			setLoading(false);
 		}
@@ -169,6 +170,12 @@ export function AdminMcpPage() {
 
 	useEffect(() => {
 		void refetch();
+	}, []);
+
+	useEffect(() => {
+		const refreshForOrganization = () => void refetch();
+		window.addEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
+		return () => window.removeEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
 	}, []);
 
 	const publicationBySource = useMemo(

@@ -1,5 +1,5 @@
 import { CircleAlert, Loader2 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 
 import { ApiError, TIMEOUT_STATUS } from '@/api/client';
@@ -24,6 +24,16 @@ export function LoginPage() {
 	const [mode, setMode] = useState<'login' | 'register'>('login');
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState('');
+	const signInAttempted = useRef(false);
+
+	useEffect(() => {
+		if (!isLogto || status !== 'anonymous' || signInAttempted.current) return;
+		signInAttempted.current = true;
+		void signIn().catch((reason) => {
+			signInAttempted.current = false;
+			setError(formatApiErrorForAlert(reason));
+		});
+	}, [isLogto, signIn, status]);
 
 	if (status === 'authenticated') return <Navigate to="/chat" replace />;
 	if (status === 'loading') {
@@ -37,22 +47,39 @@ export function LoginPage() {
 	if (isLogto) {
 		return (
 			<div className="flex h-screen items-center justify-center bg-canvas px-4">
-				<div className="flex w-full max-w-sm flex-col gap-6">
-					<div className="flex items-center justify-center gap-2.5">
-						<AgentScope className="size-9" />
-						<span className="text-lg font-semibold text-foreground">{t('auth.brand')}</span>
+				<div className="flex w-full max-w-sm flex-col items-center gap-4 text-center">
+					<AgentScope className="size-10" />
+					<div>
+						<p className="text-lg font-semibold text-foreground">{t('auth.brand')}</p>
+						<p className="mt-1 text-sm text-muted-foreground">
+							{error ? t('auth.logtoRedirectError') : t('auth.logtoRedirecting')}
+						</p>
 					</div>
-					<Card>
-						<CardHeader>
-							<CardTitle>{t('auth.title')}</CardTitle>
-							<CardDescription>{t('auth.logtoDescription')}</CardDescription>
-						</CardHeader>
-						<CardContent>
-							<Button className="w-full" onClick={() => void signIn()}>
-								{t('auth.logtoSignIn')}
-							</Button>
-						</CardContent>
-					</Card>
+					{error ? (
+						<Alert variant="destructive" className="text-left">
+							<CircleAlert />
+							<AlertDescription className="flex items-center justify-between gap-3">
+								<span>{error}</span>
+								<Button
+									type="button"
+									variant="outline"
+									className="shrink-0"
+									onClick={() => {
+										setError('');
+										signInAttempted.current = true;
+										void signIn().catch((reason) => {
+											signInAttempted.current = false;
+											setError(formatApiErrorForAlert(reason));
+										});
+									}}
+								>
+									{t('auth.retry')}
+								</Button>
+							</AlertDescription>
+						</Alert>
+					) : (
+						<Loader2 className="size-5 animate-spin text-muted-foreground" />
+					)}
 				</div>
 			</div>
 		);

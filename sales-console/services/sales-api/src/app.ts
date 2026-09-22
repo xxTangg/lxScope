@@ -10,6 +10,7 @@ import type { ReadEntry } from 'tar';
 
 import {
   customerConnectionUrls,
+  assertCustomerIdentityMapping,
   enrichCustomer,
   isValidIP,
   isRechargeCodeSignatureValid,
@@ -189,6 +190,7 @@ function canonicalCustomer(value: unknown): Record<string, unknown> {
   const apiToken = typeof raw.apiToken === 'string' ? raw.apiToken : undefined;
   return {
     customer_id: converted.id ?? converted.customer_id,
+    tenant_id: converted.tenant_id ?? converted.tenantId ?? converted.system_id ?? converted.id,
     name: converted.name,
     system_id: converted.system_id ?? null,
     protocol: converted.protocol,
@@ -1711,9 +1713,15 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const now = Date.now();
+      const customerId = crypto.randomUUID();
+      const systemId = String(req.body.systemId ?? '').trim();
+      const tenantId = String(
+        (req.body.tenantId ?? req.body.tenant_id ?? systemId) || customerId,
+      ).trim();
       const customer: Customer = {
-        id: crypto.randomUUID(),
-        systemId: String(req.body.systemId ?? '').trim(),
+        id: customerId,
+        tenantId,
+        systemId,
         name,
         environment: ['production', 'test'].includes(req.body.environment)
           ? req.body.environment
@@ -1736,7 +1744,10 @@ export async function createApp(): Promise<express.Express> {
         createdAt: now,
         updatedAt: now,
       };
-      await updateJson(db.files.customers, [], (items: Customer[]) => [...items, customer]);
+      await updateJson(db.files.customers, [], (items: Customer[]) => {
+        assertCustomerIdentityMapping(items, customer);
+        return [...items, customer];
+      });
       await audit(req.staff!, req);
       res.status(201).json(customer);
     } catch (error) {
@@ -1747,8 +1758,8 @@ export async function createApp(): Promise<express.Express> {
   app.patch('/api/customers/:id', async (req, res, next) => {
     try {
       let updated: Customer | undefined;
-      await updateJson(db.files.customers, [], (items: Customer[]) =>
-        items.map((item): Customer => {
+      await updateJson(db.files.customers, [], (items: Customer[]) => {
+        const next = items.map((item): Customer => {
           if (item.id !== req.params.id) return item;
           const ip = req.body.ip === undefined ? item.ip : String(req.body.ip).trim();
           if (ip && !isValidIP(ip))
@@ -1771,6 +1782,10 @@ export async function createApp(): Promise<express.Express> {
             throw Object.assign(new Error('客户状态不合法'), { status: 400 });
           updated = {
             ...item,
+            tenantId:
+              req.body.tenantId === undefined && req.body.tenant_id === undefined
+                ? item.tenantId || item.systemId || item.id
+                : String(req.body.tenantId ?? req.body.tenant_id ?? '').trim(),
             name,
             systemId:
               req.body.systemId === undefined ? item.systemId : String(req.body.systemId).trim(),
@@ -1793,8 +1808,10 @@ export async function createApp(): Promise<express.Express> {
             updatedAt: Date.now(),
           };
           return updated!;
-        }),
-      );
+        });
+        if (updated) assertCustomerIdentityMapping(next, updated, req.params.id);
+        return next;
+      });
       if (!updated) {
         res.status(404).json({ error: '客户不存在' });
         return;
