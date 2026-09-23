@@ -133,7 +133,7 @@ class PlanBillingTest(TestCase):
         approved = self.client.post(
             f"/admin/orders/{order_id}/approve",
             headers={**admin_headers, "Idempotency-Key": "approve-1"},
-            json={"reason": "已确认付款", "admin_password": "admin-password"},
+            json={"reason": "已确认付款"},
         )
         self.assertEqual(approved.status_code, 200)
         self.assertEqual(approved.json()["status"], "approved")
@@ -142,7 +142,7 @@ class PlanBillingTest(TestCase):
         repeated = self.client.post(
             f"/admin/orders/{order_id}/approve",
             headers={**admin_headers, "Idempotency-Key": "approve-1"},
-            json={"reason": "已确认付款", "admin_password": "admin-password"},
+            json={"reason": "已确认付款"},
         )
         self.assertEqual(repeated.status_code, 200)
         self.assertEqual(repeated.json()["order_id"], order_id)
@@ -189,7 +189,7 @@ class PlanBillingTest(TestCase):
         rejected = self.client.post(
             f"/admin/orders/{order_id}/reject",
             headers={**admin_headers, "Idempotency-Key": "reject-1"},
-            json={"reason": "资料尚未完成", "admin_password": "admin-password"},
+            json={"reason": "资料尚未完成"},
         )
         self.assertEqual(rejected.status_code, 200)
         self.assertEqual(rejected.json()["status"], "rejected")
@@ -277,7 +277,7 @@ class PlanBillingTest(TestCase):
         approved = self.client.post(
             f"/admin/orders/{order_id}/approve",
             headers={**admin_headers, "Idempotency-Key": "approve-upgrade-user"},
-            json={"reason": "已确认申请", "admin_password": "admin-password"},
+            json={"reason": "已确认申请"},
         )
         self.assertEqual(approved.status_code, 200)
 

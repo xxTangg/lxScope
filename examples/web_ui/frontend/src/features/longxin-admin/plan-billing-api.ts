@@ -76,19 +76,19 @@ export const planBillingApi = {
 			limit: '100',
 			...(status ? { status } : {}),
 		}),
-	approveOrder: (orderId: string, admin_password: string, reason: string) =>
+	approveOrder: (orderId: string, reason: string) =>
 		client.post<PlanOrder>(
 			`/admin/orders/${orderId}/approve`,
-			{ admin_password, reason },
+			{ reason },
 			undefined,
-			{ headers: { 'Idempotency-Key': idempotencyKey() } },
+			{ headers: { 'Idempotency-Key': idempotencyKey() }, silent: true },
 		),
-	rejectOrder: (orderId: string, admin_password: string, reason: string) =>
+	rejectOrder: (orderId: string, reason: string) =>
 		client.post<PlanOrder>(
 			`/admin/orders/${orderId}/reject`,
-			{ admin_password, reason },
+			{ reason },
 			undefined,
-			{ headers: { 'Idempotency-Key': idempotencyKey() } },
+			{ headers: { 'Idempotency-Key': idempotencyKey() }, silent: true },
 		),
 };
 

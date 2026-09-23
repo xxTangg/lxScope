@@ -71,5 +71,4 @@ class PlanOrderListResponse(BaseModel):
 
 class OrderDecisionRequest(BaseModel):
     reason: str = Field(min_length=4, max_length=300)
-    admin_password: str = Field(min_length=1, max_length=1024)
 

@@ -540,8 +540,6 @@ class PlanBillingService:
         idempotency_key: str,
         request_id: str = "",
     ) -> PlanOrderView:
-        if not await self._auth.verify_password(actor.id, body.admin_password):
-            raise _error("admin_password_invalid", "The administrator password is invalid.", 403)
         idem_key = self._order_idempotency_key(f"admin:{actor.id}", idempotency_key)
         request_fingerprint = {
             "operation": "approve_order",
@@ -636,8 +634,6 @@ class PlanBillingService:
         idempotency_key: str,
         request_id: str = "",
     ) -> PlanOrderView:
-        if not await self._auth.verify_password(actor.id, body.admin_password):
-            raise _error("admin_password_invalid", "The administrator password is invalid.", 403)
         idem_key = self._order_idempotency_key(f"admin:{actor.id}", idempotency_key)
         request_fingerprint = {
             "operation": "reject_order",
