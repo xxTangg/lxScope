@@ -4,7 +4,7 @@
 
 ## 先看结论
 
-当前代码会读取 Logto 登录令牌、检查组织身份和权限，并按组织隔离用户数据。它**不会**自动在 Logto 中创建 API Resource、SPA 应用、Organization、角色或用户。首次部署需要 Logto 管理员按本文配置一次；仓库目前没有附件示例中提到的 `setup-logto.ps1`、`migrate-logto.ps1` 或 `migration.yaml`。
+当前代码会读取 Logto 登录令牌、检查组织身份和权限，并按组织隔离用户数据。应用启动时不会自动创建 Logto 配置；仓库现已提供 `scripts/setup-logto.ps1`，可通过 Logto Management API 一次性创建/补齐应用所需配置、写入 `.env` 并启动 Docker Compose。
 
 至少需要配置：
 
@@ -12,6 +12,31 @@
 2. 一个 Logto SPA 应用，以及与实际访问地址匹配的回调地址。
 3. 一个 Organization，且登录用户已加入该组织并获得对应角色。
 4. 根目录 `.env` 中的 Logto 地址、SPA App ID 和 API Resource。
+
+## 一键配置并启动（推荐）
+
+交给其他人部署时，对方不需要逐个创建 API 权限、组织角色、SPA 应用或手动给初始用户分配角色。首次仍需在自己的 Logto 管理台做一次安全引导：创建一个 **M2M 应用**，并给它分配 Logto 内置的 **Logto Management API access** 角色；Management API 使用该 M2M 应用取得授权令牌，不能在没有任何管理员授权凭据的情况下替租户创建自己的管理凭据。[Logto Management API 文档](https://docs.logto.io/integrate-logto/interact-with-management-api)
+
+此外，先在 Logto 中创建准备作为 lxScope 初始管理员的用户。脚本会把这个现有用户加入 lxScope Organization 并分配管理员角色，不会替对方创建或设置登录密码。
+
+之后在项目根目录打开 PowerShell，运行：
+
+```powershell
+.\scripts\setup-logto.ps1
+```
+
+按提示提供 Logto 地址、M2M App ID/Secret、初始管理员邮箱和浏览器访问地址。Secret 在输入时隐藏，只用于本次初始化，不会写进 `.env`。脚本会自动创建或补齐 API Resource 与 `agent:use`、`tenant:manage` 权限，普通成员/管理员组织角色，SPA 登录回调与退出地址、lxScope Organization、初始管理员成员和角色；然后写入项目 `.env`，执行 `docker compose up -d --build` 并打开网页。角色和配置已存在时脚本会复用并补齐，适合重新运行。
+
+常用选项：
+
+```powershell
+# 只配置 Logto 和 .env，稍后自己启动 Docker Compose
+.\scripts\setup-logto.ps1 -ConfigureOnly
+```
+
+使用 Logto Cloud 自定义域名时，脚本会额外询问 Management API 地址；应填该租户默认的 `*.logto.app` 地址。Logto OSS 若跑在同一台 Docker Desktop 主机上，脚本会询问容器可访问的 Logto 地址，并默认建议 `host.docker.internal`。Linux 或自定义网络部署时，请在该提示中填写容器实际可访问的地址。若其他电脑会通过局域网访问，在浏览器访问地址提示中填写服务器 IP，例如 `http://192.168.1.20:8000`。
+
+脚本自动设置的是**第一个初始管理员**。新用户需要先在 Logto 注册/创建；如果组织启用了适用的 JIT 自动加入，新用户会获得普通成员角色，否则仍需由 Logto 管理员把用户加入 Organization。脚本不迁移 Logto 用户库或 lxScope 业务数据，也不创建模型服务 API Key；使用 AI 功能前仍需在 `.env` 填好相应模型提供商的密钥，例如 `SILICONFLOW_API_KEY`。
 
 ## 一、Logto 中配置 API Resource 和权限
 
@@ -132,9 +157,9 @@ http://localhost:8001/auth/health
 
 正常情况下返回 HTTP `204`。这个检查只确认后端认证路由可用，不代表 Logto 组织、角色和用户已配置正确。
 
-## 六、M2M 配置（可选）
+## 六、应用运行时 M2M 配置（可选）
 
-当前代码中的 M2M 凭据**不是普通用户登录所必需的**，也不会触发角色或组织的自动创建。只有在后端需要通过 Logto Management API 查询用户资料、补充显示名称时才配置：
+下面这组运行时 M2M 环境变量与一键脚本启动时临时输入的管理凭据是两回事。普通用户登录和角色鉴权**不需要**在 lxScope `.env` 中配置运行时 M2M；只有后端需要通过 Logto Management API 查询用户资料、补充显示名称时才配置：
 
 ```env
 LOGTO_M2M_APP_ID=<M2M App ID>
