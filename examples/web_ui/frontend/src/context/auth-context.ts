@@ -2,7 +2,7 @@ import { createContext } from 'react';
 
 import type { AuthUser } from '@/api';
 
-export type AuthStatus = 'loading' | 'authenticated' | 'anonymous';
+export type AuthStatus = 'loading' | 'authenticated' | 'anonymous' | 'selecting_tenant';
 
 export interface AuthContextValue {
 	status: AuthStatus;
@@ -10,6 +10,13 @@ export interface AuthContextValue {
 	login: (username: string, password: string) => Promise<void>;
 	register: (username: string, password: string) => Promise<void>;
 	logout: () => Promise<void>;
+	switchAccount: () => Promise<void>;
+	logtoEnabled: boolean;
+	organizations: string[];
+	organizationNames: Record<string, string>;
+	beginLogin: () => Promise<void>;
+	selectTenant: (tenantId: string) => Promise<void>;
+	error?: string;
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null);

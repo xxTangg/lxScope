@@ -11,10 +11,14 @@ from pydantic import BaseModel, Field
 try:
     from admin_api import require_admin
     from auth import AuthUser
+    from identity.context import current_tenant_id
+    from observability_analytics import ObservabilityEventStore
     from token_usage_analytics import collect_token_usage
 except ModuleNotFoundError:
     from examples.agent_service.admin_api import require_admin
     from examples.agent_service.auth import AuthUser
+    from examples.agent_service.identity.context import current_tenant_id
+    from examples.agent_service.observability_analytics import ObservabilityEventStore
     from examples.agent_service.token_usage_analytics import collect_token_usage
 
 
@@ -248,6 +252,24 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _events_for_current_tenant(request: Request) -> Any:
+    observability = getattr(request.app.state, "observability", None)
+    store = getattr(observability, "events", None)
+    tenant_id = current_tenant_id()
+    if store is None or tenant_id is None:
+        return store
+
+    tenant_prefix = f"{tenant_id}::"
+    events = [
+        event
+        for event in store.snapshot()
+        if event.user_id and event.user_id.startswith(tenant_prefix)
+    ]
+    scoped = ObservabilityEventStore(max_events=max(1, len(events)))
+    scoped.replace(events)
+    return scoped
+
+
 def _failure_type_from_code(error_code: str | None) -> str:
     code = (error_code or "").casefold()
     if "timeout" in code:
@@ -271,10 +293,15 @@ async def _load_skill_failures(
     skill_store = getattr(request.app.state, "skill_observation_store", None)
     if skill_store is None:
         return []
+    user_ids = None
+    if current_tenant_id():
+        auth = getattr(request.app.state, "auth", None)
+        user_ids = [account.id for account in await auth.list_accounts()] if auth else []
     try:
         skill_summary = await skill_store.query_skill_analytics(
             start=start,
             end=end,
+            user_ids=user_ids,
         )
     except Exception:
         return []
@@ -466,7 +493,7 @@ async def get_observability_overview(
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
 
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     if store is None:
         summary = _empty_summary()
         data_available = False
@@ -562,7 +589,7 @@ async def get_observability_failures(
     """Return one unified failure center across runtime components."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     detail = (
         store.failure_center(
             start=normalized_start,
@@ -647,7 +674,7 @@ async def get_observability_component_detail(
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
 
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     detail = (
         store.component_detail(
             component,
@@ -690,7 +717,7 @@ async def get_observability_agent_detail(
     """Return Agent executions and their related model/Tool summaries."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     detail = (
         store.agent_detail(
             agent_name,
@@ -738,7 +765,7 @@ async def get_observability_trace(
     """Return the chronological event chain for one trace ID."""
     normalized_start, normalized_end = _period(start=None, end=None, days=90)
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     if store is None:
         raise HTTPException(status_code=404, detail="Trace not found.")
     detail = store.trace_detail(

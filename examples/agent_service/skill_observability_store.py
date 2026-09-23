@@ -266,6 +266,7 @@ class PostgresSkillObservationStore:
         start: datetime,
         end: datetime,
         user_id: str | None = None,
+        user_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Aggregate bounded Skill events for the administrator dashboard.
 
@@ -303,6 +304,8 @@ class PostgresSkillObservationStore:
         ]
         if user_id is not None:
             predicates.append(self._table.c.user_id == user_id)
+        if user_ids is not None:
+            predicates.append(self._table.c.user_id.in_(user_ids))
 
         statement = (
             select(*columns)

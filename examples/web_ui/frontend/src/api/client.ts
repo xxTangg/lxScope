@@ -41,6 +41,13 @@ export const getAccessToken = () => localStorage.getItem(ACCESS_TOKEN_KEY);
 export const setAccessToken = (token: string) => localStorage.setItem(ACCESS_TOKEN_KEY, token);
 export const clearAccessToken = () => localStorage.removeItem(ACCESS_TOKEN_KEY);
 
+type AccessTokenProvider = () => Promise<string | null>;
+let accessTokenProvider: AccessTokenProvider | null = null;
+
+export const setAccessTokenProvider = (provider: AccessTokenProvider | null) => {
+	accessTokenProvider = provider;
+};
+
 export const AUTH_UNAUTHORIZED_EVENT = 'agentscope:auth-unauthorized';
 
 /**
@@ -79,9 +86,11 @@ interface RequestOptions {
 /** Reported when `timeoutMs` elapses. Real 408s come from a server, so either way the request did not complete in time. */
 export const TIMEOUT_STATUS = 408;
 
-function buildHeaders(hasJsonBody: boolean, authenticated: boolean): Record<string, string> {
+async function buildHeaders(hasJsonBody: boolean, authenticated: boolean): Promise<Record<string, string>> {
 	const headers: Record<string, string> = {};
-	const token = getAccessToken();
+	const token = authenticated
+		? (await accessTokenProvider?.()) ?? getAccessToken()
+		: null;
 	if (authenticated && token) headers.Authorization = `Bearer ${token}`;
 	if (hasJsonBody) headers['Content-Type'] = 'application/json';
 	return headers;
@@ -125,7 +134,7 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 	const combined =
 		deadline && signal ? AbortSignal.any([signal, deadline]) : (deadline ?? signal);
 	const headers: Record<string, string> = {
-		...buildHeaders(body !== undefined && !(body instanceof FormData), authenticated),
+		...(await buildHeaders(body !== undefined && !(body instanceof FormData), authenticated)),
 		'X-Request-ID': createRequestToken(),
 		...extraHeaders,
 	};

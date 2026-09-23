@@ -1270,6 +1270,7 @@
 		},
 		"ban": "Ban",
 		"activate": "Activate",
+		"currentAdminProtected": "You cannot disable your own administrator account.",
 		"deleteConfirm": "Delete member {{username}}?",
 		"deleteReasonPrompt": "Why are you deleting this member?",
 		"noMembers": "No members yet",

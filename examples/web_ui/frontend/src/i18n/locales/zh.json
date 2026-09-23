@@ -1265,11 +1265,12 @@
 		"statusValues": {
 			"active": "正常",
 			"locked": "已锁定",
-			"banned": "已封禁",
+			"banned": "封禁中",
 			"deleted": "已删除"
 		},
 		"ban": "封禁",
 		"activate": "解封",
+		"currentAdminProtected": "不能停用当前管理员账号",
 		"deleteConfirm": "确定删除成员 {{username}} 吗？",
 		"deleteReasonPrompt": "请输入删除该成员的原因",
 		"noMembers": "暂无成员",

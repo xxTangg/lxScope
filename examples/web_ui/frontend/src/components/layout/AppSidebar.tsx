@@ -49,7 +49,7 @@ export function AppSidebar() {
 	const location = useLocation();
 	const { t } = useTranslation();
 	const { startOnborda } = useOnborda();
-	const { user, logout } = useAuth();
+	const { user, logout, switchAccount, logtoEnabled } = useAuth();
 	const isObservability = location.pathname.startsWith('/admin/observability');
 
 	const handleStartTour = () => {
@@ -70,7 +70,12 @@ export function AppSidebar() {
 
 	const handleLogout = async () => {
 		await logout();
-		navigate('/login', { replace: true });
+		if (!logtoEnabled) navigate('/login', { replace: true });
+	};
+
+	const handleSwitchAccount = async () => {
+		await switchAccount();
+		if (!logtoEnabled) navigate('/login', { replace: true });
 	};
 
 	return (
@@ -246,7 +251,7 @@ export function AppSidebar() {
 									{t('common.settings')}
 								</DropdownMenuItem>
 								<DropdownMenuSeparator />
-								<DropdownMenuItem onSelect={() => void handleLogout()}>
+								<DropdownMenuItem onSelect={() => void handleSwitchAccount()}>
 									<Repeat2 />
 									{t('auth.switchAccount')}
 								</DropdownMenuItem>

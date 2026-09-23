@@ -81,7 +81,18 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 			/>
 		);
 	}
+	if (status === 'selecting_tenant') {
+		return <Navigate to="/login" replace />;
+	}
 	return children;
+}
+
+function LogtoCallbackPage() {
+	return (
+		<div className="flex h-screen items-center justify-center bg-canvas">
+			<Loader2 className="size-5 animate-spin text-muted-foreground" />
+		</div>
+	);
 }
 
 function AdminOnlyRoute({ children }: { children: React.ReactNode }) {
@@ -178,6 +189,7 @@ const router = createBrowserRouter([
 		errorElement: <RouteError />,
 	},
 	{ path: '/login', element: <LoginPage />, errorElement: <RouteError /> },
+	{ path: '/auth/callback', element: <LogtoCallbackPage />, errorElement: <RouteError /> },
 ]);
 
 function App() {

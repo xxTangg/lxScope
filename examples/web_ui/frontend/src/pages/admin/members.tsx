@@ -21,9 +21,16 @@ function statusVariant(status: AdminUser['status']) {
 	return 'outline' as const;
 }
 
+function statusClassName(status: AdminUser['status']) {
+	if (status === 'active') return 'border-transparent bg-emerald-600 text-white dark:bg-emerald-700';
+	if (status === 'locked') return 'border-transparent bg-amber-500 text-white dark:bg-amber-600';
+	if (status === 'banned') return 'border-transparent bg-destructive text-destructive-foreground';
+	return '';
+}
+
 export function AdminMembersPage() {
 	const { t } = useTranslation();
-	const { user } = useAuth();
+	const { user, logtoEnabled } = useAuth();
 	const location = useLocation();
 	const queryClient = useQueryClient();
 	const [keyword, setKeyword] = useState('');
@@ -108,19 +115,27 @@ export function AdminMembersPage() {
 		<>
 			<AdminHeader title={t('admin.nav.members')} description={t('admin.membersDescription')} onRefresh={refresh} loading={users.isFetching} />
 			<AdminErrorNotice message={error} />
+			{logtoEnabled && (
+				<div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">
+					组织成员和角色由 Logto 管理；此处禁用只会阻止成员使用 lxScope，不会停用其 Logto 账号。成员需有 <code>agent:use</code> 权限才能使用系统；另有 <code>tenant:manage</code> 权限可管理本组织资源。
+				</div>
+			)}
 			<Card>
 				<CardHeader><CardTitle className="flex items-center gap-2"><UserPlus className="size-4" />{t('admin.members')}</CardTitle><CardDescription>{t('admin.memberModuleDescription')}</CardDescription></CardHeader>
 				<CardContent className="space-y-5">
-					<form onSubmit={submitCreate} autoComplete="off" className="grid gap-3 rounded-lg bg-muted/40 p-3 md:grid-cols-5">
+					{!logtoEnabled && <form onSubmit={submitCreate} autoComplete="off" className="grid gap-3 rounded-lg bg-muted/40 p-3 md:grid-cols-5">
 						<div className="space-y-1.5"><Label htmlFor="admin-new-username">{t('admin.username')}</Label><Input id="admin-new-username" name="new-member-account" autoComplete="off" data-form-type="other" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} required /></div>
 						<div className="space-y-1.5"><Label htmlFor="admin-new-password">{t('admin.initialPassword')}</Label><Input id="admin-new-password" name="new-member-initial-password" type="password" autoComplete="new-password" minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required /></div>
 						<div className="space-y-1.5"><Label htmlFor="admin-bonus-tokens">{t('admin.bonusTokens')}</Label><Input id="admin-bonus-tokens" type="number" min={0} value={bonusTokens} onChange={(e) => setBonusTokens(e.target.value)} /></div>
 						<div className="space-y-1.5"><Label htmlFor="admin-plan">{t('admin.plan')}</Label><select id="admin-plan" value={newPlanId} onChange={(e) => setNewPlanId(e.target.value)} className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm">{(plans.data?.plans ?? []).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {plan.monthly_quota.toLocaleString()} Token/月</option>)}</select></div>
 						<div className="flex items-end"><Button type="submit" className="w-full" disabled={createUser.isPending}>{createUser.isPending ? <Loader2 className="animate-spin" /> : <UserPlus />}{t('admin.createMember')}</Button></div>
-					</form>
+					</form>}
 					<div className="flex flex-wrap items-center gap-3"><Input key={location.key} id={`admin-member-search-${location.key}`} name={`member-filter-${location.key}`} data-admin-member-search data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" type="search" role="searchbox" autoComplete="off" autoCapitalize="none" spellCheck={false} readOnly={!searchEditable} value={keyword} onFocus={(e) => { e.currentTarget.value = keyword; setSearchEditable(true); }} onBlur={() => setSearchEditable(false)} onChange={(e) => { if (!searchEditable) { e.currentTarget.value = keyword; return; } setKeyword(e.target.value); reset(); }} placeholder={t('admin.searchMembers')} className="max-w-xs" /><select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); reset(); }} className="border-input bg-background h-9 rounded-md border px-3 text-sm"><option value="">{t('admin.allStatuses')}</option><option value="active">{t('admin.statusValues.active')}</option><option value="locked">{t('admin.statusValues.locked')}</option><option value="banned">{t('admin.statusValues.banned')}</option></select>{users.isFetching && <Loader2 className="size-4 animate-spin text-muted-foreground" />}</div>
 						<div className="overflow-x-auto rounded-lg border"><table className="w-full text-sm"><thead className="border-b bg-muted/40"><tr><th className="px-3 py-2 text-left font-medium">{t('admin.username')}</th><th className="px-3 py-2 text-left font-medium">{t('admin.status')}</th><th className="px-3 py-2 text-left font-medium">{t('admin.plan')}</th><th className="px-3 py-2 text-right font-medium">{t('admin.usage')}</th><th className="px-3 py-2 text-right font-medium">{t('admin.actions')}</th></tr></thead><tbody>
-						{users.isPending ? <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground"><Loader2 className="mx-auto size-4 animate-spin" /></td></tr> : items.map((item) => <tr key={item.id} className="border-b last:border-0"><td className="px-3 py-2 font-medium">{item.username}</td><td className="px-3 py-2"><Badge variant={statusVariant(item.status)}>{t(`admin.statusValues.${item.status}`)}</Badge></td><td className="px-3 py-2 text-muted-foreground">{item.plan_id === 'plan_none' ? t('billing.noPlan') : item.plan_name}</td><td className="px-3 py-2 text-right font-mono text-xs">{formatNumber(item.monthly_used)} / {formatNumber(item.monthly_quota)}</td><td className="px-3 py-2"><div className="flex flex-wrap justify-end gap-1">{item.role !== 'admin' && <><Button variant="ghost" size="sm" disabled={updateUser.isPending} onClick={() => updateUser.mutate({ userId: item.id, status: item.status === 'active' ? 'banned' : 'active' })}>{item.status === 'active' ? t('admin.ban') : t('admin.activate')}</Button><Button variant="destructive" size="sm" disabled={deleteUser.isPending} onClick={() => { if (!window.confirm(t('admin.deleteConfirm', { username: item.username }))) return; const reason = window.prompt(t('admin.deleteReasonPrompt')); if (reason && reason.trim().length >= 4) deleteUser.mutate({ userId: item.id, reason: reason.trim() }); else if (reason !== null) window.alert(t('admin.reasonRequired')); }}>{t('common.delete')}</Button><Button variant="ghost" size="sm" disabled={resetPassword.isPending} onClick={() => handleResetPassword(item)}><KeyRound />{t('admin.resetPassword')}</Button><Button variant="ghost" size="sm" disabled={revokeSessions.isPending} onClick={() => { if (window.confirm(t('admin.revokeSessionsConfirm', { username: item.username }))) revokeSessions.mutate(item.id); }}><UserRoundX className="size-4" />{t('admin.revokeSessions')}</Button></>}</div></td></tr>)}
+						{users.isPending ? <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground"><Loader2 className="mx-auto size-4 animate-spin" /></td></tr> : items.map((item) => <tr key={item.id} className="border-b last:border-0"><td className="px-3 py-2 font-medium">{item.username}</td><td className="px-3 py-2"><Badge variant={statusVariant(item.status)} className={statusClassName(item.status)}>{t(`admin.statusValues.${item.status}`)}</Badge></td><td className="px-3 py-2 text-muted-foreground">{item.plan_id === 'plan_none' ? t('billing.noPlan') : item.plan_name}</td><td className="px-3 py-2 text-right font-mono text-xs">{formatNumber(item.monthly_used)} / {formatNumber(item.monthly_quota)}</td><td className="px-3 py-2"><div className="flex flex-wrap justify-end gap-1">
+							<Button variant="default" size="sm" className={item.status === 'active' ? 'bg-red-600 text-white hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-800' : 'bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-700 dark:hover:bg-emerald-800'} disabled={updateUser.isPending || item.id === user?.id} title={item.id === user?.id ? t('admin.currentAdminProtected') : undefined} onClick={() => updateUser.mutate({ userId: item.id, status: item.status === 'active' ? 'banned' : 'active' })}>{item.status === 'active' ? t('admin.ban') : t('admin.activate')}</Button>
+							{!logtoEnabled && item.role !== 'admin' && <><Button variant="destructive" size="sm" disabled={deleteUser.isPending} onClick={() => { if (!window.confirm(t('admin.deleteConfirm', { username: item.username }))) return; const reason = window.prompt(t('admin.deleteReasonPrompt')); if (reason && reason.trim().length >= 4) deleteUser.mutate({ userId: item.id, reason: reason.trim() }); else if (reason !== null) window.alert(t('admin.reasonRequired')); }}>{t('common.delete')}</Button><Button variant="ghost" size="sm" disabled={resetPassword.isPending} onClick={() => handleResetPassword(item)}><KeyRound />{t('admin.resetPassword')}</Button><Button variant="ghost" size="sm" disabled={revokeSessions.isPending} onClick={() => { if (window.confirm(t('admin.revokeSessionsConfirm', { username: item.username }))) revokeSessions.mutate(item.id); }}><UserRoundX className="size-4" />{t('admin.revokeSessions')}</Button></>}
+						</div></td></tr>)}
 						{!users.isPending && items.length === 0 && <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">{t('admin.noMembers')}</td></tr>}
 					</tbody></table></div>
 					{users.data && <Pagination page={page} pageSize={users.data.page_size} total={users.data.total} onPageChange={setPage} loading={users.isFetching} />}

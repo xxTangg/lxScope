@@ -44,8 +44,10 @@ from agentscope.middleware import MiddlewareBase
 
 try:
     from observability_analytics import ObservabilityEventStore
+    from identity.context import current_tenant_id
 except ModuleNotFoundError:
     from examples.agent_service.observability_analytics import ObservabilityEventStore
+    from examples.agent_service.identity.context import current_tenant_id
 
 try:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
@@ -732,6 +734,11 @@ async def get_observability_metrics(
     user_id: str = Depends(get_current_user_id),
 ) -> Response:
     """Return metrics to an authenticated administrator only."""
+    if current_tenant_id() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Global Prometheus metrics are unavailable in tenant-scoped mode.",
+        )
     auth = getattr(request.app.state, "auth", None)
     if auth is not None:
         if not await auth.is_admin_user(user_id):
