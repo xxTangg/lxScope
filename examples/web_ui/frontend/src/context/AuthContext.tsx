@@ -338,7 +338,7 @@ function LogtoAuthProviderContent({ children }: { children: React.ReactNode }) {
 			await signIn({
 				redirectUri: `${window.location.origin}/auth/callback`,
 				postRedirectUri: `${window.location.origin}/login`,
-				prompt: Prompt.Login,
+				prompt: [Prompt.Login, Prompt.Consent],
 			});
 		} catch (reason) {
 			setUser(null);
