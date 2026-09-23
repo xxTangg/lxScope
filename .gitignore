@@ -108,6 +108,7 @@ celerybeat.pid
 
 # Environments
 .env
+/deploy/logto/generated/
 .venv
 env/
 venv/
