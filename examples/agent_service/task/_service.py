@@ -2,6 +2,8 @@
 """Application service for reusable linear Tasks."""
 
 import asyncio
+import logging
+import os
 from datetime import datetime, timezone
 
 from ._artifact_spec import ArtifactSpec, artifact_spec_prompt, parse_agent_spec, spec_from_markdown
@@ -52,6 +54,24 @@ _TERMINAL_RUN_STATUSES = {
 }
 
 
+logger = logging.getLogger(__name__)
+
+_DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS = 45.0
+
+
+def _configured_generation_timeout() -> float:
+    """Read the planner deadline without allowing an invalid env to disable it."""
+
+    value = os.getenv(
+        "LXSCOPE_TASK_GENERATION_TIMEOUT_SECONDS",
+        str(_DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS),
+    )
+    try:
+        return max(1.0, float(value))
+    except (TypeError, ValueError):
+        return _DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS
+
+
 class TaskService:
     """Own Task lifecycle while keeping execution behind an adapter port."""
 
@@ -63,6 +83,7 @@ class TaskService:
         preview_executor: TaskExecutor | None = None,
         planner: TaskPlanner | None = None,
         artifact_writer: TaskArtifactWriter | None = None,
+        generation_timeout_seconds: float | None = None,
     ) -> None:
         """Bind repository and execution adapters."""
 
@@ -77,8 +98,18 @@ class TaskService:
         )
         self._preview_executor = preview_executor or PreviewTaskExecutor()
         self._planner = planner or PreviewTaskPlanner()
+        self._generation_timeout_seconds = max(
+            1.0,
+            generation_timeout_seconds
+            if generation_timeout_seconds is not None
+            else _configured_generation_timeout(),
+        )
         self._active_runs: dict[str, asyncio.Task[None]] = {}
         self._run_users: dict[str, str] = {}
+        # Some adapters turn ``CancelledError`` into a normal error/result.
+        # Retain the cancellation request until the worker exits so such an
+        # adapter cannot later overwrite the user's terminal cancellation.
+        self._cancel_requested_run_ids: set[str] = set()
 
     async def create_task(self, user_id: str, body: CreateTaskRequest) -> TaskRecord:
         """Create a draft or manually-defined reusable task."""
@@ -129,20 +160,55 @@ class TaskService:
         try:
             tool_schemas: list[TaskToolSchema] = []
             try:
-                tool_schemas = await self.list_tools(user_id, merged_context)
+                tool_schemas = await asyncio.wait_for(
+                    self.list_tools(user_id, merged_context),
+                    timeout=self._generation_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Task tool discovery timed out after %.1fs for task=%s; "
+                    "continuing without tool schemas",
+                    self._generation_timeout_seconds,
+                    task_id,
+                )
+                tool_schemas = []
             except Exception:  # pylint: disable=broad-except
                 # Tool discovery is an enhancement for planning. A broken
                 # optional MCP must not prevent Agent/Python planning.
                 tool_schemas = []
-            draft = await self._planner.plan(
-                user_id=user_id,
-                goal=current.goal,
-                context=merged_context,
-                current_title=(
-                    current.title if current.title_source == "user" else None
-                ),
-                tool_schemas=tool_schemas,
-            )
+            try:
+                draft = await asyncio.wait_for(
+                    self._planner.plan(
+                        user_id=user_id,
+                        goal=current.goal,
+                        context=merged_context,
+                        current_title=(
+                            current.title if current.title_source == "user" else None
+                        ),
+                        tool_schemas=tool_schemas,
+                    ),
+                    timeout=self._generation_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                # A planner may be waiting on a model or a stateful MCP.  The
+                # editor must never leave a newly created task in "generating"
+                # forever; a deterministic editable plan keeps the UI usable
+                # while still allowing the user to refine or regenerate it.
+                logger.warning(
+                    "Task planner timed out after %.1fs for task=%s; "
+                    "using the editable fallback plan",
+                    self._generation_timeout_seconds,
+                    task_id,
+                )
+                draft = await PreviewTaskPlanner().plan(
+                    user_id=user_id,
+                    goal=current.goal,
+                    context=merged_context,
+                    current_title=(
+                        current.title if current.title_source == "user" else None
+                    ),
+                    tool_schemas=tool_schemas,
+                )
             plan_issues = validate_task_plan(draft, tool_schemas)
             if plan_issues:
                 raise ValueError(
@@ -215,7 +281,20 @@ class TaskService:
             run_id="task-tool-catalog",
             task_revision=0,
         )
-        return await list_tools(execution_context)
+        try:
+            return await list_tools(execution_context)
+        except Exception as error:  # noqa: BLE001 — tool discovery is optional
+            # Tool discovery runs while the Task editor is loading.  A stale
+            # stateful MCP must not make the whole page look unreachable; the
+            # planner and editor can safely continue with no optional tools.
+            logger.warning(
+                "Task tool discovery degraded for agent=%s session=%s; "
+                "continuing with no optional tools: %s",
+                context.agent_id,
+                context.session_id,
+                error,
+            )
+            return []
 
     async def get_task(self, user_id: str, task_id: str) -> TaskRecord | None:
         """Get one task owned by the caller."""
@@ -318,7 +397,11 @@ class TaskService:
             self._execute_run(run.id, knowledge_gateway),
         )
         self._active_runs[run.id] = execution
-        execution.add_done_callback(lambda _: self._active_runs.pop(run.id, None))
+        def _forget_execution(_: asyncio.Task[None]) -> None:
+            self._active_runs.pop(run.id, None)
+            self._cancel_requested_run_ids.discard(run.id)
+
+        execution.add_done_callback(_forget_execution)
         return await self._store.get_run(user_id, run.id)
 
     async def get_run(self, user_id: str, run_id: str) -> TaskRunRecord | None:
@@ -341,6 +424,10 @@ class TaskService:
             return None
         if run.status in _TERMINAL_RUN_STATUSES:
             return run
+        # Record intent before yielding to storage or cancellation.  A task
+        # executor may catch CancelledError internally and otherwise continue
+        # to write a later failed/succeeded state.
+        self._cancel_requested_run_ids.add(run_id)
         active = self._active_runs.get(run_id)
         if active is not None:
             active.cancel()
@@ -363,6 +450,11 @@ class TaskService:
             finished_at=_utc_now(),
             error="Run canceled by the user.",
         )
+        # The task list renders ``last_run_status`` rather than loading every
+        # Run.  Keep that summary in sync for cancellation just as we do for
+        # successful and failed executions; otherwise a stopped Run can stay
+        # labelled queued/running in the sidebar.
+        await self._mark_task_run_status(updated)
         await self._emit(updated, "run.canceled", payload={})
         return updated
 
@@ -448,7 +540,7 @@ class TaskService:
         """Execute a task snapshot from first node to last node."""
 
         run = await self._find_run(run_id)
-        if run is None:
+        if run is None or self._is_cancel_requested(run_id):
             return
         try:
             run = await self._store.update_run(
@@ -513,6 +605,10 @@ class TaskService:
                     previous_output=previous_output,
                     context=context,
                 )
+                # Do not let an executor that swallowed cancellation publish a
+                # step result (or a later run failure/success) after Stop.
+                if self._is_cancel_requested(run_id):
+                    return
                 normalized = _normalize_execution_result(execution_result)
                 previous_output = normalized.text
                 execution_history.append(
@@ -547,6 +643,8 @@ class TaskService:
                 )
 
             artifacts: list[TaskArtifactRecord] = []
+            if self._is_cancel_requested(run_id):
+                return
             artifact_node = _artifact_node(run.nodes)
             if artifact_node is not None:
                 artifact_config = artifact_node.artifact
@@ -589,6 +687,8 @@ class TaskService:
                     node_id=artifact_node.id,
                     payload=artifact.model_dump(mode="json"),
                 )
+            if self._is_cancel_requested(run_id):
+                return
             run = await self._store.update_run(
                 run.user_id,
                 run.id,
@@ -609,6 +709,8 @@ class TaskService:
             return
         except Exception as error:  # pylint: disable=broad-except
             message = str(error) or "Task node execution failed."
+            if self._is_cancel_requested(run_id):
+                return
             current = await self._find_run(run_id)
             if current is None or current.status in _TERMINAL_RUN_STATUSES:
                 return
@@ -762,6 +864,11 @@ class TaskService:
         if user_id is None:
             return None
         return await self._store.get_run(user_id, run_id)
+
+    def _is_cancel_requested(self, run_id: str) -> bool:
+        """Return whether this local worker must preserve cancellation."""
+
+        return run_id in self._cancel_requested_run_ids
 
     async def _mark_task_run_status(self, run: TaskRunRecord) -> None:
         """Reflect the latest run status on the reusable task summary."""

@@ -64,7 +64,7 @@ function TokenUserTable({ rows }: { rows: TokenUserUsage[] }) {
 
 export function AdminObservabilityFocusPage() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const { user } = useAuth();
 	const navigate = useNavigate();
 	const { pathname } = useLocation();
 	const focusParam = pathname.split('/').pop();
@@ -76,9 +76,9 @@ export function AdminObservabilityFocusPage() {
 		// Request analysis is another view of the overview projection. Reuse
 		// the overview cache so navigating between the two pages cannot show
 		// different snapshots for the same period.
-		queryKey: ['admin', user?.id, user?.tenant_id, 'observability', days],
+		queryKey: ['admin', user?.id, 'observability', days],
 		queryFn: () => adminApi.observability(days),
-		enabled: (hasPermission('tenant:manage') || hasPermission('platform:observe')) && isValidFocus,
+		enabled: user?.role === 'admin' && isValidFocus,
 	});
 	const data = analytics.data;
 	const tokenUsage = data?.token_usage;

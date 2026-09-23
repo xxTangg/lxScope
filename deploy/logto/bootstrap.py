@@ -110,20 +110,26 @@ def _expand_environment(value: Any) -> Any:
 
 def _load_config_document(path: Path) -> Mapping[str, Any]:
     try:
-        import yaml
-    except ModuleNotFoundError as exc:
-        raise BootstrapError(
-            "PyYAML is required to read deploy/logto/config.yaml. "
-            "Install the project dependencies first."
-        ) from exc
-
-    try:
         with path.open("r", encoding="utf-8") as config_file:
-            raw = yaml.safe_load(config_file) or {}
+            if path.suffix.lower() == ".json":
+                raw = json.load(config_file)
+            else:
+                try:
+                    import yaml
+                except ModuleNotFoundError as exc:
+                    raise BootstrapError(
+                        "PyYAML is required to read YAML Logto config files. "
+                        "Use the bundled JSON config or install PyYAML."
+                    ) from exc
+                raw = yaml.safe_load(config_file) or {}
     except OSError as exc:
         raise BootstrapError(f"cannot read Logto config {path}: {exc}") from exc
-    except yaml.YAMLError as exc:
-        raise BootstrapError(f"invalid YAML in {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise BootstrapError(f"invalid JSON in {path}: {exc}") from exc
+    except Exception as exc:
+        if exc.__class__.__module__ == "yaml.error":
+            raise BootstrapError(f"invalid YAML in {path}: {exc}") from exc
+        raise
 
     return _mapping(_expand_environment(raw), "root")
 
@@ -460,18 +466,28 @@ class LogtoManagementClient:
 
     @classmethod
     def from_env(cls) -> "LogtoManagementClient":
+        endpoint = (
+            os.getenv("LOGTO_MIGRATION_ENDPOINT", "").strip()
+            or os.getenv("LOGTO_ENDPOINT", "").strip()
+        )
         required = (
-            "LOGTO_ENDPOINT",
             "LOGTO_M2M_APP_ID",
             "LOGTO_M2M_APP_SECRET",
             "LOGTO_MANAGEMENT_API_RESOURCE",
         )
         missing = [name for name in required if not os.getenv(name, "").strip()]
+        if not endpoint:
+            missing.insert(0, "LOGTO_ENDPOINT")
         if missing:
             raise BootstrapError(
                 "missing required environment variable(s): " + ", ".join(missing),
             )
-        return cls(*(os.environ[name].strip() for name in required))
+        return cls(
+            endpoint,
+            os.environ["LOGTO_M2M_APP_ID"].strip(),
+            os.environ["LOGTO_M2M_APP_SECRET"].strip(),
+            os.environ["LOGTO_MANAGEMENT_API_RESOURCE"].strip(),
+        )
 
     def _access_token_request(self) -> str:
         credentials = base64.b64encode(

@@ -108,6 +108,40 @@ export async function writeJson(file: string, value: unknown): Promise<void> {
   await fs.rename(temp, file);
 }
 
+/**
+ * Persist a related set of records as one database transaction.  Recharge
+ * approval changes both an order and the customer's aggregate; writing them
+ * independently can otherwise leave a completed order behind after a failed
+ * second write and make the UI report a false failure.
+ */
+export async function writeJsonBatch(entries: ReadonlyArray<readonly [string, unknown]>): Promise<void> {
+  if (databasePool && entries.every(([file]) => storeKey(file))) {
+    const client = await databasePool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const [file, value] of entries) {
+        const key = storeKey(file);
+        if (!key) throw new Error('数据库存储键不存在');
+        await client.query(
+          `INSERT INTO ${databaseTable} (key, value, updated_at)
+           VALUES ($1, $2::jsonb, NOW())
+           ON CONFLICT (key)
+           DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+          [key, JSON.stringify(value)],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+    return;
+  }
+  for (const [file, value] of entries) await writeJson(file, value);
+}
+
 export async function updateJson<T>(
   file: string,
   fallback: T,

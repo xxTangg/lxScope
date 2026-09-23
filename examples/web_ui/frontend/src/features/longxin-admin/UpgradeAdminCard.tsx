@@ -2,15 +2,16 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArchiveRestore, Download, Loader2, RotateCcw, Upload } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 
-import { upgradeApi, type ArtifactType, type ReleaseMeta, type UpgradeOperation } from './upgrade-api';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
+import { useAuth } from '@/hooks/useAuth';
+
+import { upgradeApi, type ArtifactType, type ReleaseMeta, type UpgradeOperation } from './upgrade-api';
 
 function bytes(value: number) {
 	if (value < 1024) return `${value} B`;
@@ -27,9 +28,7 @@ function operationVariant(state: UpgradeOperation['state']) {
 
 export function UpgradeAdminCard() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
-	const canUpgrade =
-		hasPermission('tenant:manage') || hasPermission('platform:upgrade');
+	const { user } = useAuth();
 	const queryClient = useQueryClient();
 	const [artifactType, setArtifactType] = useState<ArtifactType>('app');
 	const [version, setVersion] = useState('');
@@ -38,22 +37,22 @@ export function UpgradeAdminCard() {
 	const catalog = useQuery({
 		queryKey: ['longxin-upgrades', user?.id, 'catalog'],
 		queryFn: upgradeApi.catalog,
-		enabled: canUpgrade,
+		enabled: user?.role === 'admin',
 	});
 	const status = useQuery({
 		queryKey: ['longxin-upgrades', user?.id, 'status'],
 		queryFn: upgradeApi.status,
-		enabled: canUpgrade,
+		enabled: user?.role === 'admin',
 	});
 	const backups = useQuery({
 		queryKey: ['longxin-upgrades', user?.id, 'backups'],
 		queryFn: () => upgradeApi.backups(20),
-		enabled: canUpgrade,
+		enabled: user?.role === 'admin',
 	});
 	const operations = useQuery({
 		queryKey: ['longxin-upgrades', user?.id, 'operations'],
 		queryFn: () => upgradeApi.operations(20),
-		enabled: canUpgrade,
+		enabled: user?.role === 'admin',
 		refetchInterval: (query) =>
 			query.state.data?.operations.some((item) =>
 				['pending', 'downloading', 'backing_up', 'applying', 'health_check'].includes(item.state),

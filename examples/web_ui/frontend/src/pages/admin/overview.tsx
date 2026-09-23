@@ -11,17 +11,17 @@ import { formatNumber } from '@/utils/common';
 
 export function AdminOverviewPage() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const { user } = useAuth();
 	const queryClient = useQueryClient();
 	const overview = useQuery({
 		queryKey: ['admin', user?.id, 'overview'],
 		queryFn: adminApi.overview,
-		enabled: hasPermission('tenant:manage'),
+		enabled: user?.role === 'admin',
 	});
 	const quota = useQuery({
 		queryKey: ['admin', user?.id, 'quota'],
 		queryFn: adminApi.quota,
-		enabled: hasPermission('tenant:manage'),
+		enabled: user?.role === 'admin',
 	});
 	const refresh = () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id] });
 

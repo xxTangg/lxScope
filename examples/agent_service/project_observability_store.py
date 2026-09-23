@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
 
 try:
     from observability_analytics import ObservabilityEvent
@@ -47,7 +46,6 @@ class PostgresProjectObservabilityStore:
             MetaData,
             String,
             Table,
-            Uuid,
         )
         from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -71,8 +69,6 @@ class PostgresProjectObservabilityStore:
             Column("request_id", String(255), nullable=True),
             Column("trace_id", String(255), nullable=True),
             Column("user_id", String(255), nullable=True),
-            Column("tenant_id", Uuid(as_uuid=True), nullable=True),
-            Column("membership_id", Uuid(as_uuid=True), nullable=True),
             Column("session_id", String(255), nullable=True),
             Column("agent_name", String(255), nullable=True),
             Column("model", String(255), nullable=True),
@@ -113,20 +109,6 @@ class PostgresProjectObservabilityStore:
 
         async with self._engine.begin() as connection:
             await connection.run_sync(metadata.create_all)
-            if connection.dialect.name == "postgresql":
-                await connection.exec_driver_sql(
-                    "ALTER TABLE public.project_observability_events "
-                    "ADD COLUMN IF NOT EXISTS tenant_id UUID",
-                )
-                await connection.exec_driver_sql(
-                    "ALTER TABLE public.project_observability_events "
-                    "ADD COLUMN IF NOT EXISTS membership_id UUID",
-                )
-                await connection.exec_driver_sql(
-                    "CREATE INDEX IF NOT EXISTS ix_project_obs_tenant_time "
-                    "ON public.project_observability_events "
-                    "(tenant_id, occurred_at)",
-                )
 
     async def record(self, event: ObservabilityEvent) -> None:
         """Insert one payload-free project event."""
@@ -135,37 +117,6 @@ class PostgresProjectObservabilityStore:
                 "PostgresProjectObservabilityStore is not initialized; "
                 "call initialize() first",
             )
-        tenant_id = event.tenant_id
-        membership_id = event.membership_id
-        try:
-            from identity.dependencies import (
-                get_bound_membership_id,
-                get_bound_tenant_id,
-            )
-        except ModuleNotFoundError:  # pragma: no cover - package import mode
-            from examples.agent_service.identity.dependencies import (
-                get_bound_membership_id,
-                get_bound_tenant_id,
-            )
-        bound_tenant_id = get_bound_tenant_id()
-        if bound_tenant_id is not None:
-            tenant_id = bound_tenant_id
-            membership_id = get_bound_membership_id()
-        for value_name, value in (
-            ("tenant_id", tenant_id),
-            ("membership_id", membership_id),
-        ):
-            if value is None or isinstance(value, UUID):
-                continue
-            try:
-                converted = UUID(str(value))
-            except (TypeError, ValueError):
-                continue
-            if value_name == "tenant_id":
-                tenant_id = converted
-            else:
-                membership_id = converted
-
         values = {
             "occurred_at": _aware_utc(event.occurred_at),
             "event_name": event.event_name,
@@ -175,8 +126,6 @@ class PostgresProjectObservabilityStore:
             "request_id": event.request_id,
             "trace_id": event.trace_id,
             "user_id": event.user_id,
-            "tenant_id": tenant_id,
-            "membership_id": membership_id,
             "session_id": event.session_id,
             "agent_name": event.agent_name,
             "model": event.model,
@@ -193,12 +142,7 @@ class PostgresProjectObservabilityStore:
         async with self._engine.begin() as connection:
             await connection.execute(self._table.insert().values(**values))
 
-    async def load_recent(
-        self,
-        *,
-        limit: int = 50_000,
-        tenant_id: str | None = None,
-    ) -> list[ObservabilityEvent]:
+    async def load_recent(self, *, limit: int = 50_000) -> list[ObservabilityEvent]:
         """Load the newest bounded window in chronological order."""
         if self._engine is None or self._table is None:
             raise RuntimeError(
@@ -217,8 +161,6 @@ class PostgresProjectObservabilityStore:
             self._table.c.request_id,
             self._table.c.trace_id,
             self._table.c.user_id,
-            self._table.c.tenant_id,
-            self._table.c.membership_id,
             self._table.c.session_id,
             self._table.c.agent_name,
             self._table.c.model,
@@ -232,18 +174,8 @@ class PostgresProjectObservabilityStore:
             self._table.c.input_tokens,
             self._table.c.output_tokens,
         ]
-        tenant_filter = tenant_id
-        if tenant_id is not None:
-            try:
-                tenant_filter = UUID(str(tenant_id))
-            except (TypeError, ValueError):
-                tenant_filter = tenant_id
         statement = (
             select(*columns)
-            .where(
-                tenant_filter is None
-                or self._table.c.tenant_id == tenant_filter,
-            )
             .order_by(
                 self._table.c.occurred_at.desc(),
                 self._table.c.event_id.desc(),
@@ -263,16 +195,6 @@ class PostgresProjectObservabilityStore:
                 request_id=row["request_id"],
                 trace_id=row["trace_id"],
                 user_id=row["user_id"],
-                tenant_id=(
-                    str(row["tenant_id"])
-                    if row["tenant_id"] is not None
-                    else None
-                ),
-                membership_id=(
-                    str(row["membership_id"])
-                    if row["membership_id"] is not None
-                    else None
-                ),
                 session_id=row["session_id"],
                 agent_name=row["agent_name"],
                 model=row["model"],

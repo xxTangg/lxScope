@@ -41,18 +41,12 @@ export const getAccessToken = () => localStorage.getItem(ACCESS_TOKEN_KEY);
 export const setAccessToken = (token: string) => localStorage.setItem(ACCESS_TOKEN_KEY, token);
 export const clearAccessToken = () => localStorage.removeItem(ACCESS_TOKEN_KEY);
 
-export type AccessTokenProvider = () => string | null | Promise<string | null>;
-
+type AccessTokenProvider = () => Promise<string | null>;
 let accessTokenProvider: AccessTokenProvider | null = null;
 
 export const setAccessTokenProvider = (provider: AccessTokenProvider | null) => {
 	accessTokenProvider = provider;
 };
-
-export const hasAccessTokenProvider = () => accessTokenProvider !== null;
-
-export const getRequestAccessToken = async () =>
-	accessTokenProvider ? await accessTokenProvider() : getAccessToken();
 
 export const AUTH_UNAUTHORIZED_EVENT = 'agentscope:auth-unauthorized';
 
@@ -92,12 +86,11 @@ interface RequestOptions {
 /** Reported when `timeoutMs` elapses. Real 408s come from a server, so either way the request did not complete in time. */
 export const TIMEOUT_STATUS = 408;
 
-async function buildHeaders(
-	hasJsonBody: boolean,
-	authenticated: boolean,
-): Promise<Record<string, string>> {
+async function buildHeaders(hasJsonBody: boolean, authenticated: boolean): Promise<Record<string, string>> {
 	const headers: Record<string, string> = {};
-	const token = await getRequestAccessToken();
+	const token = authenticated
+		? (await accessTokenProvider?.()) ?? getAccessToken()
+		: null;
 	if (authenticated && token) headers.Authorization = `Bearer ${token}`;
 	if (hasJsonBody) headers['Content-Type'] = 'application/json';
 	return headers;
@@ -198,7 +191,7 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 	if (!res.ok) {
 		const detail = await extractErrorDetail(res);
 		const error = new ApiError(res.status, detail);
-		if (res.status === 401 && authenticated && (getAccessToken() || hasAccessTokenProvider())) {
+		if (res.status === 401 && authenticated && getAccessToken()) {
 			window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT));
 		}
 		if (!silent) toast.error(detail);
@@ -234,8 +227,20 @@ export const client = {
 			silent?: boolean;
 			authenticated?: boolean;
 			headers?: Record<string, string>;
+			timeoutMs?: number;
 		},
 	) => request<T>(path, { method: 'POST', body, params, ...options }),
+	put: <T>(
+		path: string,
+		body?: unknown,
+		params?: Record<string, string>,
+		options?: {
+			silent?: boolean;
+			authenticated?: boolean;
+			headers?: Record<string, string>;
+			timeoutMs?: number;
+		},
+	) => request<T>(path, { method: 'PUT', body, params, ...options }),
 	form: <T>(
 		path: string,
 		body: FormData,

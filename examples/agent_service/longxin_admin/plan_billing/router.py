@@ -5,9 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 
-from auth import AuthUser
-from identity.dependencies import get_current_application_user
-from identity.permissions import has_permission, TENANT_MANAGE
+from auth import AuthUser, JWTAuthService
 
 from .models import (
     CreatePlanOrderRequest,
@@ -27,14 +25,12 @@ async def _current_user(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> AuthUser:
-    return await get_current_application_user(request, authorization)
+    auth: JWTAuthService = request.app.state.auth
+    return await auth.get_current_user(authorization)
 
 
 async def _require_admin(user: AuthUser = Depends(_current_user)) -> AuthUser:
-    if user.status != "active" or not has_permission(
-        user.permissions,
-        TENANT_MANAGE,
-    ):
+    if user.role != "admin" or user.status != "active":
         raise _error("admin_required", "Administrator access is required.", 403)
     return user
 

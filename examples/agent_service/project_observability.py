@@ -44,8 +44,10 @@ from agentscope.middleware import MiddlewareBase
 
 try:
     from observability_analytics import ObservabilityEventStore
+    from identity.context import current_tenant_id
 except ModuleNotFoundError:
     from examples.agent_service.observability_analytics import ObservabilityEventStore
+    from examples.agent_service.identity.context import current_tenant_id
 
 try:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
@@ -67,27 +69,6 @@ _user_id_context: ContextVar[str] = ContextVar(
     "lxscope_observability_user_id",
     default="",
 )
-
-
-def _bound_identity_dimensions() -> tuple[str | None, str | None]:
-    """Read trusted tenant dimensions from the current application context."""
-
-    try:
-        from identity.dependencies import (
-            get_bound_membership_id,
-            get_bound_tenant_id,
-        )
-    except ModuleNotFoundError:  # pragma: no cover - package import mode
-        from examples.agent_service.identity.dependencies import (
-            get_bound_membership_id,
-            get_bound_tenant_id,
-        )
-    tenant_id = get_bound_tenant_id()
-    membership_id = get_bound_membership_id()
-    return (
-        str(tenant_id) if tenant_id is not None else None,
-        str(membership_id) if membership_id is not None else None,
-    )
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -191,18 +172,12 @@ class ObservabilityMetrics:
             stat = bucket.setdefault(key, _Duration())
             stat.add(max(0.0, seconds))
 
-    def render_prometheus(self, *, tenant_id: str | None = None) -> str:
-        """Render metrics, optionally restricted to one trusted tenant."""
+    def render_prometheus(self) -> str:
+        """Render counters and duration summaries as Prometheus text."""
         lines: list[str] = []
         with self._lock:
             counters = {
-                name: {
-                    labels: value
-                    for labels, value in values.items()
-                    if tenant_id is None
-                    or dict(labels).get("tenant_id") == str(tenant_id)
-                }
-                for name, values in self._counters.items()
+                name: dict(values) for name, values in self._counters.items()
             }
             durations = {
                 name: {
@@ -212,8 +187,6 @@ class ObservabilityMetrics:
                         maximum=value.maximum,
                     )
                     for labels, value in values.items()
-                    if tenant_id is None
-                    or dict(labels).get("tenant_id") == str(tenant_id)
                 }
                 for name, values in self._durations.items()
             }
@@ -383,15 +356,6 @@ class ProjectObservability:
         safe_attributes.setdefault("request_id", _request_id_context.get() or None)
         safe_attributes.setdefault("trace_id", _trace_id_context.get() or None)
         safe_attributes.setdefault("user_id", _user_id_context.get() or None)
-        tenant_id, membership_id = _bound_identity_dimensions()
-        if tenant_id is not None:
-            # A verified request identity is authoritative.  Never let an
-            # event attribute supplied by an application caller override it.
-            safe_attributes["tenant_id"] = tenant_id
-            safe_attributes["membership_id"] = membership_id
-        else:
-            safe_attributes.setdefault("tenant_id", tenant_id)
-            safe_attributes.setdefault("membership_id", membership_id)
         event_payload = {
             "event": event_name,
             "component": component,
@@ -413,13 +377,11 @@ class ProjectObservability:
             json.dumps(event_payload, sort_keys=True),
         )
 
-        metric_tenant_id = safe_attributes.get("tenant_id")
         self.metrics.increment(
             "lxscope_observability_events_total",
             component=component,
             event=event_name,
             result=result,
-            tenant_id=metric_tenant_id,
         )
         if duration_seconds is not None:
             self.metrics.observe_duration(
@@ -427,7 +389,6 @@ class ProjectObservability:
                 duration_seconds,
                 component=component,
                 event=event_name,
-                tenant_id=metric_tenant_id,
             )
 
     def _schedule_persistence(self, event: Any) -> None:
@@ -474,7 +435,6 @@ class ProjectObservability:
             "route": route,
             "status_class": f"{status_code // 100}xx",
             "result": result,
-            "tenant_id": _bound_identity_dimensions()[0],
         }
         self.metrics.increment("lxscope_http_requests_total", **labels)
         self.metrics.observe_duration(
@@ -482,7 +442,6 @@ class ProjectObservability:
             duration_seconds,
             method=method,
             route=route,
-            tenant_id=labels["tenant_id"],
         )
         self.record_event(
             "http.request.completed",
@@ -726,7 +685,6 @@ class ProjectAgentObservabilityMiddleware(MiddlewareBase):
                     value,
                     direction=name,
                     model=model_name or "unknown",
-                    tenant_id=_bound_identity_dimensions()[0],
                 )
 
 
@@ -776,39 +734,13 @@ async def get_observability_metrics(
     user_id: str = Depends(get_current_user_id),
 ) -> Response:
     """Return metrics to an authenticated administrator only."""
+    if current_tenant_id() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Global Prometheus metrics are unavailable in tenant-scoped mode.",
+        )
     auth = getattr(request.app.state, "auth", None)
-    if getattr(request.app.state, "auth_provider", "local") == "logto":
-        # ``get_current_user_id`` is the AgentScope membership boundary in
-        # Logto mode; authorization must still use the verified application
-        # permissions rather than the legacy local account index.
-        try:
-            from identity.dependencies import get_bound_tenant_identity
-            from identity.permissions import (
-                PLATFORM_MANAGE,
-                PLATFORM_OBSERVE,
-                TENANT_MANAGE,
-                has_permission,
-            )
-        except ModuleNotFoundError:  # pragma: no cover - package import mode
-            from examples.agent_service.identity.dependencies import get_bound_tenant_identity
-            from examples.agent_service.identity.permissions import (
-                PLATFORM_MANAGE,
-                PLATFORM_OBSERVE,
-                TENANT_MANAGE,
-                has_permission,
-            )
-        identity = get_bound_tenant_identity()
-        permissions = getattr(identity, "permissions", ())
-        if identity is None or not (
-            has_permission(permissions, TENANT_MANAGE)
-            or has_permission(permissions, PLATFORM_MANAGE)
-            or has_permission(permissions, PLATFORM_OBSERVE)
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Administrator access is required.",
-            )
-    elif auth is not None:
+    if auth is not None:
         if not await auth.is_admin_user(user_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -818,30 +750,8 @@ async def get_observability_metrics(
     observability = getattr(request.app.state, "observability", None)
     if not isinstance(observability, ProjectObservability):
         return Response(content="", media_type="text/plain; version=0.0.4")
-    tenant_id, _ = _bound_identity_dimensions()
-    try:
-        from identity.dependencies import get_bound_tenant_identity
-        from identity.permissions import PLATFORM_MANAGE, PLATFORM_OBSERVE, has_permission
-    except ModuleNotFoundError:  # pragma: no cover - package import mode
-        from examples.agent_service.identity.dependencies import get_bound_tenant_identity
-        from examples.agent_service.identity.permissions import (
-            PLATFORM_MANAGE,
-            PLATFORM_OBSERVE,
-            has_permission,
-        )
-    identity = get_bound_tenant_identity()
-    permissions = getattr(identity, "permissions", ())
-    if not (
-        has_permission(permissions, PLATFORM_MANAGE)
-        or has_permission(permissions, PLATFORM_OBSERVE)
-    ):
-        # A tenant administrator receives only the current tenant's metrics.
-        # The platform permission is the only route to the global stream.
-        pass
-    else:
-        tenant_id = None
     return Response(
-        content=observability.metrics.render_prometheus(tenant_id=tenant_id),
+        content=observability.metrics.render_prometheus(),
         media_type="text/plain; version=0.0.4",
     )
 

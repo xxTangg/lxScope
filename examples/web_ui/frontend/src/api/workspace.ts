@@ -1,4 +1,4 @@
-import { ApiError, client, getBaseUrl, getRequestAccessToken } from './client';
+import { ApiError, client, getAccessToken, getBaseUrl } from './client';
 import type { UploadProgress } from './knowledgeBase';
 import type {
 	AddFromLibraryResponse,
@@ -10,6 +10,11 @@ import type {
 	Skill,
 	WorkspaceDownloadTokenResponse,
 } from './types';
+
+export interface ActivatePublishedMcpResponse {
+	status: 'added' | 'already_attached';
+	name: string;
+}
 
 export interface UploadOptions {
 	/** Fired with byte-level progress while the body is streamed. */
@@ -26,14 +31,13 @@ export interface UploadOptions {
  * tar as they arrive, and a tar header needs each member's size before
  * its bytes — which a multipart part does not declare.
  */
-async function uploadSkillXhr(
+function uploadSkillXhr(
 	agentId: string,
 	sessionId: string,
 	files: File[],
 	options: UploadOptions = {},
 ): Promise<void> {
 	const { onProgress, signal } = options;
-	const token = await getRequestAccessToken();
 	const formData = new FormData();
 	formData.append(
 		'manifest',
@@ -57,6 +61,7 @@ async function uploadSkillXhr(
 		url.searchParams.set('agent_id', agentId);
 		url.searchParams.set('session_id', sessionId);
 		xhr.open('POST', url.toString(), true);
+		const token = getAccessToken();
 		if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
 		const onAbort = () => xhr.abort();
@@ -222,4 +227,14 @@ export const workspaceApi = {
 				session_id: sessionId,
 			}),
 	},
+};
+
+/** Product-level endpoint for users to equip an administrator-authorized MCP. */
+export const managementMcpApi = {
+	activate: (agentId: string, sessionId: string, publicationId: string) =>
+		client.post<ActivatePublishedMcpResponse>(
+			'/management/mcp/activate',
+			{ publication_id: publicationId },
+			{ agent_id: agentId, session_id: sessionId },
+		),
 };

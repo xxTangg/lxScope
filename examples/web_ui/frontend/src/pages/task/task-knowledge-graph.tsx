@@ -29,6 +29,9 @@ interface Props {
 	runId?: string;
 	nodeId?: string;
 	compact?: boolean;
+	/** Opens the task graph in a read-only, node-focused preview mode. */
+	preview?: boolean;
+	initialQuery?: string;
 }
 
 function statusLabel(status: TaskKnowledgeGraphResponse['status']): string {
@@ -65,18 +68,20 @@ export function TaskKnowledgeGraph({
 	runId,
 	nodeId,
 	compact = false,
+	preview = false,
+	initialQuery = '',
 }: Props) {
 	const stepScoped = Boolean(runId && nodeId);
 	const [graph, setGraph] = React.useState<TaskKnowledgeGraphResponse | null>(null);
-	const [query, setQuery] = React.useState('');
-	const [submittedQuery, setSubmittedQuery] = React.useState('');
+	const [query, setQuery] = React.useState(initialQuery);
+	const [submittedQuery, setSubmittedQuery] = React.useState(initialQuery.trim());
 	const [selected, setSelected] = React.useState<TaskKnowledgeGraphNode | null>(null);
 	const [selectedEdge, setSelectedEdge] = React.useState<TaskKnowledgeGraphEdge | null>(null);
 	const [loading, setLoading] = React.useState(false);
 	const [rebuilding, setRebuilding] = React.useState(false);
 	// Both the task-wide graph and the step graph are opt-in. This keeps the
 	// task result lightweight until the user explicitly asks to see a graph.
-	const [requested, setRequested] = React.useState(false);
+	const [requested, setRequested] = React.useState(preview);
 	const [error, setError] = React.useState<string | null>(null);
 	const nvlRef = React.useRef<NVL | null>(null);
 	const needsInitialFitRef = React.useRef(false);
@@ -117,10 +122,12 @@ export function TaskKnowledgeGraph({
 	React.useEffect(() => {
 		setGraph(null);
 		setError(null);
-		setRequested(false);
+		setRequested(preview);
+		setQuery(initialQuery);
+		setSubmittedQuery(initialQuery.trim());
 		setSelected(null);
 		setSelectedEdge(null);
-	}, [runId, nodeId, stepScoped, taskId]);
+	}, [initialQuery, nodeId, preview, runId, stepScoped, taskId]);
 
 	React.useEffect(() => {
 		if (!requested || (!stepScoped && !selectedIds.length)) return;
@@ -167,9 +174,9 @@ export function TaskKnowledgeGraph({
 				id: edge.id,
 				from: edge.source,
 				to: edge.target,
-				caption: compactLabel(edge.label || '关系', 10),
-				captionSize: 8,
-				color: selectedEdge?.id === edge.id ? '#2563eb' : '#cbd5e1',
+				caption: compactLabel(edge.label || '关系', 8),
+				captionSize: selectedEdge?.id === edge.id ? 7 : 6,
+				color: selectedEdge?.id === edge.id ? '#2563eb' : '#d5deeb',
 				width: selectedEdge?.id === edge.id ? 2 : 1,
 			})),
 		[selectedEdge?.id, graph?.edges],
@@ -249,7 +256,7 @@ export function TaskKnowledgeGraph({
 				<div className="flex items-center justify-between gap-3">
 						<CardTitle className="flex items-center gap-2 text-sm">
 							<Network className="size-4 text-blue-600" />
-							{stepScoped ? '步骤知识图谱' : '任务知识图谱'}
+							{preview ? '节点知识图谱预览' : stepScoped ? '步骤知识图谱' : '任务知识图谱'}
 						</CardTitle>
 					{graph && (
 						<div className="flex items-center gap-2">
@@ -273,9 +280,13 @@ export function TaskKnowledgeGraph({
 				</div>
 				<div className="flex flex-wrap items-center justify-between gap-2">
 					<div className="text-xs leading-5 text-muted-foreground">
-						{stepScoped
+						{preview && stepScoped
+							? '根据本次执行结果展示当前节点的实体关系；点击节点查看类型与来源。'
+							: stepScoped
 							? '根据当前步骤上下文检索相关片段；点击节点查看来源。'
-							: '实体与关系来自所选知识库的已索引片段；点击节点查看来源。'}
+							: preview
+								? '根据当前节点配置检索所选知识库的相关片段；执行后会生成更精确的步骤子图。'
+								: '实体与关系来自所选知识库的已索引片段；点击节点查看来源。'}
 					</div>
 					<div className="flex flex-wrap gap-2">
 						{stepScoped ? (
@@ -322,16 +333,18 @@ export function TaskKnowledgeGraph({
 								筛选
 							</Button>
 						</form>
-						<Button
-							type="button"
-							size="sm"
-							variant="outline"
-							disabled={disabled || rebuilding || !selectedIds.length}
-							onClick={() => void rebuild()}
-						>
-							<RefreshCw className={rebuilding ? 'size-3.5 animate-spin' : 'size-3.5'} />
-							{rebuilding ? '更新中…' : '更新图谱'}
-						</Button>
+						{!preview && (
+							<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								disabled={disabled || rebuilding || !selectedIds.length}
+								onClick={() => void rebuild()}
+							>
+								<RefreshCw className={rebuilding ? 'size-3.5 animate-spin' : 'size-3.5'} />
+								{rebuilding ? '更新中…' : '更新图谱'}
+							</Button>
+						)}
 							</>
 						)}
 						{requested && (
@@ -388,9 +401,11 @@ export function TaskKnowledgeGraph({
 							? '尚未配置关系抽取模型。后端设置 DEEPSEEK_API_KEY 并重启后，再生成图谱。'
 							: graph?.status === 'building'
 								? '图谱正在构建，请稍后刷新。'
-								: stepScoped
+							: stepScoped
 									? '当前步骤未找到相关实体关系，可以调整节点要求后重新生成。'
-									: '暂无已抽取的实体关系，请点击“更新图谱”。'}
+									: preview
+										? '暂无相关实体关系，请先生成任务图谱或调整节点描述。'
+										: '暂无已抽取的实体关系，请点击“更新图谱”。'}
 					</div>
 				) : (
 					<div

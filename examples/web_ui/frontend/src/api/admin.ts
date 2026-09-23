@@ -1,18 +1,12 @@
 import { client } from './client';
-import type { PublicationScope, ResourceKind, ResourcePublication, ResourceScope } from './types';
+import type { PublicationScope, ResourceKind, ResourcePublication } from './types';
 
 export type AdminUserStatus = 'active' | 'locked' | 'banned' | 'deleted';
 
 export interface AdminUser {
 	id: string;
 	username: string;
-	display_name?: string | null;
-	external_user_id?: string | null;
-	organization_roles?: string[];
 	role: 'user' | 'admin';
-	membership_role?: string | null;
-	membership_status?: 'active' | 'disabled' | 'removed' | null;
-	permissions?: string[];
 	status: AdminUserStatus;
 	plan_id: string;
 	plan_name: string;
@@ -43,37 +37,6 @@ export interface UpdateUserRequest {
 	status?: Exclude<AdminUserStatus, 'deleted'>;
 	plan_id?: string;
 	bonus_tokens?: number;
-}
-
-export interface TenantMember {
-	id: string;
-	user_id: string;
-	external_user_id: string;
-	username: string;
-	display_name?: string | null;
-	email?: string | null;
-	organization_roles?: string[];
-	role: string;
-	status: 'active' | 'disabled' | 'removed';
-	permissions: string[];
-	created_at: string;
-	updated_at: string;
-}
-
-export interface TenantMemberListResponse {
-	members: TenantMember[];
-	total: number;
-	page: number;
-	page_size: number;
-	request_id: string;
-}
-
-export interface CreateTenantMemberRequest {
-	external_user_id: string;
-	role?: string;
-	username?: string;
-	display_name?: string;
-	email?: string;
 }
 
 export interface ResetPasswordResponse {
@@ -130,7 +93,6 @@ export interface SkillFailureRecord {
 }
 
 export interface TokenUserUsage {
-	tenant_id: string | null;
 	user_id: string;
 	username: string;
 	role: string;
@@ -141,11 +103,9 @@ export interface TokenUserUsage {
 	total_tokens: number;
 	message_count: number;
 	session_count: number;
-	cost?: string;
 }
 
 export interface TokenUsageAnalytics {
-	tenant_id: string | null;
 	input_tokens: number;
 	output_tokens: number;
 	cache_input_tokens: number;
@@ -155,7 +115,6 @@ export interface TokenUsageAnalytics {
 	session_count: number;
 	user_count: number;
 	users: TokenUserUsage[];
-	cost?: string;
 }
 
 export interface SkillAnalytics {
@@ -242,7 +201,6 @@ export interface ObservabilityFailure {
 }
 
 export interface ObservabilityTokenUsage {
-	tenant_id: string | null;
 	input_tokens: number;
 	output_tokens: number;
 	cache_input_tokens: number;
@@ -252,7 +210,6 @@ export interface ObservabilityTokenUsage {
 	session_count: number;
 	user_count: number;
 	users: TokenUserUsage[];
-	cost?: string;
 }
 
 export interface ObservabilityOverview {
@@ -459,8 +416,6 @@ export interface RechargeRequestListResponse {
 
 export interface AuditEvent {
 	event_id: string;
-	tenant_id: string | null;
-	actor_membership_id: string | null;
 	actor_type: 'admin' | 'user' | 'system';
 	actor_id: string;
 	actor_name: string;
@@ -469,7 +424,6 @@ export interface AuditEvent {
 	action: string;
 	resource_type: string | null;
 	resource_id: string | null;
-	resource: { type?: string | null; id?: string | null };
 	reason: string;
 	request_id: string;
 	status: 'completed' | 'failed';
@@ -523,7 +477,6 @@ export interface SalesHubConfigUpdate {
 export interface AdminPolicy {
 	admin_api_requires_admin_role: boolean;
 	credential_management: 'admin_only';
-	credential_scope: 'platform' | 'tenant';
 	sales_hub_authentication: 'customer_bearer_token';
 	recharge_legacy_hmac_enabled: boolean;
 	high_risk_plugin_installation: 'disabled';
@@ -556,8 +509,6 @@ export interface PublishResourceRequest {
 	author?: string | null;
 	icon_url?: string | null;
 	version?: string | null;
-	resource_scope?: ResourceScope;
-	visibility?: PublicationScope;
 	scope: PublicationScope;
 	user_ids?: string[];
 	enabled?: boolean;
@@ -596,14 +547,6 @@ export const adminApi = {
 		page?: number;
 		page_size?: number;
 	} = {}) => client.get<UserListResponse>('/admin/users', toParams(params)),
-	tenantMembers: (params: { keyword?: string; status?: string; page?: number; page_size?: number } = {}) =>
-		client.get<TenantMemberListResponse>('/admin/tenant-members', toParams(params)),
-	addTenantMember: (body: CreateTenantMemberRequest) =>
-		client.post<TenantMember>('/admin/tenant-members', body, undefined, { headers: idempotencyHeaders() }),
-	updateTenantMember: (membershipId: string, body: { role?: string; status?: 'active' | 'disabled' | 'removed' }) =>
-		client.patch<TenantMember>(`/admin/tenant-members/${membershipId}`, body, undefined, {
-			headers: idempotencyHeaders(),
-		}),
 	createUser: (body: CreateUserRequest) =>
 		client.post<AdminUser>('/admin/users', body, undefined, { headers: idempotencyHeaders() }),
 	updateUser: (userId: string, body: UpdateUserRequest) =>

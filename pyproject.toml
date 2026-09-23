@@ -40,7 +40,6 @@ dependencies = [
     "rich",
     "shortuuid",
     "python-frontmatter",
-    "PyYAML>=6.0",
     "jinja2",
     "aiofiles",
     "tree_sitter",

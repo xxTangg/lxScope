@@ -16,7 +16,7 @@ interface TaskFlowEditorProps {
 const STEP_LABELS: Record<TaskStepType, string> = {
 	agent: 'AgentStep',
 	tool: 'ToolStep',
-	python: 'PythonStep',
+	python: 'CodeStep',
 };
 
 function normalizeNode(node: TaskNode, index: number): TaskNode {
@@ -187,7 +187,7 @@ export function TaskFlowEditor({
 											>
 												<option value="agent">AgentStep</option>
 												<option value="tool">ToolStep</option>
-												<option value="python">PythonStep</option>
+												<option value="python">CodeStep</option>
 											</select>
 											<Input
 												value={node.name}
@@ -214,9 +214,8 @@ export function TaskFlowEditor({
 												disabled={disabled}
 												className="size-3.5 accent-primary"
 											/>
-											<span>允许在此步骤按需生成知识图谱</span>
-										</label>
-
+																					<span>允许在此步骤按需生成知识图谱</span>
+																				</label>
 										{agentConfig && (
 											<Textarea
 												value={agentConfig.prompt}
@@ -316,7 +315,7 @@ export function TaskFlowEditor({
 														})
 													}
 													disabled={disabled}
-													placeholder="编写 Python 数据处理代码，可使用 previous_output 变量"
+												placeholder="编写 CodeStep 数据处理代码，可使用 previous_output 变量"
 													className="min-h-32 resize-y bg-card font-mono text-xs leading-5"
 												/>
 												<label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -436,6 +435,7 @@ export function TaskFlowEditor({
 					<span className="text-sm font-medium">结束</span>
 				</div>
 			</div>
+
 		</section>
 	);
 }

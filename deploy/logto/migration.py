@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Migrate a complete lxScope Logto installation.
+"""Provision or migrate lxScope Logto identities and authorization settings.
 
-The migration is intentionally additive and repeatable.  It provisions the
-static lxScope authorization model through ``bootstrap.py``, makes the SPA
-application usable at the configured public URL, creates optional Logto
-Organizations and users, assigns organization roles, and emits SQL bindings
-for lxScope's application-owned tenant table.
-
-Passwords are never exported.  A user can be created during import only when
-the manifest points at a password environment variable.
+Operations are additive and repeatable. This module manages Logto API
+permissions, organization roles, the lxScope SPA application, organizations,
+and organization memberships. It does not rewrite lxScope runtime data.
+Passwords are never exported; creating an absent target user requires a
+password supplied through an environment variable.
 """
 
 from __future__ import annotations
@@ -21,7 +18,6 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
-from uuid import NAMESPACE_URL, UUID, uuid5
 
 try:  # Script execution: python deploy/logto/migration.py
     from bootstrap import (
@@ -45,8 +41,8 @@ except ImportError:  # Package/import-based test execution
     )
 
 
-DEFAULT_MANIFEST_PATH = Path(__file__).with_name("migration.yaml")
-DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
+DEFAULT_MANIFEST_PATH = Path(__file__).with_name("migration.json")
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.json")
 DEFAULT_OUTPUT_DIR = Path(__file__).with_name("generated")
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
 
@@ -124,7 +120,15 @@ def _validate_manifest(document: Mapping[str, Any]) -> None:
     if not isinstance(application, Mapping):
         raise BootstrapError("manifest field 'browser_application' must be a mapping")
     if application.get("enabled", True):
-        public_url = _string(application.get("public_url"), "browser_application.public_url")
+        public_url = (
+            os.getenv("LXSCOPE_PUBLIC_URL", "").strip()
+            or _string(
+                application.get("public_url"),
+                "browser_application.public_url",
+                required=False,
+            )
+            or ""
+        )
         _absolute_url(public_url or "", "browser_application.public_url")
         for key in ("redirect_paths", "post_logout_redirect_paths"):
             for index, path in enumerate(_list(application.get(key, []), f"browser_application.{key}")):
@@ -255,13 +259,18 @@ def ensure_browser_application(
     application: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     public_url = _absolute_url(
-        _string(application.get("public_url"), "browser_application.public_url") or "",
+        os.getenv("LXSCOPE_PUBLIC_URL", "").strip()
+        or _string(application.get("public_url"), "browser_application.public_url")
+        or "",
         "browser_application.public_url",
     )
-    redirect_uris = [
-        f"{public_url}{path}"
-        for path in _list(application.get("redirect_paths", ["/callback"]), "browser_application.redirect_paths")
-    ]
+    redirect_paths = _list(
+        application.get("redirect_paths", ["/auth/callback"]),
+        "browser_application.redirect_paths",
+    )
+    if "/auth/callback" not in redirect_paths:
+        redirect_paths.append("/auth/callback")
+    redirect_uris = [f"{public_url}{path}" for path in redirect_paths]
     logout_uris = [
         f"{public_url}{path}"
         for path in _list(
@@ -391,7 +400,24 @@ def ensure_user(
 
 
 def _role_id_by_name(roles: list[Mapping[str, Any]], name: str) -> str:
-    role = next((item for item in roles if str(item.get("name", "")).lower() == name.lower()), None)
+    aliases = {
+        "admin": "lxscope_admin",
+        "platform_admin": "lxscope_admin",
+        "lxscope_admin": "lxscope_admin",
+        "member": "lxscope_member",
+        "user": "lxscope_member",
+        "lxscope_member": "lxscope_member",
+    }
+    canonical = aliases.get(name.lower(), name.lower())
+    role = next(
+        (
+            item
+            for item in roles
+            if aliases.get(str(item.get("name", "")).lower(), str(item.get("name", "")).lower())
+            == canonical
+        ),
+        None,
+    )
     if role is None:
         raise BootstrapError(f"Logto organization role {name!r} is not configured")
     return _id(role, kind="organization role")
@@ -415,10 +441,23 @@ def ensure_organization_member(
         except ManagementApiError as exc:
             if exc.status not in {400, 409, 422}:
                 raise
+    assigned_roles = client.paged_get(
+        f"/organizations/{organization_id}/users/{user_id}/roles",
+    )
+    role_ids = list(
+        dict.fromkeys(
+            [
+                item["id"]
+                for item in assigned_roles
+                if isinstance(item.get("id"), str)
+            ]
+            + [role_id]
+        ),
+    )
     client.request(
         "PUT",
         f"/organizations/{organization_id}/users/{user_id}/roles",
-        payload={"organizationRoleIds": [role_id]},
+        payload={"organizationRoleIds": role_ids},
     )
 
 
@@ -470,6 +509,7 @@ def ensure_organization(
             role_id=role_id,
         )
         result_users.append({
+            "source_id": user_spec.get("source_id") or user_spec.get("id"),
             "id": user_id,
             "username": user.get("username"),
             "primaryEmail": user.get("primaryEmail"),
@@ -477,41 +517,6 @@ def ensure_organization(
             "role": role_name,
         })
     return existing, result_users
-
-
-def _sql(value: Any) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def tenant_uuid(spec: Mapping[str, Any]) -> str:
-    explicit = _string(spec.get("tenant_id"), "organization.tenant_id", required=False)
-    if explicit:
-        try:
-            return str(UUID(explicit))
-        except ValueError as exc:
-            raise BootstrapError("organization.tenant_id must be a valid UUID") from exc
-    code = _string(spec.get("code"), "organization.code") or ""
-    return str(uuid5(NAMESPACE_URL, f"lxscope:tenant:{code}"))
-
-
-def build_tenant_bindings_sql(bindings: list[Mapping[str, Any]]) -> str:
-    lines = [
-        "-- Generated by deploy/logto/migration.py; apply after 0004_logto_tenant_binding.sql.",
-        "-- This file is additive and only upserts Logto organization -> lxScope tenant bindings.",
-        "BEGIN;",
-    ]
-    for binding in bindings:
-        lines.append(
-            "INSERT INTO longxin_app.tenants "
-            "(id, code, name, status, identity_provider, external_org_id) VALUES ("
-            f"{_sql(binding['tenant_id'])}, { _sql(binding['code']) }, "
-            f"{_sql(binding['name'])}, 'active', 'logto', { _sql(binding['external_org_id']) }) "
-            "ON CONFLICT (identity_provider, external_org_id) "
-            "WHERE external_org_id IS NOT NULL DO UPDATE SET "
-            "code = EXCLUDED.code, name = EXCLUDED.name, status = 'active', updated_at = NOW();"
-        )
-    lines.extend(["COMMIT;", ""])
-    return "\n".join(lines)
 
 
 def _write_outputs(
@@ -537,9 +542,36 @@ def _write_outputs(
         if api_resource:
             env_lines.append(f"VITE_LOGTO_API_RESOURCE={api_resource}")
         (output_dir / "migration.env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
-    sql = result.get("tenant_bindings_sql")
-    if isinstance(sql, str):
-        (output_dir / "tenant-bindings.sql").write_text(sql, encoding="utf-8")
+    organizations = result.get("organizations")
+    if isinstance(organizations, list):
+        identity_map: dict[str, Any] = {
+            "organizations": [],
+            "users": [],
+            "note": "Identity IDs only; lxScope runtime data is not rewritten.",
+        }
+        for organization in organizations:
+            if not isinstance(organization, Mapping):
+                continue
+            if organization.get("source_id") and organization.get("id"):
+                identity_map["organizations"].append(
+                    {"source_id": organization["source_id"], "target_id": organization["id"]},
+                )
+            users = organization.get("users")
+            if isinstance(users, list):
+                for user in users:
+                    if isinstance(user, Mapping) and user.get("source_id") and user.get("id"):
+                        identity_map["users"].append(
+                            {
+                                "source_organization_id": organization.get("source_id"),
+                                "target_organization_id": organization.get("id"),
+                                "source_user_id": user["source_id"],
+                                "target_user_id": user["id"],
+                            },
+                        )
+        (output_dir / "identity-map.json").write_text(
+            json.dumps(identity_map, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
 
 def apply_migration(
@@ -561,7 +593,6 @@ def apply_migration(
         "api_resource": resource_identifier,
         "browser_application": None,
         "organizations": [],
-        "tenant_bindings_sql": None,
         "seed_demo": seed_demo,
     }
 
@@ -580,7 +611,6 @@ def apply_migration(
 
     role_items = client.paged_get("/organization-roles")
     tenant_id = _string(manifest.get("logto_tenant_id", "default"), "logto_tenant_id") or "default"
-    bindings: list[Mapping[str, Any]] = []
     organization_specs = list(_list(manifest.get("organizations", []), "organizations"))
     if seed_demo:
         demo_data = manifest.get("demo_data")
@@ -598,19 +628,13 @@ def apply_migration(
         code = _string(spec.get("code"), "organization.code") or ""
         name = _string(spec.get("name"), "organization.name") or ""
         organization_id = _id(organization, kind="organization")
-        bindings.append({
-            "tenant_id": tenant_uuid(spec),
-            "code": code,
-            "name": name,
-            "external_org_id": organization_id,
-        })
         result["organizations"].append({
+            "source_id": spec.get("source_id") or spec.get("id"),
             "id": organization_id,
             "code": code,
             "name": name,
             "users": users,
         })
-    result["tenant_bindings_sql"] = build_tenant_bindings_sql(bindings)
     _write_outputs(
         output_dir,
         result,
@@ -641,13 +665,14 @@ def export_migration(
                 "member",
             )
             users.append({
-                "id": user_id,
+                "source_id": user_id,
                 "username": member.get("username"),
                 "primary_email": member.get("primaryEmail"),
                 "name": member.get("name"),
                 "role": role_name,
             })
         organizations.append({
+            "source_id": organization_id,
             "code": code,
             "name": organization.get("name", code),
             "description": organization.get("description"),
@@ -668,7 +693,7 @@ def export_migration(
             "id": application.get("id") if application else app_id,
             "name": application.get("name") if application else manifest.get("browser_application", {}).get("name", "lxScope Web"),
             "public_url": manifest.get("browser_application", {}).get("public_url", "http://localhost:8000"),
-            "redirect_paths": manifest.get("browser_application", {}).get("redirect_paths", ["/callback"]),
+            "redirect_paths": ["/auth/callback"],
             "post_logout_redirect_paths": manifest.get("browser_application", {}).get("post_logout_redirect_paths", ["/"]),
         },
         "organizations": organizations,

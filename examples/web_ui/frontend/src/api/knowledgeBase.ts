@@ -1,4 +1,4 @@
-import { ApiError, client, getBaseUrl, getRequestAccessToken } from './client';
+import { ApiError, client, getAccessToken, getBaseUrl } from './client';
 import type {
 	CreateKnowledgeBaseRequest,
 	CreateKnowledgeBaseResponse,
@@ -6,7 +6,6 @@ import type {
 	KbMiddlewareParametersSchemaResponse,
 	KnowledgeBaseView,
 	KnowledgeGraphResponse,
-	RebuildKnowledgeGraphResponse,
 	ListChunkersResponse,
 	ListDocumentChunksResponse,
 	ListKbEmbeddingModelsResponse,
@@ -85,13 +84,12 @@ export interface UploadDocumentOptions {
  * progress in any current browser, so multipart uploads that drive a
  * progress UI have to fall back to XMLHttpRequest.
  */
-async function uploadDocumentXhr(
+function uploadDocumentXhr(
 	knowledgeBaseId: string,
 	file: File,
 	options: UploadDocumentOptions = {},
 ): Promise<UploadKnowledgeDocumentResponse> {
 	const { onProgress, signal } = options;
-	const token = await getRequestAccessToken();
 	const formData = new FormData();
 	formData.append('file', file);
 
@@ -104,6 +102,7 @@ async function uploadDocumentXhr(
 		const xhr = new XMLHttpRequest();
 		const url = new URL(`/knowledge_bases/${knowledgeBaseId}/documents`, getBaseUrl());
 		xhr.open('POST', url.toString(), true);
+		const token = getAccessToken();
 		if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
 		const onAbort = () => xhr.abort();
@@ -326,8 +325,14 @@ export const knowledgeBaseApi = {
 			}),
 		),
 
-	rebuildGraph: (knowledgeBaseId: string) =>
-		client.post<RebuildKnowledgeGraphResponse>(
-			`/knowledge_bases/${knowledgeBaseId}/graph/rebuild`,
+	updateGraphSettings: (knowledgeBaseId: string, enabled: boolean) =>
+		client.put<{ enabled: boolean }>(`/knowledge_bases/${knowledgeBaseId}/graph/settings`, { enabled }),
+
+	getGraphSettings: (knowledgeBaseId: string) =>
+		client.get<{ enabled: boolean }>(`/knowledge_bases/${knowledgeBaseId}/graph/settings`),
+
+	generateGraph: (knowledgeBaseId: string, force = false) =>
+		client.post<{ status: string; documents?: number; error?: string | null }>(
+			`/knowledge_bases/${knowledgeBaseId}/graph/generate`, { force },
 		),
 };

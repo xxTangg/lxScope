@@ -746,7 +746,6 @@ export interface SkillRecord extends SkillView {
 
 export type ResourceKind = 'mcp' | 'skill';
 export type PublicationScope = 'all' | 'selected' | 'none';
-export type ResourceScope = 'platform' | 'tenant' | 'personal';
 
 /** Safe administrator publication metadata; MCP secrets never appear here. */
 export interface ResourcePublication {
@@ -761,9 +760,6 @@ export interface ResourcePublication {
 	author: string | null;
 	icon_url: string | null;
 	version: string | null;
-	resource_scope: ResourceScope;
-	tenant_id: string | null;
-	visibility: PublicationScope | null;
 	scope: PublicationScope;
 	user_ids: string[];
 	enabled: boolean;
@@ -1076,6 +1072,7 @@ export interface KnowledgeGraphEdge {
 }
 
 export interface KnowledgeGraphResponse {
+	enabled?: boolean;
 	status: 'disabled' | 'empty' | 'building' | 'ready' | 'error' | string;
 	error?: string | null;
 	nodes: KnowledgeGraphNode[];

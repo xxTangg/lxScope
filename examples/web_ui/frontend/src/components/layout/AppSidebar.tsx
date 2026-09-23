@@ -20,7 +20,6 @@ import { useNavigate, useLocation } from 'react-router-dom';
 
 import AgentScope from '@/assets/images/agentscope.svg?react';
 import MCPSvg from '@/assets/images/mcp.svg?react';
-import { OrganizationSwitcher } from '@/components/auth/OrganizationSwitcher';
 import { CHAT_TOUR_NAME } from '@/components/tour/chatTourSteps';
 import {
 	DropdownMenu,
@@ -50,18 +49,8 @@ export function AppSidebar() {
 	const location = useLocation();
 	const { t } = useTranslation();
 	const { startOnborda } = useOnborda();
-	const { user, logout, isLogto, hasPermission } = useAuth();
-	const canAccessAdmin =
-		hasPermission('tenant:manage') ||
-		hasPermission('platform:manage') ||
-		hasPermission('platform:upgrade') ||
-		hasPermission('platform:integration') ||
-		hasPermission('platform:observe');
+	const { user, logout, switchAccount, logtoEnabled } = useAuth();
 	const isObservability = location.pathname.startsWith('/admin/observability');
-	const accountLabel = user?.display_name ?? user?.username ?? t('auth.accountCenter');
-	const accountExternalId = user?.external_user_id ?? (
-		user?.identity_provider === 'logto' ? user.id : null
-	);
 
 	const handleStartTour = () => {
 		if (!location.pathname.startsWith('/chat')) {
@@ -81,20 +70,12 @@ export function AppSidebar() {
 
 	const handleLogout = async () => {
 		await logout();
-		// Logto's signOut starts a full-page redirect to its end-session
-		// endpoint. Navigating to /login here would overwrite that redirect and
-		// immediately start a new SSO login, making logout appear ineffective.
-		if (!isLogto) navigate('/login', { replace: true });
+		if (!logtoEnabled) navigate('/login', { replace: true });
 	};
 
 	const handleSwitchAccount = async () => {
-		if (isLogto) {
-			// End the Logto SSO session before starting the next login. Calling
-			// signIn directly can reuse the current Logto account.
-			await logout();
-			return;
-		}
-		await handleLogout();
+		await switchAccount();
+		if (!logtoEnabled) navigate('/login', { replace: true });
 	};
 
 	return (
@@ -132,7 +113,7 @@ export function AppSidebar() {
 									<ClipboardList />
 								</SidebarMenuButton>
 							</SidebarMenuItem>
-							{canAccessAdmin && (
+							{user?.role === 'admin' && (
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('admin.title'), hidden: false }}
@@ -170,7 +151,7 @@ export function AppSidebar() {
 				<SidebarGroup>
 					<SidebarGroupContent>
 						<SidebarMenu>
-							{hasPermission('platform:integration') && (
+							{user?.role === 'admin' && (
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('common.credential'), hidden: false }}
@@ -186,7 +167,7 @@ export function AppSidebar() {
 								<SidebarMenuButton
 									tooltip={{
 										children:
-													hasPermission('tenant:manage')
+											user?.role === 'admin'
 												? t('common.mcp-hub')
 												: t('resources.mcpTitle'),
 										hidden: false,
@@ -203,7 +184,7 @@ export function AppSidebar() {
 								<SidebarMenuButton
 									tooltip={{
 										children:
-													hasPermission('tenant:manage')
+											user?.role === 'admin'
 												? t('common.skill-hub')
 												: t('resources.skillTitle'),
 										hidden: false,
@@ -236,7 +217,7 @@ export function AppSidebar() {
 							<DropdownMenuTrigger asChild>
 								<SidebarMenuButton
 									tooltip={{
-										children: accountLabel,
+										children: user?.username ?? t('auth.accountCenter'),
 										hidden: false,
 									}}
 									isActive={location.pathname === '/account'}
@@ -248,20 +229,18 @@ export function AppSidebar() {
 							<DropdownMenuContent side="right" align="end" className="min-w-52">
 								<DropdownMenuLabel>
 									<div className="font-medium text-foreground">
-										{accountLabel}
+										{user?.username}
 									</div>
 									<div className="mt-0.5 font-sans text-xs font-normal">
-										{accountExternalId ? `${t('auth.userId')}: ${accountExternalId}` : t('auth.brand')}
+										{t('auth.brand')}
 									</div>
 								</DropdownMenuLabel>
-								<DropdownMenuSeparator />
-								<OrganizationSwitcher />
 								<DropdownMenuSeparator />
 								<DropdownMenuItem onSelect={() => navigate('/account')}>
 									<UserRound />
 									{t('auth.accountAndUsage')}
 								</DropdownMenuItem>
-								{hasPermission('tenant:manage') && (
+								{user?.role === 'admin' && (
 									<DropdownMenuItem onSelect={() => navigate('/admin/observability')}>
 										<BarChart3 />
 										{t('admin.analyticsTitle')}

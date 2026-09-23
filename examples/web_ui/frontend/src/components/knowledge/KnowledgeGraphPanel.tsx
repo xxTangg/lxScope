@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge.tsx';
 import { Button } from '@/components/ui/button.tsx';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card.tsx';
 import { Input } from '@/components/ui/input.tsx';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog.tsx';
 
 interface Props {
 	knowledgeBaseId: string;
@@ -34,19 +35,31 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 	const [rebuilding, setRebuilding] = useState(false);
 	const [refreshToken, setRefreshToken] = useState(0);
 	const [error, setError] = useState<string | null>(null);
+	const [open, setOpen] = useState(false);
+	const [enabled, setEnabled] = useState(false);
 
 	useEffect(() => {
+		void knowledgeBaseApi.getGraphSettings(knowledgeBaseId)
+			.then((settings) => setEnabled(settings.enabled))
+			.catch((err) => setError((err as Error).message || String(err)));
+	}, [knowledgeBaseId]);
+
+	useEffect(() => {
+		if (!open) return;
 		let cancelled = false;
 		let timer: number | undefined;
 		const load = async () => {
 			try {
 				const result = await knowledgeBaseApi.getGraph(knowledgeBaseId, {
 					query: submittedQuery || undefined,
-					nodeLimit: 80,
-					edgeLimit: 160,
+					// Keep first paint responsive; the server still reports the full
+					// graph totals and search narrows a more specific subgraph.
+					nodeLimit: 60,
+					edgeLimit: 120,
 				});
 				if (cancelled) return;
 				setGraph(result);
+				setEnabled(Boolean(result.enabled));
 				setError(null);
 				setLoading(false);
 				if (result.status === 'building') {
@@ -64,7 +77,7 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 			cancelled = true;
 			if (timer !== undefined) window.clearTimeout(timer);
 		};
-	}, [knowledgeBaseId, submittedQuery, refreshToken]);
+	}, [knowledgeBaseId, submittedQuery, refreshToken, open]);
 
 	const nvlNodes = useMemo<NvlNode[]>(
 		() =>
@@ -103,6 +116,13 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 				if (selectedNode) setSelected(selectedNode);
 			},
 			onCanvasClick: () => setSelected(null),
+			// NVL turns these interactions on only when their callbacks are
+			// declared. Nodes can then be repositioned without changing the
+			// stored graph; canvas pan and wheel zoom remain available.
+			onDrag: true,
+			onPan: true,
+			onZoomAndPan: true,
+			onHover: true,
 		}),
 		[graph?.nodes],
 	);
@@ -116,7 +136,7 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 	const rebuild = async () => {
 		setRebuilding(true);
 		try {
-			await knowledgeBaseApi.rebuildGraph(knowledgeBaseId);
+			await knowledgeBaseApi.generateGraph(knowledgeBaseId, true);
 			setRefreshToken((value) => value + 1);
 		} catch (err) {
 			setError((err as Error).message || String(err));
@@ -125,8 +145,36 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 		}
 	};
 
+	const toggleEnabled = async () => {
+		try {
+			const result = await knowledgeBaseApi.updateGraphSettings(knowledgeBaseId, !enabled);
+			setEnabled(result.enabled);
+			setError(null);
+			setRefreshToken((value) => value + 1);
+			// Make the successful state visible immediately; this also gives the
+			// user a direct path to the manual "generate" action.
+			if (result.enabled) setOpen(true);
+		} catch (err) {
+			setError((err as Error).message || String(err));
+		}
+	};
+
 	return (
-		<Card className="overflow-visible">
+		<Dialog open={open} onOpenChange={setOpen}>
+			<div className="flex items-center gap-2">
+				{editable && <Button type="button" size="sm" variant="outline" onClick={() => void toggleEnabled()}>
+					{enabled ? '关闭知识图谱' : '启用知识图谱'}
+				</Button>}
+				<DialogTrigger asChild><Button type="button" size="sm" variant="outline"><Network className="size-3.5" />预览知识图谱</Button></DialogTrigger>
+			</div>
+			{error && !open && (
+				<p className="text-xs text-destructive">{error}</p>
+			)}
+			<DialogContent
+				className="!w-[min(96vw,1800px)] !max-w-none h-[90vh] max-h-none min-w-[760px] min-h-[560px] resize overflow-auto"
+			>
+				<DialogHeader><DialogTitle>{t('knowledge.graph.title')}</DialogTitle></DialogHeader>
+		<Card className="h-full overflow-hidden border-0 shadow-none">
 			<CardHeader className="gap-y-3">
 				<div className="flex items-center justify-between gap-3">
 					<CardTitle className="flex items-center gap-2">
@@ -173,7 +221,7 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 					}
 				</div>
 			</CardHeader>
-			<CardContent>
+			<CardContent className="min-h-0 flex-1">
 				{error ? (
 					<div className="flex items-center gap-2 py-8 text-sm text-destructive">
 						<AlertCircle className="size-4" />
@@ -191,16 +239,19 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 							: t('knowledge.graph.empty')}
 					</div>
 				) : (
-					<div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_230px]">
+					<div className="grid h-full min-h-[620px] gap-3 grid-cols-[minmax(0,1fr)_180px]">
 						<div className="overflow-auto rounded-lg border bg-background">
-							<div className="h-[520px] min-h-[420px] min-w-[720px] w-full">
+							<div className="h-[calc(90vh-260px)] min-h-[560px] min-w-[720px] w-full">
 								<InteractiveNvlWrapper
 									nodes={nvlNodes}
 									rels={nvlRelationships}
 									nvlOptions={{
 										renderer: 'canvas',
-										layout: 'forceDirected',
-										initialZoom: 0.8,
+										layout: 'd3Force',
+										initialZoom: 0.55,
+										minZoom: 0.08,
+										maxZoom: 4,
+										allowDynamicMinZoom: true,
 										styling: {
 											defaultNodeColor: '#60a5fa',
 											defaultRelationshipColor: '#94a3b8',
@@ -211,7 +262,7 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 								/>
 							</div>
 						</div>
-						<div className="rounded-lg border bg-muted/20 p-3 text-sm">
+						<div className="max-h-[calc(90vh-260px)] overflow-y-auto rounded-lg border bg-muted/20 p-2 text-xs">
 							{selected ? (
 								<>
 									<div className="font-medium">{selected.label}</div>
@@ -240,5 +291,7 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 				)}
 			</CardContent>
 		</Card>
+			</DialogContent>
+		</Dialog>
 	);
 }

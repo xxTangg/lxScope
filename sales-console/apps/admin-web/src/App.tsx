@@ -34,7 +34,6 @@ type View =
 type Staff = { id: string; username: string; role: string };
 type Customer = {
   id: string;
-  tenantId: string;
   name: string;
   systemId: string;
   environment: string;
@@ -135,7 +134,6 @@ function fromCanonicalCustomer(value: unknown): Customer {
   return {
     ...customer,
     id: customer.customerId ?? customer.id,
-    tenantId: customer.tenantId ?? customer.tenant_id ?? customer.systemId ?? customer.id,
     systemId: customer.systemId ?? '',
     ip: customer.configuredIp ?? customer.ip ?? '',
     baseUrl: customer.baseUrl ?? null,
@@ -401,9 +399,9 @@ function Overview({
           icon={ClipboardList}
         />
         <Metric
-          label="未分配额度"
+          label="客户系统余额汇总"
           value={compact(data.poolRemaining)}
-          detail="Token · 按最新上报汇总"
+          detail="各客户管理系统最近一次上报的未分配 Token 池余额"
           icon={Gauge}
         />
       </div>
@@ -562,7 +560,6 @@ function Customers({ refreshToken }: { refreshToken: number }) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selected, setSelected] = useState<Customer | null>(null);
   const [name, setName] = useState('');
-  const [tenantId, setTenantId] = useState('');
   const [systemId, setSystemId] = useState('');
   const [ip, setIp] = useState('');
   const [protocol, setProtocol] = useState<'http' | 'https'>('https');
@@ -637,7 +634,6 @@ function Customers({ refreshToken }: { refreshToken: number }) {
         method: 'POST',
         body: JSON.stringify({
           name,
-          tenant_id: tenantId,
           system_id: systemId,
           configured_ip: ip,
           internal_base_url: internalBaseUrl,
@@ -655,7 +651,6 @@ function Customers({ refreshToken }: { refreshToken: number }) {
       setTokenKind('api');
       void loadDetail(customer.id);
       setName('');
-      setTenantId('');
       setSystemId('');
       setIp('');
       setProtocol('https');
@@ -715,7 +710,6 @@ function Customers({ refreshToken }: { refreshToken: number }) {
         method: 'PATCH',
         body: JSON.stringify({
           name: selected.name,
-          tenant_id: selected.tenantId,
           system_id: selected.systemId,
           environment: selected.environment,
           configured_ip: selected.ip,
@@ -790,11 +784,6 @@ function Customers({ refreshToken }: { refreshToken: number }) {
               placeholder="客户系统 ID（可稍后编辑）"
               value={systemId}
               onChange={(event) => setSystemId(event.target.value)}
-            />
-            <input
-              placeholder="租户 ID（tenant；可与系统 ID 相同）"
-              value={tenantId}
-              onChange={(event) => setTenantId(event.target.value)}
             />
             <input
               placeholder="客户 IP（可选）"
@@ -884,7 +873,6 @@ function Customers({ refreshToken }: { refreshToken: number }) {
                   >
                     <td>
                       <button className="customer-link">{customer.name}</button>
-                      <small>tenant：{customer.tenantId}</small>
                       <small>{customer.systemId || '未登记系统 ID'}</small>
                       <small>{customer.contact || '未填写联系方式'}</small>
                     </td>
@@ -942,13 +930,6 @@ function Customers({ refreshToken }: { refreshToken: number }) {
                   <input
                     value={selected.systemId}
                     onChange={(event) => updateSelected({ systemId: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Tenant ID
-                  <input
-                    value={selected.tenantId}
-                    onChange={(event) => updateSelected({ tenantId: event.target.value })}
                   />
                 </label>
                 <div className="detail-grid">
@@ -1245,6 +1226,7 @@ function Requests({ refreshToken }: { refreshToken: number }) {
     }>
   >([]);
   const [error, setError] = useState('');
+  const [processingId, setProcessingId] = useState<string | null>(null);
   const load = useCallback(
     () => {
       setError('');
@@ -1268,6 +1250,9 @@ function Requests({ refreshToken }: { refreshToken: number }) {
         ? Number(window.prompt('确认充值金额（元）', String(requestedAmount ?? '')))
         : undefined;
     if (action === 'approve' && (!amount || amount <= 0)) return;
+    if (processingId) return;
+    setProcessingId(id);
+    setError('');
     try {
       await api(`/api/v1/recharge-requests/${id}/${action}`, {
         method: 'POST',
@@ -1279,6 +1264,8 @@ function Requests({ refreshToken }: { refreshToken: number }) {
       load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '操作失败');
+    } finally {
+      setProcessingId(null);
     }
   }
   return (
@@ -1319,6 +1306,7 @@ function Requests({ refreshToken }: { refreshToken: number }) {
                     <td className="actions">
                       <button
                         className="primary small"
+                        disabled={processingId !== null}
                         onClick={() =>
                           process(order.id, 'approve', order.requestedAmount, order.requestId)
                         }
@@ -1328,6 +1316,7 @@ function Requests({ refreshToken }: { refreshToken: number }) {
                       </button>
                       <button
                         className="danger small"
+                        disabled={processingId !== null}
                         onClick={() => process(order.id, 'reject', undefined, order.requestId)}
                       >
                         <X size={14} />

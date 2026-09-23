@@ -2,15 +2,9 @@
 
 The AgentScope core keeps resources owner-scoped by default. This adapter
 turns administrator-owned credentials into a read/use-only model catalog for
-members without exposing the underlying provider secret. The application
-chooses one credential boundary per deployment: ``tenant`` or ``platform``.
-The policy never merges those two catalogs.
+members without exposing the underlying provider secret.
 """
 from __future__ import annotations
-
-import os
-from collections.abc import Callable
-from typing import Any, Literal
 
 from agentscope.app.access import (
     ResourceAccessPolicyBase,
@@ -20,61 +14,14 @@ from agentscope.app.access import (
 )
 from agentscope.app.storage import StorageBase
 from auth import JWTAuthService
-from identity.dependencies import get_bound_tenant_id, get_bound_tenant_identity
-from identity.permissions import (
-    TENANT_MANAGE,
-    has_permission,
-    is_platform_admin,
-)
-
-
-CredentialScope = Literal["platform", "tenant"]
-PLATFORM_CREDENTIAL_OWNER = "__lxscope_platform__"
-
-
-def configured_credential_scope() -> CredentialScope:
-    """Return the single credential boundary configured for this service."""
-
-    value = os.getenv("LONGXIN_CREDENTIAL_SCOPE", "tenant").strip().lower()
-    if value not in {"platform", "tenant"}:
-        raise ValueError("LONGXIN_CREDENTIAL_SCOPE must be 'platform' or 'tenant'")
-    return value  # type: ignore[return-value]
-
-
-async def credential_manager_allowed(
-    auth: JWTAuthService,
-    user_id: str,
-    *,
-    scope: CredentialScope | None = None,
-) -> bool:
-    """Check credential management at the same identity boundary as reads."""
-
-    selected_scope = scope or configured_credential_scope()
-    identity = get_bound_tenant_identity()
-    if identity is not None:
-        if selected_scope == "platform":
-            return is_platform_admin(identity.permissions)
-        return has_permission(identity.permissions, TENANT_MANAGE) or is_platform_admin(
-            identity.permissions,
-        )
-    # Local-auth deployments have no external tenant context.  Their admin
-    # account is the platform boundary and therefore may manage both modes.
-    return await auth.is_admin_user(user_id)
+from identity.context import current_identity
 
 
 class AdminManagedCredentialPolicy(ResourceAccessPolicyBase):
-    """Expose only credentials owned by the selected boundary."""
+    """Expose all administrator credentials as read-only shared resources."""
 
-    def __init__(
-        self,
-        auth: JWTAuthService,
-        *,
-        tenant_member_provider: Callable[[], Any] | None = None,
-        scope: CredentialScope | None = None,
-    ) -> None:
+    def __init__(self, auth: JWTAuthService) -> None:
         self._auth = auth
-        self._tenant_member_provider = tenant_member_provider
-        self._scope = scope or configured_credential_scope()
 
     async def _admin_ids(self) -> tuple[str, ...]:
         # ``list_accounts`` also sees Redis-backed accounts and keeps this
@@ -86,41 +33,6 @@ class AdminManagedCredentialPolicy(ResourceAccessPolicyBase):
             if account.role == "admin" and account.status == "active"
         )
 
-    async def _tenant_admin_ids(self) -> tuple[str, ...]:
-        """Return administrator memberships from the verified tenant only."""
-
-        tenant_id = get_bound_tenant_id()
-        provider = self._tenant_member_provider() if self._tenant_member_provider else None
-        if tenant_id is None or provider is None:
-            return ()
-        rows = await provider.list_members(tenant_id)
-        return tuple(
-            str(row["membership_id"])
-            for row in rows
-            if has_permission(row.get("permissions", ()), TENANT_MANAGE)
-            and str(row.get("membership_status") or "active") == "active"
-            and str(row.get("user_status") or "active") == "active"
-        )
-
-    async def can_manage(self, user_id: str) -> bool:
-        """Compatibility checker used by AgentScope's credential router."""
-
-        return await credential_manager_allowed(
-            self._auth,
-            user_id,
-            scope=self._scope,
-        )
-
-    async def _owner_ids(self) -> tuple[str, ...]:
-        if self._scope == "platform":
-            # Local administrator-owned records are the legacy platform pool.
-            # A deployment that provisions a dedicated platform owner can use
-            # the stable sentinel below without making it a tenant member.
-            return tuple(dict.fromkeys((*await self._admin_ids(), PLATFORM_CREDENTIAL_OWNER)))
-        if get_bound_tenant_id() is None:
-            return await self._admin_ids()
-        return await self._tenant_admin_ids()
-
     async def can_read_owned(
         self,
         viewer_id: str,
@@ -131,9 +43,18 @@ class AdminManagedCredentialPolicy(ResourceAccessPolicyBase):
         del storage
         if kind is not ResourceKind.CREDENTIAL:
             return True
-        if viewer_id != owner_id:
-            return False
-        return viewer_id in await self._owner_ids() and await self.can_manage(viewer_id)
+        identity = current_identity()
+        if (
+            identity is not None
+            and identity.id == viewer_id
+            and identity.status == "active"
+            and identity.tenant_id == owner_id
+        ):
+            return True
+        return (
+            viewer_id == owner_id
+            and await self._auth.is_admin_user(viewer_id)
+        )
 
     async def list_accessible(
         self,
@@ -144,18 +65,39 @@ class AdminManagedCredentialPolicy(ResourceAccessPolicyBase):
         if kind is not ResourceKind.CREDENTIAL:
             return []
 
+        identity = current_identity()
+        tenant_id = None
+        if (
+            identity is not None
+            and identity.id == viewer_id
+            and identity.status == "active"
+        ):
+            tenant_id = identity.tenant_id
+        elif identity is None:
+            # Queued chat resumes retain the authenticated tenant::subject
+            # id, but execute in a dispatcher task without the HTTP
+            # ContextVar. Restore only the tenant read scope from that stable
+            # id so shared credentials remain resolvable on continuation.
+            account = await self._auth._account_by_id(viewer_id)
+            if account is not None and account.status == "active":
+                tenant_id = account.tenant_id
+
+        if tenant_id:
+            return [
+                ResourceRef(
+                    kind=ResourceKind.CREDENTIAL,
+                    owner_id=tenant_id,
+                    resource_id=credential.id,
+                    permission=ResourcePermission.READ,
+                )
+                for credential in await storage.list_credentials(tenant_id)
+            ]
+
         refs: list[ResourceRef] = []
-        owner_ids = await self._owner_ids()
-        for owner_id in owner_ids:
+        for owner_id in await self._admin_ids():
             if owner_id == viewer_id:
                 continue
             for credential in await storage.list_credentials(owner_id):
-                # Scope is selected at deployment level.  The optional
-                # metadata check protects against a migration accidentally
-                # leaving a mixed catalog behind.
-                record_scope = credential.data.get("lxscope_scope")
-                if record_scope is not None and record_scope != self._scope:
-                    continue
                 refs.append(
                     ResourceRef(
                         kind=ResourceKind.CREDENTIAL,

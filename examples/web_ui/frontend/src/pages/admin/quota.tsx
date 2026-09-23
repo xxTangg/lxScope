@@ -18,14 +18,14 @@ const LEDGER_PAGE_SIZE = 20;
 
 export function AdminQuotaPage() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const { user } = useAuth();
 	const queryClient = useQueryClient();
 	const [testDefaultTokens, setTestDefaultTokens] = useState('');
 	const [ledgerPage, setLedgerPage] = useState(1);
 	const [ledgerType, setLedgerType] = useState('');
 	const [ledgerKeyword, setLedgerKeyword] = useState('');
-	const quota = useQuery({ queryKey: ['admin', user?.id, 'quota'], queryFn: adminApi.quota, enabled: hasPermission('tenant:manage') });
-	const ledger = useQuery({ queryKey: ['admin', user?.id, 'ledger'], queryFn: () => adminApi.ledger(200), enabled: hasPermission('tenant:manage') });
+	const quota = useQuery({ queryKey: ['admin', user?.id, 'quota'], queryFn: adminApi.quota, enabled: user?.role === 'admin' });
+	const ledger = useQuery({ queryKey: ['admin', user?.id, 'ledger'], queryFn: () => adminApi.ledger(200), enabled: user?.role === 'admin' });
 	useEffect(() => { if (quota.data) setTestDefaultTokens(String(quota.data.test_default_tokens)); }, [quota.data]);
 	const updateQuota = useMutation({ mutationFn: adminApi.updateQuota, onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id] }) });
 	const filteredLedger = useMemo(() => {

@@ -10,6 +10,7 @@ import {
 	UsersRound,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import type {
@@ -19,7 +20,7 @@ import type {
 	TTSModelConfig,
 	UpdateSessionRequest,
 } from '@/api';
-import { chatApi, sessionApi } from '@/api';
+import { chatApi, managementMcpApi, sessionApi } from '@/api';
 import MCPSvg from '@/assets/images/mcp.svg?react';
 import { ChatContent } from '@/components/chat/ChatContent.tsx';
 import { SubagentHitlCard } from '@/components/chat/SubagentHitlCard';
@@ -49,16 +50,16 @@ import {
 	ResizablePanelGroup,
 } from '@/components/ui/resizable.tsx';
 import { SidebarTrigger } from '@/components/ui/sidebar';
+import { useAuth } from '@/hooks/useAuth';
 import { useAvailableModels } from '@/hooks/useAvailableModels';
 import { useChatAttachmentContentTypes } from '@/hooks/useChatAttachmentContentTypes';
 import { useKnowledgeBaseMiddlewareSchema } from '@/hooks/useKnowledgeBaseMiddlewareSchema';
 import { useKnowledgeBases } from '@/hooks/useKnowledgeBases';
 import { useMessages } from '@/hooks/useMessages';
+import { usePublishedResources } from '@/hooks/usePublishedResources';
 import { useSessions } from '@/hooks/useSessions';
 import { useWorkspace } from '@/hooks/useWorkspace.ts';
-import { usePublishedResources } from '@/hooks/usePublishedResources';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
-import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { formatApiErrorForAlert } from '@/lib/api-error';
 
@@ -204,7 +205,9 @@ function closePanelInLayout(layout: PanelKey[][], key: PanelKey): PanelKey[][] {
  */
 export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatViewportProps) {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const location = useLocation();
+	const navigate = useNavigate();
+	const { user } = useAuth();
 	const { sessions, refetch: refetchSessions } = useSessions(agentId);
 	const { groups } = useAvailableModels();
 	const { mediaTypes: parserAttachmentMediaTypes, extensions: parserAttachmentExtensions } =
@@ -229,6 +232,10 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	// panels stacked top→bottom. Open order determines placement.
 	// Persisted so leaving and returning to /chat keeps the same panels.
 	const [panelLayout, setPanelLayout] = useState<PanelKey[][]>(loadPanelLayout);
+	const mcpActivationAttempts = useRef(new Set<string>());
+	const pendingMcpPublicationId = (
+		location.state as { pendingMcpPublicationId?: string } | null
+	)?.pendingMcpPublicationId;
 
 	useEffect(() => {
 		localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(panelLayout));
@@ -313,19 +320,49 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	const {
 		mcps,
 		loading: mcpsLoading,
+		refetch: refetchMcps,
 		addMcps,
 		addMcpsFromLibrary,
 		removeMcp,
 		skills,
 		skillsLoading,
 	} = useWorkspace(agentId, sessionId);
+
+	useEffect(() => {
+		if (!pendingMcpPublicationId || !agentId || !sessionId) return;
+		const key = `${agentId}:${sessionId}:${pendingMcpPublicationId}`;
+		if (mcpActivationAttempts.current.has(key)) return;
+		mcpActivationAttempts.current.add(key);
+
+		void managementMcpApi
+			.activate(agentId, sessionId, pendingMcpPublicationId)
+			.then(async (result) => {
+				await refetchMcps();
+				toast.success(
+					result.status === 'added'
+						? `${result.name} 已加入当前工作区`
+						: `${result.name} 已在当前工作区中`,
+				);
+			})
+			.catch((error) => toast.error(formatApiErrorForAlert(error)))
+			.finally(() => {
+				navigate(location.pathname, { replace: true, state: null });
+			});
+	}, [
+		agentId,
+		sessionId,
+		pendingMcpPublicationId,
+		refetchMcps,
+		navigate,
+		location.pathname,
+	]);
 	const { resources: publishedMcps } = usePublishedResources('mcp');
 	const {
 		resources: publishedSkills,
 		loading: publishedSkillsLoading,
 	} = usePublishedResources('skill');
 	const visibleMcps =
-		hasPermission('tenant:manage')
+		user?.role === 'admin'
 			? mcps
 			: mcps.filter((mcp) => publishedMcps.some((resource) => resource.name === mcp.name));
 	const skillsPanelLoading =
@@ -484,7 +521,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 				content: (
 					<McpPanel
 						mcps={visibleMcps}
-						readOnly={!hasPermission('platform:integration')}
+						readOnly={user?.role !== 'admin'}
 						loading={mcpsLoading}
 						onAdd={addMcps}
 						onAddFromLibrary={addMcpsFromLibrary}
@@ -925,7 +962,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 										value={selectedModel}
 										onChange={handleLlmChange}
 										onAddCredential={
-										hasPermission('platform:integration')
+										user?.role === 'admin'
 											? () => setCredentialOpen(true)
 											: undefined
 									}
@@ -1065,7 +1102,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 					<PanelDock layout={panelLayout} panels={panels} onClosePanel={closePanel} />
 				</ResizablePanelGroup>
 			</main>
-			{hasPermission('platform:integration') && (
+			{user?.role === 'admin' && (
 				<CreateCredentialDialog
 					open={credentialOpen}
 					onOpenChange={setCredentialOpen}

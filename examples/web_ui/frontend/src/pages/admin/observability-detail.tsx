@@ -76,16 +76,16 @@ function DetailFailures({ rows, empty }: { rows: ObservabilityFailure[]; empty: 
 
 export function AdminObservabilityDetailPage() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const { user } = useAuth();
 	const navigate = useNavigate();
 	const { component: componentParam } = useParams<{ component: string }>();
 	const isValidComponent = componentParam === 'model' || componentParam === 'agent' || componentParam === 'tool';
 	const component: ObservabilityComponent = isValidComponent ? componentParam : 'model';
 	const config = componentKeys[component] ?? componentKeys.model;
 	const detail = useQuery({
-		queryKey: ['admin', user?.id, user?.tenant_id, 'observability-component', component],
+		queryKey: ['admin', user?.id, 'observability-component', component],
 		queryFn: () => adminApi.observabilityComponent(component),
-		enabled: (hasPermission('tenant:manage') || hasPermission('platform:observe')) && isValidComponent,
+		enabled: user?.role === 'admin' && isValidComponent,
 	});
 	const data = detail.data;
 	const Icon = component === 'agent' ? Bot : component === 'tool' ? Network : Network;

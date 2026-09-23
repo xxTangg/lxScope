@@ -42,13 +42,13 @@ function RecentFailureList({ rows }: { rows: SkillFailureRecord[] }) {
 
 export function AdminSkillAnalyticsPage() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const { user } = useAuth();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
 	const [days, setDays] = useState(14);
-	const analytics = useQuery({ queryKey: ['admin', user?.id, user?.tenant_id, 'skill-analytics', days], queryFn: () => adminApi.skillAnalytics(days), enabled: hasPermission('tenant:manage') || hasPermission('platform:observe') });
+	const analytics = useQuery({ queryKey: ['admin', user?.id, 'skill-analytics', days], queryFn: () => adminApi.skillAnalytics(days), enabled: user?.role === 'admin' });
 	const data = analytics.data;
-	const refresh = () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id, user?.tenant_id, 'skill-analytics'] });
+	const refresh = () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id, 'skill-analytics'] });
 	const totalCompleted = data ? data.completed.success + data.completed.failed + data.completed.other : 0;
 	const translateStage = (key: string) => t(`admin.skillAnalyticsStage.${key}`);
 

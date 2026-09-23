@@ -6,6 +6,7 @@ services:
       - .:/app
     environment:
       UVICORN_RELOAD: "true"
+      REDIS_HOST: redis
 
   web-ui:
     image: agentscope-web-ui-dev:latest
@@ -14,6 +15,9 @@ services:
       dockerfile: Dockerfile.dev
       args:
         VITE_AGENTSCOPE_API_PORT: ${AGENTSCOPE_API_PORT:-8001}
+        VITE_LOGTO_ENDPOINT: ${VITE_LOGTO_ENDPOINT:-}
+        VITE_LOGTO_APP_ID: ${VITE_LOGTO_APP_ID:-}
+        VITE_LOGTO_API_RESOURCE: ${VITE_LOGTO_API_RESOURCE:-}
     # Vite serves the frontend directly and provides HMR for source changes.
     command:
       - pnpm
@@ -26,6 +30,9 @@ services:
       - "80"
     environment:
       VITE_AGENTSCOPE_API_PORT: ${AGENTSCOPE_API_PORT:-8001}
+      VITE_LOGTO_ENDPOINT: ${VITE_LOGTO_ENDPOINT:-}
+      VITE_LOGTO_APP_ID: ${VITE_LOGTO_APP_ID:-}
+      VITE_LOGTO_API_RESOURCE: ${VITE_LOGTO_API_RESOURCE:-}
       DOCKER_DEV: "true"
     volumes:
       - ./examples/web_ui:/app

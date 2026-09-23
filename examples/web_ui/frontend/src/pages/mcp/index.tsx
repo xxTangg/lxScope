@@ -487,9 +487,9 @@ function MinePanel({ mcps, loading, canConfigure, onEdit, onRemove }: MinePanelP
 
 function AdminMCPHubPage() {
 	const { t } = useTranslation();
-	const { hasPermission } = useAuth();
+	const { user } = useAuth();
 	const navigate = useNavigate();
-	const canConfigure = hasPermission('tenant:manage');
+	const canConfigure = user?.role === 'admin';
 	// No `hubId` in the URL means the "mine" tab, which is the default.
 	const { hubId } = useParams<{ hubId?: string }>();
 	const { hubs, loading: hubsLoading, error: hubsError, refetch } = useMCPHubs();
@@ -679,6 +679,6 @@ function AdminMCPHubPage() {
 /** Administrators browse/install from hubs; regular users see only the
  * catalog entries published to them by an administrator. */
 export function MCPHubPage() {
-	const { hasPermission } = useAuth();
-	return hasPermission('tenant:manage') ? <AdminMCPHubPage /> : <PublishedResourcePage kind="mcp" />;
+	const { user } = useAuth();
+	return user?.role === 'admin' ? <AdminMCPHubPage /> : <PublishedResourcePage kind="mcp" />;
 }

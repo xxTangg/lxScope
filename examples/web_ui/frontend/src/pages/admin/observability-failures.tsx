@@ -30,16 +30,16 @@ function FailureRows({ rows }: { rows: ObservabilityFailure[] }) {
 
 export function AdminObservabilityFailuresPage() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const { user } = useAuth();
 	const navigate = useNavigate();
 	const [days, setDays] = useState(14);
 	const [component, setComponent] = useState<(typeof componentOptions)[number]>('all');
 	const [errorType, setErrorType] = useState<(typeof errorTypeOptions)[number]>('all');
 	const [userId, setUserId] = useState('');
 	const failures = useQuery({
-		queryKey: ['admin', user?.id, user?.tenant_id, 'observability-failures', days, component, errorType, userId],
+		queryKey: ['admin', user?.id, 'observability-failures', days, component, errorType, userId],
 		queryFn: () => adminApi.observabilityFailures(days, { component: component === 'all' ? undefined : component, error_type: errorType === 'all' ? undefined : errorType, user_id: userId.trim() || undefined, limit: 500 }),
-		enabled: hasPermission('tenant:manage') || hasPermission('platform:observe'),
+		enabled: user?.role === 'admin',
 	});
 	const data = failures.data;
 

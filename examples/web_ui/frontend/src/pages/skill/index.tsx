@@ -3,12 +3,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import type {
+	AdminUser,
 	HubInfo,
 	PublicationScope,
 	ResourcePublication,
 	SkillCard,
 	SkillView,
-	TenantMember,
 } from '@/api';
 import { adminApi, hubApi, skillApi } from '@/api';
 import { ApiError } from '@/api/client';
@@ -53,7 +53,6 @@ import { useSkillHubs } from '@/hooks/useSkillHubs.ts';
 import { useSkills } from '@/hooks/useSkills.ts';
 import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
-import { ORGANIZATION_CHANGED_EVENT } from '@/context/auth-context';
 import { cn } from '@/lib/utils';
 import { avatarTint, formatTime } from '@/utils/common';
 import { PublishedResourcePage } from '@/pages/resources/PublishedResourcePage';
@@ -322,7 +321,7 @@ interface MinePanelProps {
 	loading: boolean;
 	onRemove: (skillId: string) => void;
 	publications: ResourcePublication[];
-	users: TenantMember[];
+	users: AdminUser[];
 	onPublicationSaved: () => void;
 }
 
@@ -334,7 +333,7 @@ function SkillPublicationControls({
 }: {
 	skill: SkillView;
 	publication?: ResourcePublication;
-	users: TenantMember[];
+	users: AdminUser[];
 	onSaved: () => void;
 }) {
 	const { t } = useTranslation();
@@ -593,25 +592,19 @@ function AdminSkillHubPage() {
 	// as already installed, and the "mine" view to list them.
 	const { skills, loading: skillsLoading, refetch: refetchSkills } = useSkills();
 	const [publications, setPublications] = useState<ResourcePublication[]>([]);
-	const [users, setUsers] = useState<TenantMember[]>([]);
+	const [users, setUsers] = useState<AdminUser[]>([]);
 
 	const refetchPublicationSettings = useCallback(async () => {
 		const [publicationResponse, userResponse] = await Promise.all([
 			adminApi.resourcePublications('skill'),
-			adminApi.tenantMembers({ page: 1, page_size: 100 }),
+			adminApi.users({ page: 1, page_size: 100 }),
 		]);
 		setPublications(publicationResponse.resources);
-		setUsers(userResponse.members);
+		setUsers(userResponse.users);
 	}, []);
 
 	useEffect(() => {
 		void refetchPublicationSettings();
-	}, [refetchPublicationSettings]);
-
-	useEffect(() => {
-		const refreshForOrganization = () => void refetchPublicationSettings();
-		window.addEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
-		return () => window.removeEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
 	}, [refetchPublicationSettings]);
 
 	const removeAdminSkill = useCallback(
@@ -763,6 +756,6 @@ function AdminSkillHubPage() {
 /** Administrators browse/install from hubs; regular users see only the
  * catalog entries published to them by an administrator. */
 export function SkillHubPage() {
-	const { hasPermission } = useAuth();
-	return hasPermission('tenant:manage') ? <AdminSkillHubPage /> : <PublishedResourcePage kind="skill" />;
+	const { user } = useAuth();
+	return user?.role === 'admin' ? <AdminSkillHubPage /> : <PublishedResourcePage kind="skill" />;
 }

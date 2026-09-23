@@ -46,8 +46,6 @@ class PostgresTaskStore(TaskStoreProtocol):
         tenant_code: str = "default",
         tenant_name: str = "Default Tenant",
         tenant_id: str | UUID | None = None,
-        provision_default_tenant: bool = True,
-        require_tenant_context: bool = False,
     ) -> None:
         self._engine = engine
         self._tenant_code = tenant_code.strip() or "default"
@@ -57,33 +55,7 @@ class PostgresTaskStore(TaskStoreProtocol):
             if tenant_id is not None
             else uuid5(NAMESPACE_URL, f"lxscope:tenant:{self._tenant_code}")
         )
-        self._provision_default_tenant = provision_default_tenant
-        self._require_tenant_context = require_tenant_context
         self._tables: dict[str, Any] | None = None
-
-    @staticmethod
-    def _bound_identity() -> tuple[UUID | None, UUID | None]:
-        """Read the trusted request identity without trusting request data."""
-
-        try:
-            from identity.dependencies import (
-                get_bound_membership_id,
-                get_bound_tenant_id,
-            )
-        except ModuleNotFoundError:  # pragma: no cover - package import mode
-            from examples.agent_service.identity.dependencies import (
-                get_bound_membership_id,
-                get_bound_tenant_id,
-            )
-        return get_bound_tenant_id(), get_bound_membership_id()
-
-    def _effective_tenant_id(self) -> UUID:
-        """Use the verified request tenant, with local-mode compatibility."""
-
-        tenant_id, _ = self._bound_identity()
-        if self._require_tenant_context and tenant_id is None:
-            raise ValueError("A bound tenant identity is required for this store.")
-        return tenant_id or self._tenant_id
 
     def _table_definitions(self) -> dict[str, Any]:
         if self._tables is not None:
@@ -202,15 +174,13 @@ class PostgresTaskStore(TaskStoreProtocol):
         return self._tables
 
     async def initialize(self) -> None:
-        """Ensure the configured local tenant exists when local mode needs it."""
+        """Ensure the configured default tenant exists."""
 
         from sqlalchemy import func
         from sqlalchemy.dialects.postgresql import insert
 
         tables = self._table_definitions()
         tenants = tables["tenants"]
-        if not self._provision_default_tenant:
-            return
         async with self._engine.begin() as connection:
             await connection.execute(
                 insert(tenants)
@@ -229,7 +199,7 @@ class PostgresTaskStore(TaskStoreProtocol):
             )
 
     async def _ensure_identity(self, connection: Any, user_id: str) -> UUID:
-        """Resolve the caller membership without crossing tenant boundaries."""
+        """Map a legacy string user ID to a tenant membership UUID."""
 
         from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert
@@ -237,33 +207,10 @@ class PostgresTaskStore(TaskStoreProtocol):
         tables = self._table_definitions()
         users = tables["users"]
         memberships = tables["memberships"]
-        bound_tenant_id, bound_membership_id = self._bound_identity()
-        if self._require_tenant_context and bound_tenant_id is None:
-            raise ValueError("A bound tenant identity is required for this store.")
-        tenant_id = bound_tenant_id or self._tenant_id
-
-        if bound_tenant_id is not None:
-            if bound_membership_id is None or _stable_uuid(user_id) != bound_membership_id:
-                    raise ValueError(
-                        "The Task identity does not match the current membership."
-                    )
-            membership = (
-                await connection.execute(
-                    select(memberships.c.id).where(
-                        memberships.c.tenant_id == tenant_id,
-                        memberships.c.id == bound_membership_id,
-                        memberships.c.status == "active",
-                    ),
-                )
-            ).scalar_one_or_none()
-            if membership is None:
-                raise ValueError("The current tenant membership is not active.")
-            return membership
-
         user_uuid = uuid5(NAMESPACE_URL, f"lxscope:user:{user_id}")
         membership_uuid = uuid5(
             NAMESPACE_URL,
-            f"lxscope:membership:{tenant_id}:{user_id}",
+            f"lxscope:membership:{self._tenant_id}:{user_id}",
         )
         username = f"legacy-{user_uuid.hex}"
 
@@ -289,7 +236,7 @@ class PostgresTaskStore(TaskStoreProtocol):
             insert(memberships)
             .values(
                 id=membership_uuid,
-                tenant_id=tenant_id,
+                tenant_id=self._tenant_id,
                 user_id=actual_user_uuid,
                 role="member",
                 status="active",
@@ -325,11 +272,10 @@ class PostgresTaskStore(TaskStoreProtocol):
         tasks = tables["tasks"]
         async with self._engine.begin() as connection:
             membership_id = await self._ensure_identity(connection, user_id)
-            tenant_id = self._effective_tenant_id()
             result = await connection.execute(
                 select(tasks.c.definition)
                 .where(
-                    tasks.c.tenant_id == tenant_id,
+                    tasks.c.tenant_id == self._tenant_id,
                     tasks.c.owner_membership_id == membership_id,
                     tasks.c.status != TaskStatus.ARCHIVED.value,
                 )
@@ -344,11 +290,10 @@ class PostgresTaskStore(TaskStoreProtocol):
         tasks = tables["tasks"]
         async with self._engine.begin() as connection:
             membership_id = await self._ensure_identity(connection, user_id)
-            tenant_id = self._effective_tenant_id()
             value = (
                 await connection.execute(
                     select(tasks.c.definition).where(
-                        tasks.c.tenant_id == tenant_id,
+                        tasks.c.tenant_id == self._tenant_id,
                         tasks.c.id == _stable_uuid(task_id),
                         tasks.c.owner_membership_id == membership_id,
                     ),
@@ -365,12 +310,11 @@ class PostgresTaskStore(TaskStoreProtocol):
         payload = self._task_payload(stored)
         async with self._engine.begin() as connection:
             membership_id = await self._ensure_identity(connection, stored.user_id)
-            tenant_id = self._effective_tenant_id()
             await connection.execute(
                 insert(tasks)
                 .values(
                     id=_stable_uuid(stored.id),
-                    tenant_id=tenant_id,
+                    tenant_id=self._tenant_id,
                     owner_membership_id=membership_id,
                     name=stored.title,
                     description=stored.goal,
@@ -393,7 +337,6 @@ class PostgresTaskStore(TaskStoreProtocol):
                 )
                 .on_conflict_do_update(
                     index_elements=[tasks.c.id],
-                    where=tasks.c.tenant_id == tenant_id,
                     set_={
                         "owner_membership_id": membership_id,
                         "name": stored.title,
@@ -437,12 +380,11 @@ class PostgresTaskStore(TaskStoreProtocol):
         payload = self._run_payload(record)
         async with self._engine.begin() as connection:
             membership_id = await self._ensure_identity(connection, record.user_id)
-            tenant_id = self._effective_tenant_id()
             await connection.execute(
                 insert(runs)
                 .values(
                     id=_stable_uuid(record.id),
-                    tenant_id=tenant_id,
+                    tenant_id=self._tenant_id,
                     task_id=_stable_uuid(record.task_id),
                     triggered_by_membership_id=membership_id,
                     task_revision=record.task_revision,
@@ -460,7 +402,6 @@ class PostgresTaskStore(TaskStoreProtocol):
                 )
                 .on_conflict_do_update(
                     index_elements=[runs.c.id],
-                    where=runs.c.tenant_id == tenant_id,
                     set_={
                         "task_id": _stable_uuid(record.task_id),
                         "triggered_by_membership_id": membership_id,
@@ -480,7 +421,7 @@ class PostgresTaskStore(TaskStoreProtocol):
             )
             await connection.execute(
                 delete(artifacts).where(
-                    artifacts.c.tenant_id == tenant_id,
+                    artifacts.c.tenant_id == self._tenant_id,
                     artifacts.c.run_id == _stable_uuid(record.id),
                 ),
             )
@@ -488,7 +429,7 @@ class PostgresTaskStore(TaskStoreProtocol):
                 await connection.execute(
                     insert(artifacts).values(
                         id=_stable_uuid(artifact.id),
-                        tenant_id=tenant_id,
+                        tenant_id=self._tenant_id,
                         run_id=_stable_uuid(record.id),
                         artifact_type=artifact.format.value,
                         file_name=artifact.name,
@@ -514,11 +455,10 @@ class PostgresTaskStore(TaskStoreProtocol):
         tasks = tables["tasks"]
         runs = tables["runs"]
         membership_id = await self._ensure_identity(connection, user_id)
-        tenant_id = self._effective_tenant_id()
         conditions = [
-            runs.c.tenant_id == tenant_id,
+            runs.c.tenant_id == self._tenant_id,
             runs.c.id == _stable_uuid(run_id),
-            tasks.c.tenant_id == tenant_id,
+            tasks.c.tenant_id == self._tenant_id,
             tasks.c.id == runs.c.task_id,
             tasks.c.owner_membership_id == membership_id,
         ]
@@ -545,13 +485,12 @@ class PostgresTaskStore(TaskStoreProtocol):
         runs = tables["runs"]
         async with self._engine.begin() as connection:
             membership_id = await self._ensure_identity(connection, user_id)
-            tenant_id = self._effective_tenant_id()
             result = await connection.execute(
                 select(runs.c.snapshot)
                 .select_from(runs.join(tasks, and_(runs.c.task_id == tasks.c.id)))
                 .where(
-                    runs.c.tenant_id == tenant_id,
-                    tasks.c.tenant_id == tenant_id,
+                    runs.c.tenant_id == self._tenant_id,
+                    tasks.c.tenant_id == self._tenant_id,
                     tasks.c.id == _stable_uuid(task_id),
                     tasks.c.owner_membership_id == membership_id,
                 )
@@ -599,11 +538,10 @@ class PostgresTaskStore(TaskStoreProtocol):
 
         tables = self._table_definitions()
         events = tables["events"]
-        tenant_id = self._effective_tenant_id()
         async with self._engine.begin() as connection:
             await connection.execute(
                 insert(events).values(
-                    tenant_id=tenant_id,
+                    tenant_id=self._tenant_id,
                     run_id=_stable_uuid(event.run_id),
                     sequence=event.sequence,
                     event_type=event.type,
@@ -622,7 +560,6 @@ class PostgresTaskStore(TaskStoreProtocol):
         events = tables["events"]
         async with self._engine.begin() as connection:
             membership_id = await self._ensure_identity(connection, user_id)
-            tenant_id = self._effective_tenant_id()
             result = await connection.execute(
                 select(
                     events.c.id,
@@ -639,10 +576,9 @@ class PostgresTaskStore(TaskStoreProtocol):
                     ),
                 )
                 .where(
-                    events.c.tenant_id == tenant_id,
+                    events.c.tenant_id == self._tenant_id,
                     events.c.run_id == _stable_uuid(run_id),
-                    runs.c.tenant_id == tenant_id,
-                    tasks.c.tenant_id == tenant_id,
+                    tasks.c.tenant_id == self._tenant_id,
                     tasks.c.owner_membership_id == membership_id,
                 )
                 .order_by(events.c.sequence),
@@ -664,12 +600,11 @@ class PostgresTaskStore(TaskStoreProtocol):
         from sqlalchemy import func, select
 
         events = self._table_definitions()["events"]
-        tenant_id = self._effective_tenant_id()
         async with self._engine.begin() as connection:
             value = (
                 await connection.execute(
                     select(func.coalesce(func.max(events.c.sequence), 0) + 1).where(
-                        events.c.tenant_id == tenant_id,
+                        events.c.tenant_id == self._tenant_id,
                         events.c.run_id == _stable_uuid(run_id),
                     ),
                 )

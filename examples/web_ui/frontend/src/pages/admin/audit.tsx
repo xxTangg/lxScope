@@ -21,17 +21,17 @@ type AuditOverviewData = {
 
 export function AdminAuditPage() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const { user } = useAuth();
 	const queryClient = useQueryClient();
 	const [targetUserId, setTargetUserId] = useState('');
 	const [reason, setReason] = useState('');
 	const [auditPage, setAuditPage] = useState(1);
 	const [selectedResource, setSelectedResource] = useState<Record<string, unknown> | null>(null);
-	const users = useQuery({ queryKey: ['admin', user?.id, user?.tenant_id, 'audit-users'], queryFn: () => adminApi.users({ page: 1, page_size: 100 }), enabled: hasPermission('tenant:manage') || hasPermission('platform:observe') });
-	const events = useQuery({ queryKey: ['admin', user?.id, user?.tenant_id, 'audit-events'], queryFn: () => adminApi.auditEvents(200), enabled: hasPermission('tenant:manage') || hasPermission('platform:observe') });
+	const users = useQuery({ queryKey: ['admin', user?.id, 'audit-users'], queryFn: () => adminApi.users({ page: 1, page_size: 100 }), enabled: user?.role === 'admin' });
+	const events = useQuery({ queryKey: ['admin', user?.id, 'audit-events'], queryFn: () => adminApi.auditEvents(200), enabled: user?.role === 'admin' });
 	const overview = useMutation({
 		mutationFn: adminApi.auditOverview,
-		onSuccess: async () => { setReason(''); await queryClient.invalidateQueries({ queryKey: ['admin', user?.id, user?.tenant_id, 'audit-events'] }); },
+		onSuccess: async () => { setReason(''); await queryClient.invalidateQueries({ queryKey: ['admin', user?.id, 'audit-events'] }); },
 	});
 	const accessSession = useMutation({ mutationFn: ({ sessionId, body }: { sessionId: string; body: { overview_event_id: string; agent_id: string; reason: string } }) => adminApi.auditSession(sessionId, body), onSuccess: (data) => setSelectedResource(data.data) });
 	const accessDocument = useMutation({ mutationFn: ({ documentId, body }: { documentId: string; body: { overview_event_id: string; knowledge_base_id: string; reason: string } }) => adminApi.auditDocument(documentId, body), onSuccess: (data) => setSelectedResource(data.data) });

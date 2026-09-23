@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
 from typing import Any, Protocol
-from uuid import UUID
 
 
 logger = logging.getLogger(__name__)
@@ -61,8 +60,6 @@ class SkillObservationEvent:
     result: str
     user_id: str
     agent_id: str
-    tenant_id: str | None = None
-    membership_id: str | None = None
     session_id: str | None = None
     skill_name: str | None = None
     error_code: str | None = None
@@ -81,43 +78,11 @@ class SkillObservationEvent:
 
     def to_row(self) -> dict[str, Any]:
         """Return only the columns allowed by the persistence schema."""
-        tenant_id = self.tenant_id
-        membership_id = self.membership_id
-        try:
-            from identity.dependencies import (
-                get_bound_membership_id,
-                get_bound_tenant_id,
-            )
-        except ModuleNotFoundError:  # pragma: no cover - package import mode
-            from examples.agent_service.identity.dependencies import (
-                get_bound_membership_id,
-                get_bound_tenant_id,
-            )
-        bound_tenant_id = get_bound_tenant_id()
-        if bound_tenant_id is not None:
-            tenant_id = bound_tenant_id
-            membership_id = get_bound_membership_id()
-        for value_name, value in (
-            ("tenant_id", tenant_id),
-            ("membership_id", membership_id),
-        ):
-            if value is None or isinstance(value, UUID):
-                continue
-            try:
-                converted = UUID(str(value))
-            except (TypeError, ValueError):
-                continue
-            if value_name == "tenant_id":
-                tenant_id = converted
-            else:
-                membership_id = converted
         return {
             "event_name": self.event_name,
             "result": self.result,
             "user_id": self.user_id,
             "agent_id": self.agent_id,
-            "tenant_id": tenant_id,
-            "membership_id": membership_id,
             "session_id": self.session_id,
             "skill_name": self.skill_name,
             "error_code": self.error_code,
@@ -216,7 +181,6 @@ class PostgresSkillObservationStore:
             String,
             Table,
             Column,
-            Uuid,
         )
         from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -245,8 +209,6 @@ class PostgresSkillObservationStore:
             Column("occurred_at", DateTime(timezone=True), nullable=False),
             Column("user_id", String(255), nullable=False),
             Column("agent_id", String(255), nullable=False),
-            Column("tenant_id", Uuid(as_uuid=True), nullable=True),
-            Column("membership_id", Uuid(as_uuid=True), nullable=True),
             Column("session_id", String(255), nullable=True),
             Column("skill_name", String(255), nullable=True),
             Column("error_code", String(128), nullable=True),
@@ -264,11 +226,6 @@ class PostgresSkillObservationStore:
             Index(
                 "ix_skill_obs_user_occurred_at",
                 "user_id",
-                "occurred_at",
-            ),
-            Index(
-                "ix_skill_obs_tenant_time",
-                "tenant_id",
                 "occurred_at",
             ),
             Index(
@@ -292,20 +249,6 @@ class PostgresSkillObservationStore:
 
         async with self._engine.begin() as connection:
             await connection.run_sync(metadata.create_all)
-            if connection.dialect.name == "postgresql":
-                await connection.exec_driver_sql(
-                    "ALTER TABLE public.skill_observability_events "
-                    "ADD COLUMN IF NOT EXISTS tenant_id UUID",
-                )
-                await connection.exec_driver_sql(
-                    "ALTER TABLE public.skill_observability_events "
-                    "ADD COLUMN IF NOT EXISTS membership_id UUID",
-                )
-                await connection.exec_driver_sql(
-                    "CREATE INDEX IF NOT EXISTS ix_skill_obs_tenant_time "
-                    "ON public.skill_observability_events "
-                    "(tenant_id, occurred_at)",
-                )
 
     async def record(self, event: SkillObservationEvent) -> None:
         """Insert one event into the append-only analysis table."""
@@ -323,7 +266,7 @@ class PostgresSkillObservationStore:
         start: datetime,
         end: datetime,
         user_id: str | None = None,
-        tenant_id: str | None = None,
+        user_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Aggregate bounded Skill events for the administrator dashboard.
 
@@ -359,14 +302,10 @@ class PostgresSkillObservationStore:
             self._table.c.occurred_at >= start,
             self._table.c.occurred_at < end,
         ]
-        if tenant_id is not None:
-            try:
-                tenant_filter = UUID(str(tenant_id))
-            except (TypeError, ValueError):
-                tenant_filter = tenant_id
-            predicates.append(self._table.c.tenant_id == tenant_filter)
         if user_id is not None:
             predicates.append(self._table.c.user_id == user_id)
+        if user_ids is not None:
+            predicates.append(self._table.c.user_id.in_(user_ids))
 
         statement = (
             select(*columns)

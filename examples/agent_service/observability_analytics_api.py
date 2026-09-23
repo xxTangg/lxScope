@@ -9,24 +9,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 try:
-    from admin_api import require_observability_admin
+    from admin_api import require_admin
     from auth import AuthUser
+    from identity.context import current_tenant_id
+    from observability_analytics import ObservabilityEventStore
     from token_usage_analytics import collect_token_usage
 except ModuleNotFoundError:
-    from examples.agent_service.admin_api import require_observability_admin
+    from examples.agent_service.admin_api import require_admin
     from examples.agent_service.auth import AuthUser
+    from examples.agent_service.identity.context import current_tenant_id
+    from examples.agent_service.observability_analytics import ObservabilityEventStore
     from examples.agent_service.token_usage_analytics import collect_token_usage
-
-try:
-    from identity.dependencies import get_bound_tenant_id
-    from identity.permissions import has_permission, PLATFORM_MANAGE, PLATFORM_OBSERVE
-except ModuleNotFoundError:
-    from examples.agent_service.identity.dependencies import get_bound_tenant_id
-    from examples.agent_service.identity.permissions import (
-        has_permission,
-        PLATFORM_MANAGE,
-        PLATFORM_OBSERVE,
-    )
 
 
 class ObservabilityDaily(BaseModel):
@@ -85,7 +78,6 @@ class ObservabilityFailureBreakdown(BaseModel):
 
 
 class ObservabilityTokenUser(BaseModel):
-    tenant_id: str | None = None
     user_id: str
     username: str
     role: str
@@ -96,11 +88,9 @@ class ObservabilityTokenUser(BaseModel):
     total_tokens: int
     message_count: int
     session_count: int
-    cost: str = "0"
 
 
 class ObservabilityTokenUsage(BaseModel):
-    tenant_id: str | None = None
     input_tokens: int
     output_tokens: int
     cache_input_tokens: int
@@ -110,7 +100,6 @@ class ObservabilityTokenUsage(BaseModel):
     session_count: int
     user_count: int
     users: list[ObservabilityTokenUser]
-    cost: str = "0"
 
 
 class ObservabilityOverviewResponse(BaseModel):
@@ -257,23 +246,28 @@ observability_analytics_router = APIRouter(
 )
 
 
-def _current_tenant_id(viewer: AuthUser | None = None) -> str | None:
-    """Return the verified tenant, or global scope for platform observers."""
-
-    if viewer is not None and (
-        has_permission(viewer.permissions, PLATFORM_MANAGE)
-        or has_permission(viewer.permissions, PLATFORM_OBSERVE)
-    ):
-        return None
-
-    tenant_id = get_bound_tenant_id()
-    return str(tenant_id) if tenant_id is not None else None
-
-
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _events_for_current_tenant(request: Request) -> Any:
+    observability = getattr(request.app.state, "observability", None)
+    store = getattr(observability, "events", None)
+    tenant_id = current_tenant_id()
+    if store is None or tenant_id is None:
+        return store
+
+    tenant_prefix = f"{tenant_id}::"
+    events = [
+        event
+        for event in store.snapshot()
+        if event.user_id and event.user_id.startswith(tenant_prefix)
+    ]
+    scoped = ObservabilityEventStore(max_events=max(1, len(events)))
+    scoped.replace(events)
+    return scoped
 
 
 def _failure_type_from_code(error_code: str | None) -> str:
@@ -294,17 +288,20 @@ async def _load_skill_failures(
     *,
     start: datetime,
     end: datetime,
-    tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Read Skill failures into the same shape as project runtime failures."""
     skill_store = getattr(request.app.state, "skill_observation_store", None)
     if skill_store is None:
         return []
+    user_ids = None
+    if current_tenant_id():
+        auth = getattr(request.app.state, "auth", None)
+        user_ids = [account.id for account in await auth.list_accounts()] if auth else []
     try:
         skill_summary = await skill_store.query_skill_analytics(
             start=start,
             end=end,
-            tenant_id=tenant_id,
+            user_ids=user_ids,
         )
     except Exception:
         return []
@@ -490,23 +487,18 @@ async def get_observability_overview(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     days: int = Query(default=14, ge=1, le=90),
-    viewer: AuthUser = Depends(require_observability_admin),
+    _: AuthUser = Depends(require_admin),
 ) -> ObservabilityOverviewResponse:
     """Return one stable projection for the admin observability dashboard."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
-    tenant_id = _current_tenant_id(viewer)
 
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     if store is None:
         summary = _empty_summary()
         data_available = False
     else:
-        summary = store.summarize(
-            start=normalized_start,
-            end=normalized_end,
-            tenant_id=tenant_id,
-        )
+        summary = store.summarize(start=normalized_start, end=normalized_end)
         data_available = bool(
             getattr(getattr(observability, "settings", None), "enabled", True),
         )
@@ -515,7 +507,6 @@ async def get_observability_overview(
         request,
         start=normalized_start,
         end=normalized_end,
-        tenant_id=tenant_id,
     )
     if skill_failures:
         summary["failures"] = [
@@ -563,20 +554,6 @@ async def get_observability_overview(
             auth,
             start=normalized_start,
             end=normalized_end,
-            tenant_id=tenant_id,
-            platform_admin=(
-                tenant_id is None
-                and (
-                    has_permission(viewer.permissions, PLATFORM_MANAGE)
-                    or has_permission(viewer.permissions, PLATFORM_OBSERVE)
-                )
-            ),
-            quota_service=getattr(request.app.state, "tenant_quota_service", None),
-            tenant_member_provider=getattr(
-                request.app.state,
-                "tenant_binding_repository",
-                None,
-            ),
         )
     except Exception as exc:
         raise HTTPException(
@@ -588,10 +565,7 @@ async def get_observability_overview(
         start=normalized_start,
         end=normalized_end,
         data_available=data_available,
-        token_usage=ObservabilityTokenUsage(
-            tenant_id=tenant_id,
-            **token_usage,
-        ),
+        token_usage=ObservabilityTokenUsage(**token_usage),
         **summary,
     )
 
@@ -610,13 +584,12 @@ async def get_observability_failures(
     error_type: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
-    viewer: AuthUser = Depends(require_observability_admin),
+    _: AuthUser = Depends(require_admin),
 ) -> ObservabilityFailureCenterResponse:
     """Return one unified failure center across runtime components."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
-    tenant_id = _current_tenant_id(viewer)
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     detail = (
         store.failure_center(
             start=normalized_start,
@@ -624,7 +597,6 @@ async def get_observability_failures(
             component=component,
             error_type=error_type,
             user_id=user_id,
-            tenant_id=tenant_id,
             limit=limit,
         )
         if store is not None
@@ -639,7 +611,6 @@ async def get_observability_failures(
         request,
         start=normalized_start,
         end=normalized_end,
-        tenant_id=tenant_id,
     )
     skill_failures = [
         row
@@ -697,14 +668,13 @@ async def get_observability_component_detail(
     days: int = Query(default=14, ge=1, le=90),
     name: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
-    viewer: AuthUser = Depends(require_observability_admin),
+    _: AuthUser = Depends(require_admin),
 ) -> ObservabilityComponentDetailResponse:
     """Return detail data for the model, Agent or Tool/MCP drill-down page."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
-    tenant_id = _current_tenant_id(viewer)
 
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     detail = (
         store.component_detail(
             component,
@@ -712,7 +682,6 @@ async def get_observability_component_detail(
             end=normalized_end,
             name=name,
             user_id=user_id,
-            tenant_id=tenant_id,
         )
         if store is not None
         else _empty_component_detail(component)
@@ -743,19 +712,17 @@ async def get_observability_agent_detail(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     days: int = Query(default=14, ge=1, le=90),
-    viewer: AuthUser = Depends(require_observability_admin),
+    _: AuthUser = Depends(require_admin),
 ) -> AgentDetailResponse:
     """Return Agent executions and their related model/Tool summaries."""
     normalized_start, normalized_end = _period(start=start, end=end, days=days)
-    tenant_id = _current_tenant_id(viewer)
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     detail = (
         store.agent_detail(
             agent_name,
             start=normalized_start,
             end=normalized_end,
-            tenant_id=tenant_id,
         )
         if store is not None
         else {
@@ -793,20 +760,18 @@ async def get_observability_agent_detail(
 async def get_observability_trace(
     trace_id: str,
     request: Request,
-    viewer: AuthUser = Depends(require_observability_admin),
+    _: AuthUser = Depends(require_admin),
 ) -> ObservabilityTraceResponse:
     """Return the chronological event chain for one trace ID."""
     normalized_start, normalized_end = _period(start=None, end=None, days=90)
-    tenant_id = _current_tenant_id(viewer)
     observability = getattr(request.app.state, "observability", None)
-    store = getattr(observability, "events", None)
+    store = _events_for_current_tenant(request)
     if store is None:
         raise HTTPException(status_code=404, detail="Trace not found.")
     detail = store.trace_detail(
         trace_id,
         start=normalized_start,
         end=normalized_end,
-        tenant_id=tenant_id,
     )
     if not detail["events"]:
         raise HTTPException(status_code=404, detail="Trace not found.")

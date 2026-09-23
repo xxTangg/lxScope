@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { skillApi } from '@/api';
 import type { SkillView } from '@/api';
-import { ORGANIZATION_CHANGED_EVENT } from '@/context/auth-context';
 
 /**
  * The user's library of installed skills.
@@ -32,12 +31,6 @@ export function useSkills() {
 
 	useEffect(() => {
 		refetch();
-	}, [refetch]);
-
-	useEffect(() => {
-		const refreshForOrganization = () => void refetch();
-		window.addEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
-		return () => window.removeEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
 	}, [refetch]);
 
 	const remove = useCallback(

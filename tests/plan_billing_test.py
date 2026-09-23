@@ -16,6 +16,7 @@ sys.path.insert(0, str(SERVICE_DIR))
 
 from auth import JWTAuthService  # noqa: E402
 from longxin_admin.plan_billing import PlanBillingService, plan_billing_router  # noqa: E402
+from longxin_admin.plan_billing.models import CreatePlanOrderRequest  # noqa: E402
 
 
 class _MemoryRedis:
@@ -213,6 +214,34 @@ class PlanBillingTest(TestCase):
         self.assertEqual(current.json()["monthly_quota"], 0)
         self.assertEqual(current.json()["remaining_tokens"], 0)
         self.assertEqual(current.json()["status"], "inactive")
+
+    def test_existing_orders_use_the_current_account_username(self) -> None:
+        import asyncio
+
+        member = asyncio.run(self.auth.register("alice", "alice-password"))
+        asyncio.run(
+            self.service.create_order(
+                member,
+                CreatePlanOrderRequest(plan_id="plan_basic"),
+                idempotency_key="username-display-order",
+            ),
+        )
+        list_accounts = self.auth.list_accounts
+
+        async def renamed_accounts() -> list[Any]:
+            accounts = await list_accounts()
+            return [
+                account.model_copy(update={"username": "alice-from-logto"})
+                if account.id == member.id
+                else account
+                for account in accounts
+            ]
+
+        self.auth.list_accounts = renamed_accounts
+        result = asyncio.run(self.service.list_orders(order_status="pending"))
+
+        self.assertEqual(len(result.orders), 1)
+        self.assertEqual(result.orders[0].username, "alice-from-logto")
 
     def test_member_cannot_downgrade_after_activation(self) -> None:
         import asyncio

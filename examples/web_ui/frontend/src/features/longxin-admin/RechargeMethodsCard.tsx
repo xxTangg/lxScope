@@ -19,7 +19,7 @@ import { useAuth } from '@/hooks/useAuth';
  */
 export function RechargeMethodsCard() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const { user } = useAuth();
 	const queryClient = useQueryClient();
 	const [rechargeAmount, setRechargeAmount] = useState('');
 	const [rechargeCode, setRechargeCode] = useState('');
@@ -27,7 +27,7 @@ export function RechargeMethodsCard() {
 	const recharges = useQuery({
 		queryKey: ['admin', user?.id, 'recharges'],
 		queryFn: () => adminApi.rechargeRequests(20),
-		enabled: hasPermission('tenant:manage'),
+		enabled: user?.role === 'admin',
 		refetchInterval: 10_000,
 	});
 	const createRecharge = useMutation({

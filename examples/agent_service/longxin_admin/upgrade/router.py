@@ -6,8 +6,6 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Header, Query, Request, UploadFile
 
 from auth import AuthUser
-from identity.dependencies import get_current_application_user
-from identity.permissions import has_permission, is_platform_admin, TENANT_MANAGE
 
 from .models import (
     AdminApplyRequest,
@@ -39,23 +37,12 @@ async def _current_user(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> AuthUser:
-    return await get_current_application_user(request, authorization)
+    return await request.app.state.auth.get_current_user(authorization)
 
 
 async def _require_admin(user: AuthUser = Depends(_current_user)) -> AuthUser:
-    # The administrator console exposes upgrades to tenant administrators as
-    # well as explicit Platform Admins.  The explicit platform role remains
-    # useful for cross-tenant visibility elsewhere, but it is not required for
-    # this administrator-facing module.
-    if user.status != "active" or not (
-        has_permission(user.permissions, TENANT_MANAGE)
-        or is_platform_admin(user.permissions)
-    ):
-        raise _error(
-            "admin_required",
-            "Administrator access is required for upgrades.",
-            403,
-        )
+    if user.role != "admin" or user.status != "active":
+        raise _error("admin_required", "Administrator access is required.", 403)
     return user
 
 

@@ -108,6 +108,7 @@ celerybeat.pid
 
 # Environments
 .env
+/deploy/logto/generated/
 .venv
 env/
 venv/
@@ -172,6 +173,3 @@ host-runtime/
 
 # 本机个人部署备忘(不被 git 跟踪)
 LOCAL_DOCKER_README.md
-
-# Logto migration outputs contain deployment-specific ids and URLs.
-deploy/logto/generated/

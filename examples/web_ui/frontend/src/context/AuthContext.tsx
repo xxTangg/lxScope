@@ -1,79 +1,64 @@
-import {
-	Prompt,
-	useHandleSignInCallback,
-	useLogto,
-	type UserInfoResponse,
-} from '@logto/react';
-import {
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-} from 'react';
+import { LogtoProvider, Prompt, UserScope, useHandleSignInCallback, useLogto, type LogtoConfig } from '@logto/react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authApi, type AuthUser } from '@/api';
 import {
 	AUTH_UNAUTHORIZED_EVENT,
+	ApiError,
 	clearAccessToken,
 	getAccessToken,
+	setAccessToken,
 	setAccessTokenProvider,
 } from '@/api/client';
-import {
-	ACTIVE_ORGANIZATION_STORAGE_KEY,
-	authProvider,
-	getLogtoRedirectUri,
-	LOGTO_API_RESOURCE,
-	LOGTO_CALLBACK_PATH,
-} from '@/auth/logto-config';
-import {
-	AuthContext,
-	ORGANIZATION_CHANGED_EVENT,
-	type SignInOptions,
-	type AuthContextValue,
-	type AuthOrganization,
-	type AuthStatus,
-} from '@/context/auth-context';
+import { AuthContext, type AuthStatus } from '@/context/auth-context';
 import { queryClient } from '@/lib/query-client';
 
-function clearSessionPageState() {
+const LOGTO_ENDPOINT = import.meta.env.VITE_LOGTO_ENDPOINT?.trim() ?? '';
+const LOGTO_APP_ID = import.meta.env.VITE_LOGTO_APP_ID?.trim() ?? '';
+const LOGTO_API_RESOURCE = import.meta.env.VITE_LOGTO_API_RESOURCE?.trim() ?? '';
+const LOGTO_ENABLED = Boolean(LOGTO_ENDPOINT && LOGTO_APP_ID && LOGTO_API_RESOURCE);
+const ACTIVE_TENANT_KEY = 'lxscope_active_tenant';
+const SCOPE_REFRESH_TENANT_KEY = 'lxscope_scope_refresh_tenant';
+const LOGTO_OPERATION_TIMEOUT_MS = 15_000;
+const LOGTO_DISPLAY_INFO_TIMEOUT_MS = 5_000;
+
+const logtoConfig: LogtoConfig = {
+	endpoint: LOGTO_ENDPOINT,
+	appId: LOGTO_APP_ID,
+	resources: [LOGTO_API_RESOURCE],
+	scopes: ['offline_access', UserScope.Organizations, 'agent:use', 'tenant:manage'],
+};
+
+function withLogtoTimeout<T>(
+	operation: Promise<T>,
+	message: string,
+	timeoutMs = LOGTO_OPERATION_TIMEOUT_MS,
+): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const timeout = window.setTimeout(
+			() => reject(new Error(message)),
+			timeoutMs,
+		);
+		operation.then(
+			(value) => {
+				window.clearTimeout(timeout);
+				resolve(value);
+			},
+			(reason) => {
+				window.clearTimeout(timeout);
+				reject(reason);
+			},
+		);
+	});
+}
+
+function clearUserState() {
+	clearAccessToken();
 	queryClient.clear();
 	localStorage.removeItem('chat_last_agent');
 	localStorage.removeItem('chat_last_session');
 	localStorage.removeItem('chat_panel_layout');
-	localStorage.removeItem('chat_open_skill_panel');
-	for (const key of Object.keys(localStorage)) {
-		if (key.startsWith('chat_skill_selection:')) localStorage.removeItem(key);
-	}
 	sessionStorage.removeItem('force_tour');
-}
-
-function clearLocalUserState() {
-	clearAccessToken();
-	setAccessTokenProvider(null);
-	clearSessionPageState();
-	localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
-}
-
-function hasPermission(permissions: string[], required: string) {
-	if (permissions.includes(required)) return true;
-	const separator = required.indexOf(':');
-	if (separator < 0) return false;
-	const namespace = required.slice(0, separator);
-	return permissions.includes(`${namespace}:manage`);
-}
-
-function emptyOrganizationState(): Pick<
-	AuthContextValue,
-	'isLogto' | 'organizations' | 'activeOrganizationId' | 'organizationSelectionRequired' | 'noOrganizationAccess'
-> {
-	return {
-		isLogto: false,
-		organizations: [],
-		activeOrganizationId: null,
-		organizationSelectionRequired: false,
-		noOrganizationAccess: false,
-	};
 }
 
 function LocalAuthProvider({ children }: { children: React.ReactNode }) {
@@ -81,7 +66,7 @@ function LocalAuthProvider({ children }: { children: React.ReactNode }) {
 	const [user, setUser] = useState<AuthUser | null>(null);
 
 	const becomeAnonymous = useCallback(() => {
-		clearLocalUserState();
+		clearUserState();
 		setUser(null);
 		setStatus('anonymous');
 	}, []);
@@ -127,317 +112,297 @@ function LocalAuthProvider({ children }: { children: React.ReactNode }) {
 		}
 	}, [becomeAnonymous]);
 
-	const signIn = useCallback(async (_options?: SignInOptions) => {
-		await login('', '');
-	}, [login]);
+	const switchAccount = useCallback(async () => {
+		becomeAnonymous();
+	}, [becomeAnonymous]);
 
-	const value = useMemo<AuthContextValue>(
+	const value = useMemo(
 		() => ({
 			status,
 			user,
-			permissions: user?.permissions ?? [],
-			hasPermission: (permission: string) =>
-				hasPermission(user?.permissions ?? [], permission),
-			tenantId: user?.tenant_id ?? null,
-			membershipId: user?.membership_id ?? null,
 			login,
 			register,
 			logout,
-			signIn,
-			...emptyOrganizationState(),
-			setActiveOrganizationId: async () => undefined,
+			switchAccount,
+			logtoEnabled: false,
+			organizations: [],
+			organizationNames: {},
+			beginLogin: async () => undefined,
+			selectTenant: async () => undefined,
 		}),
-		[status, user, login, register, logout, signIn],
+		[status, user, login, register, logout, switchAccount],
 	);
 
 	return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-function normalizeOrganizations(userInfo: UserInfoResponse): AuthOrganization[] {
-	const details = new Map(
-		(userInfo.organization_data ?? []).map((organization) => [organization.id, organization]),
-	);
-	const ids = new Set([
-		...(userInfo.organizations ?? []),
-		...details.keys(),
-	]);
-
-	return [...ids].map((id) => ({
-		id,
-		name: details.get(id)?.name ?? id,
-		description: details.get(id)?.description ?? null,
-	}));
+function LogtoCallbackHandler() {
+	useHandleSignInCallback();
+	return null;
 }
 
-function hasLogtoCallbackParameters() {
-	if (window.location.pathname !== LOGTO_CALLBACK_PATH) return false;
-	const params = new URLSearchParams(window.location.search);
-	return Boolean(params.get('code') && params.get('state'));
-}
-
-function mergeLogtoProfile(user: AuthUser, userInfo: UserInfoResponse): AuthUser {
-	const profile = userInfo as UserInfoResponse & {
-		username?: string;
-		name?: string;
-		email?: string;
-		sub?: string;
-	};
-	const displayName =
-		profile.name?.trim() ||
-		profile.username?.trim() ||
-		profile.email?.trim() ||
-		user.display_name ||
-		user.username;
-	return {
-		...user,
-		display_name: displayName,
-		external_user_id: user.external_user_id || profile.sub || user.id,
-	};
-}
-
-function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
+function LogtoAuthProviderContent({ children }: { children: React.ReactNode }) {
 	const {
 		isAuthenticated,
-		isLoading: sdkLoading,
-		error: sdkError,
-		signIn: logtoSignIn,
-		signOut: logtoSignOut,
-		clearAllTokens,
-		fetchUserInfo,
+		isLoading,
 		getAccessToken,
+		getIdTokenClaims,
+		fetchUserInfo,
+		clearAllTokens,
+		signIn,
+		signOut,
 	} = useLogto();
-	const [sdkReady, setSdkReady] = useState(false);
-	const [callbackHandled, setCallbackHandled] = useState(
-		() => !hasLogtoCallbackParameters(),
-	);
-	const callback = useHandleSignInCallback(() => setCallbackHandled(true));
 	const [status, setStatus] = useState<AuthStatus>('loading');
 	const [user, setUser] = useState<AuthUser | null>(null);
-	const [organizations, setOrganizations] = useState<AuthOrganization[]>([]);
-	const [activeOrganizationId, setActiveOrganizationIdState] = useState<string | null>(
-		() => localStorage.getItem(ACTIVE_ORGANIZATION_STORAGE_KEY),
-	);
-	const activeOrganizationRef = useRef(activeOrganizationId);
-
-	// Logto's isLoading covers both the initial SDK bootstrap and every later
-	// fetch/refresh operation. Keep only the first transition as bootstrap
-	// readiness; otherwise fetching user info or an organization token would
-	// retrigger the authentication effect indefinitely.
-	useEffect(() => {
-		if (!sdkLoading) setSdkReady(true);
-	}, [sdkLoading]);
+	const [organizations, setOrganizations] = useState<string[]>([]);
+	const [organizationNames, setOrganizationNames] = useState<Record<string, string>>({});
+	const [error, setError] = useState('');
+	const activeTenant = useRef<string | null>(null);
+	const claimsRequested = useRef(false);
+	const authGeneration = useRef(0);
 
 	useEffect(() => {
-		activeOrganizationRef.current = activeOrganizationId;
-	}, [activeOrganizationId]);
+		if (!isLoading) return;
+		const timeout = window.setTimeout(() => {
+			setError('Logto 登录状态读取超时，请重试登录。');
+			setStatus('anonymous');
+		}, LOGTO_OPERATION_TIMEOUT_MS);
+		return () => window.clearTimeout(timeout);
+	}, [isLoading]);
 
-	useEffect(() => {
-		setAccessTokenProvider(async () => {
-			const organizationId = activeOrganizationRef.current;
-			if (!organizationId || !LOGTO_API_RESOURCE) return null;
-			return (await getAccessToken(LOGTO_API_RESOURCE, organizationId)) ?? null;
-		});
-
-		return () => setAccessTokenProvider(null);
-	}, [getAccessToken]);
-
-	const becomeAnonymous = useCallback(() => {
-		// A backend 401 can leave the browser with an otherwise-valid ID token
-		// but an access token signed/configured for a previous server state. Clear
-		// the SDK cache so the next sign-in starts a fresh OIDC transaction.
-		void clearAllTokens().catch(() => undefined);
-		clearSessionPageState();
-		localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
-		activeOrganizationRef.current = null;
-		setActiveOrganizationIdState(null);
-		setOrganizations([]);
-		setUser(null);
-		setStatus('anonymous');
-	}, [clearAllTokens]);
-
-	useEffect(() => {
-		const handleUnauthorized = () => becomeAnonymous();
-		window.addEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
-		return () => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
-	}, [becomeAnonymous]);
-
-	useEffect(() => {
-		let cancelled = false;
-
-		if (!sdkReady || !callbackHandled) {
+	const selectTenant = useCallback(
+		async (tenantId: string) => {
 			setStatus('loading');
-			return () => {
-				cancelled = true;
-			};
-		}
-
-		const authenticated = isAuthenticated || callback.isAuthenticated;
-		if (!authenticated || sdkError || callback.error) {
-			becomeAnonymous();
-			return () => {
-				cancelled = true;
-			};
-		}
-
-		setStatus('loading');
-		void fetchUserInfo()
-			.then(async (userInfo) => {
-				if (cancelled) return;
-				if (!userInfo) throw new Error('Logto user information was unavailable.');
-
-				const nextOrganizations = normalizeOrganizations(userInfo);
-				const storedOrganizationId = localStorage.getItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
-				const desiredOrganizationId =
-					nextOrganizations.length === 1
-						? nextOrganizations[0].id
-						: nextOrganizations.some(
-								(organization) => organization.id === storedOrganizationId,
-							)
-							? storedOrganizationId
-							: null;
-
-				if (desiredOrganizationId) {
-					const token = await getAccessToken(LOGTO_API_RESOURCE, desiredOrganizationId);
-					if (!token) throw new Error('Logto did not return an organization access token.');
-					if (cancelled) return;
-					activeOrganizationRef.current = desiredOrganizationId;
-					localStorage.setItem(ACTIVE_ORGANIZATION_STORAGE_KEY, desiredOrganizationId);
-					setActiveOrganizationIdState(desiredOrganizationId);
-					const backendContext = await authApi.context();
-					if (backendContext.provider !== 'logto') {
-						throw new Error('The backend authentication provider is not Logto.');
-					}
-					setUser(mergeLogtoProfile(backendContext.user, userInfo));
-				} else {
-					activeOrganizationRef.current = null;
-					localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
-					setActiveOrganizationIdState(null);
-					setUser(null);
+			setError('');
+			queryClient.clear();
+			try {
+				const token = await withLogtoTimeout(
+					getAccessToken(LOGTO_API_RESOURCE, tenantId),
+					'Logto 获取组织令牌超时，请重试。',
+				);
+				if (!token) {
+					throw new Error(
+						'Logto 已返回组织列表，但未签发该组织的 API 访问令牌。仅凭此结果无法判断是权限不足还是登录令牌刷新失败，请检查 Logto 本次令牌交换的结果。',
+					);
 				}
-
-				setOrganizations(nextOrganizations);
+				activeTenant.current = tenantId;
+				localStorage.setItem(ACTIVE_TENANT_KEY, tenantId);
+				setAccessToken(token);
+				setAccessTokenProvider(async () => {
+					const currentTenant = activeTenant.current;
+					if (!currentTenant) return null;
+					return (await getAccessToken(LOGTO_API_RESOURCE, currentTenant)) ?? null;
+				});
+				const currentUser = await withLogtoTimeout(
+					authApi.me(),
+					'读取组织用户信息超时，请重试。',
+				);
+				if (currentUser.tenant_id !== tenantId) {
+					throw new Error('Logto 返回的组织身份与当前选择不一致。');
+				}
+				sessionStorage.removeItem(SCOPE_REFRESH_TENANT_KEY);
+				setUser(currentUser);
 				setStatus('authenticated');
-			})
-			.catch(() => {
-				if (!cancelled) becomeAnonymous();
-			});
-
-		return () => {
-			cancelled = true;
-		};
-	}, [
-		callback.error,
-		callback.isAuthenticated,
-		callbackHandled,
-		becomeAnonymous,
-		fetchUserInfo,
-		getAccessToken,
-		isAuthenticated,
-		sdkError,
-		sdkReady,
-	]);
-
-	const activateOrganization = useCallback(
-		async (organizationId: string) => {
-			if (!organizations.some((organization) => organization.id === organizationId)) {
-				throw new Error('The selected organization is not available to this user.');
+			} catch (reason) {
+				if (
+					reason instanceof ApiError &&
+					reason.status === 403 &&
+					reason.detail.includes('does not grant lxScope access') &&
+					sessionStorage.getItem(SCOPE_REFRESH_TENANT_KEY) !== tenantId
+				) {
+					sessionStorage.setItem(SCOPE_REFRESH_TENANT_KEY, tenantId);
+					activeTenant.current = null;
+					localStorage.removeItem(ACTIVE_TENANT_KEY);
+					setAccessTokenProvider(null);
+					clearAccessToken();
+					setUser(null);
+					setStatus('loading');
+					setError('正在更新 Logto 组织权限…');
+					await clearAllTokens();
+					try {
+						await signIn({
+							redirectUri: `${window.location.origin}/auth/callback`,
+							postRedirectUri: `${window.location.origin}/login`,
+							prompt: Prompt.Consent,
+						});
+					} catch (signInError) {
+						sessionStorage.removeItem(SCOPE_REFRESH_TENANT_KEY);
+						throw signInError;
+					}
+					return;
+				}
+				activeTenant.current = null;
+				localStorage.removeItem(ACTIVE_TENANT_KEY);
+				setAccessTokenProvider(null);
+				clearAccessToken();
+				setUser(null);
+				setStatus('selecting_tenant');
+				setError(reason instanceof Error ? reason.message : '无法进入所选组织。');
+				throw reason;
 			}
-			if (activeOrganizationRef.current === organizationId) return;
-
-			const token = await getAccessToken(LOGTO_API_RESOURCE, organizationId);
-			if (!token) throw new Error('Logto did not return an organization access token.');
-			// The context request below obtains its token through the shared
-			// provider. Update the ref before requesting it so the backend resolves
-			// the newly selected tenant immediately.
-			activeOrganizationRef.current = organizationId;
-			const backendContext = await authApi.context();
-			if (backendContext.provider !== 'logto') {
-				throw new Error('The backend authentication provider is not Logto.');
-			}
-
-			localStorage.setItem(ACTIVE_ORGANIZATION_STORAGE_KEY, organizationId);
-			setActiveOrganizationIdState(organizationId);
-			const userInfo = await fetchUserInfo();
-			if (!userInfo) throw new Error('Logto user information was unavailable.');
-			setUser(mergeLogtoProfile(backendContext.user, userInfo));
-			clearSessionPageState();
-			window.dispatchEvent(
-				new CustomEvent(ORGANIZATION_CHANGED_EVENT, {
-					detail: { organizationId },
-				}),
-			);
 		},
-		[fetchUserInfo, getAccessToken, organizations],
+		[clearAllTokens, getAccessToken, signIn],
 	);
 
-	const signIn = useCallback(async (options?: SignInOptions) => {
-		if (options?.force) becomeAnonymous();
-		await logtoSignIn({
-			redirectUri: getLogtoRedirectUri(),
-			postRedirectUri: new URL('/chat', window.location.origin).toString(),
-			clearTokens: true,
-			prompt: options?.force ? Prompt.Login : undefined,
-			extraParams: { ui_locales: 'zh-CN' },
-		});
-	}, [becomeAnonymous, logtoSignIn]);
+	useEffect(() => {
+		if (isLoading) return;
+		if (!isAuthenticated) {
+			authGeneration.current += 1;
+			claimsRequested.current = false;
+			activeTenant.current = null;
+			setAccessTokenProvider(null);
+			clearUserState();
+			setUser(null);
+			setOrganizations([]);
+			setOrganizationNames({});
+			setError('');
+			setStatus('anonymous');
+			return;
+		}
+		if (claimsRequested.current) return;
 
-	const login = useCallback(async () => signIn(), [signIn]);
-	const register = useCallback(async () => signIn(), [signIn]);
+		claimsRequested.current = true;
+		const currentAuthGeneration = authGeneration.current;
+		void (async () => {
+			try {
+				const claims = await withLogtoTimeout(
+					getIdTokenClaims(),
+					'读取 Logto 登录信息超时，请重试登录。',
+				);
+				if (currentAuthGeneration !== authGeneration.current) return;
+				const ids = Array.isArray(claims?.organizations)
+					? claims.organizations.filter((item): item is string => typeof item === 'string')
+					: [];
+				setOrganizations(ids);
+				setOrganizationNames({});
+				if (ids.length === 0) {
+					setStatus('selecting_tenant');
+					setError('此 Logto 用户尚未加入任何组织。');
+					return;
+				}
+				try {
+					const userInfo = await withLogtoTimeout(
+						fetchUserInfo(),
+						'读取 Logto 组织名称超时。',
+						LOGTO_DISPLAY_INFO_TIMEOUT_MS,
+					);
+					if (currentAuthGeneration !== authGeneration.current) return;
+					const organizationData = (
+						userInfo as { organization_data?: unknown } | undefined
+					)?.organization_data;
+					if (Array.isArray(organizationData)) {
+						const allowedIds = new Set(ids);
+						const names = Object.fromEntries(
+							organizationData.flatMap((item) => {
+								if (!item || typeof item !== 'object') return [];
+								const organization = item as { id?: unknown; name?: unknown };
+								return typeof organization.id === 'string' &&
+									allowedIds.has(organization.id) &&
+									typeof organization.name === 'string' &&
+									organization.name.trim()
+									? [[organization.id, organization.name.trim()]]
+									: [];
+							}),
+						);
+						setOrganizationNames(names);
+					}
+				} catch {
+					// Organization names are a display enhancement; keep ID labels as fallback.
+				}
+				if (currentAuthGeneration !== authGeneration.current) return;
+				setError('');
+				setStatus('selecting_tenant');
+			} catch (reason) {
+				if (currentAuthGeneration !== authGeneration.current) return;
+				setStatus('selecting_tenant');
+				setError(reason instanceof Error ? reason.message : '无法读取 Logto 组织信息。');
+			}
+		})();
+	}, [fetchUserInfo, getIdTokenClaims, isAuthenticated, isLoading]);
+
+	const beginLogin = useCallback(async () => {
+		await signIn({
+			redirectUri: `${window.location.origin}/auth/callback`,
+			postRedirectUri: `${window.location.origin}/login`,
+		});
+	}, [signIn]);
+
+	const switchAccount = useCallback(async () => {
+		activeTenant.current = null;
+		localStorage.removeItem(ACTIVE_TENANT_KEY);
+		sessionStorage.removeItem(SCOPE_REFRESH_TENANT_KEY);
+		setAccessTokenProvider(null);
+		clearUserState();
+		try {
+			await clearAllTokens();
+			await signIn({
+				redirectUri: `${window.location.origin}/auth/callback`,
+				postRedirectUri: `${window.location.origin}/login`,
+				prompt: Prompt.Login,
+			});
+		} catch (reason) {
+			setUser(null);
+			setOrganizations([]);
+			setOrganizationNames({});
+			setError(reason instanceof Error ? reason.message : 'Logto 登录失败。');
+			setStatus('anonymous');
+			throw reason;
+		}
+	}, [clearAllTokens, signIn]);
 
 	const logout = useCallback(async () => {
 		try {
-			// Logto validates this URI against the application's registered
-			// post-logout redirect URIs. The root URI is registered for both
-			// localhost and 127.0.0.1; the router then redirects anonymous users
-			// to /login.
-			await logtoSignOut(new URL('/', window.location.origin).toString());
-		} catch (error) {
-			// signOut starts a full-page redirect on success, so changing the
-			// React auth state in a finally block can trigger the auto-login page
-			// before the browser reaches Logto's end-session endpoint.
-			becomeAnonymous();
-			throw error;
+			await authApi.logout();
+		} finally {
+			activeTenant.current = null;
+			localStorage.removeItem(ACTIVE_TENANT_KEY);
+			sessionStorage.removeItem(SCOPE_REFRESH_TENANT_KEY);
+			setAccessTokenProvider(null);
+			clearUserState();
+			setUser(null);
+			setStatus('loading');
+			await signOut(window.location.origin);
 		}
-	}, [becomeAnonymous, logtoSignOut]);
+	}, [signOut]);
 
-	const value = useMemo<AuthContextValue>(
+	const value = useMemo(
 		() => ({
 			status,
 			user,
-			permissions: user?.permissions ?? [],
-			hasPermission: (permission: string) =>
-				hasPermission(user?.permissions ?? [], permission),
-			tenantId: user?.tenant_id ?? null,
-			membershipId: user?.membership_id ?? null,
-			login,
-			register,
+			login: async () => undefined,
+			register: async () => undefined,
 			logout,
-			signIn,
-			isLogto: true,
+			switchAccount,
+			logtoEnabled: true,
 			organizations,
-			activeOrganizationId,
-			organizationSelectionRequired:
-				status === 'authenticated' && organizations.length > 1 && !activeOrganizationId,
-			noOrganizationAccess: status === 'authenticated' && organizations.length === 0,
-			setActiveOrganizationId: activateOrganization,
+			organizationNames,
+			beginLogin,
+			selectTenant,
+			error,
 		}),
-		[
-			activateOrganization,
-			activeOrganizationId,
-			login,
-			logout,
-			organizations,
-			register,
-			signIn,
-			status,
-			user,
-		],
+		[status, user, logout, switchAccount, organizations, organizationNames, beginLogin, selectTenant, error],
 	);
 
-	return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+	return (
+		<AuthContext.Provider value={value}>
+			<LogtoCallbackHandler />
+			{children}
+		</AuthContext.Provider>
+	);
+}
+
+function LogtoAuthProvider({ children }: { children: React.ReactNode }) {
+	return (
+		<LogtoProvider config={logtoConfig}>
+			<LogtoAuthProviderContent>{children}</LogtoAuthProviderContent>
+		</LogtoProvider>
+	);
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-	if (authProvider === 'logto') return <LogtoAuthProvider>{children}</LogtoAuthProvider>;
-	return <LocalAuthProvider>{children}</LocalAuthProvider>;
+	return LOGTO_ENABLED ? (
+		<LogtoAuthProvider>{children}</LogtoAuthProvider>
+	) : (
+		<LocalAuthProvider>{children}</LocalAuthProvider>
+	);
 }

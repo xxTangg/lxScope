@@ -242,14 +242,25 @@ export const taskApi = {
 	create: (body: CreateTaskRequest) => client.post<TaskRecord>('/tasks/', body),
 
 	generate: (taskId: string, body: GenerateTaskRequest = {}) =>
-		client.post<TaskRecord>(`/tasks/${taskId}/generate`, body),
+		client.post<TaskRecord>(`/tasks/${taskId}/generate`, body, undefined, {
+			// The backend has its own planner deadline. Keep the browser deadline
+			// slightly longer so it can return the persisted fallback/failed state.
+			timeoutMs: 60_000,
+		}),
 
 	listTools: (context: TaskContext = {}) =>
-		client.get<TaskToolSchema[]>('/tasks/tools', {
-			...(context.agent_id ? { agent_id: context.agent_id } : {}),
-			...(context.session_id ? { session_id: context.session_id } : {}),
-			...(context.workspace_id ? { workspace_id: context.workspace_id } : {}),
-		}),
+		client.get<TaskToolSchema[]>(
+			'/tasks/tools',
+			{
+				...(context.agent_id ? { agent_id: context.agent_id } : {}),
+				...(context.session_id ? { session_id: context.session_id } : {}),
+				...(context.workspace_id ? { workspace_id: context.workspace_id } : {}),
+			},
+			// Tool discovery is optional during page hydration. The caller already
+			// falls back to an empty list, so a transient MCP failure should not
+			// produce a misleading global "server unreachable" toast.
+			{ silent: true },
+		),
 
 	update: (taskId: string, body: UpdateTaskRequest) =>
 		client.patch<TaskRecord>(`/tasks/${taskId}`, body),

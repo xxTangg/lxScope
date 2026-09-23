@@ -3,13 +3,13 @@ import { createRoot } from 'react-dom/client';
 
 import './index.css';
 import './i18n';
-import { ConfiguredApp } from '@/auth/ConfiguredApp';
+import App from './App.tsx';
 import { TooltipProvider } from '@/components/ui/tooltip.tsx';
 
 createRoot(document.getElementById('root')!).render(
 	<StrictMode>
 		<TooltipProvider>
-			<ConfiguredApp />
+			<App />
 		</TooltipProvider>
 	</StrictMode>,
 );

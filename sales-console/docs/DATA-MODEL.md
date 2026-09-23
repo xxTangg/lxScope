@@ -9,7 +9,6 @@
 客户系统连接与运营信息：
 
 - `id`：销售中心内部 ID
-- `tenantId`：龙信业务租户 ID；一个 `tenantId` 只能映射一个 Customer
 - `name`：客户名称
 - `systemId`：客户系统 ID
 - `internalBaseUrl`：可选的服务器内部连接地址；优先于配置 IP，仅在网络或网关连接失败时回退
@@ -19,11 +18,6 @@
 - `status`：`active` / `disabled`
 - `lastReport`：最近一次客户系统汇总上报
 - `lastSeenIP`、`lastSeenAt`：最近上报来源
-
-商业身份映射固定为 `tenant -> customer -> system`：`tenantId` 是应用权限
-边界，`Customer.id` 是销售总台客户档案，`systemId` 是被交付实例。客户
-Token 只绑定到一个 Customer；充值、上报、升级和 Ping 都先由 Token 解析
-Customer，再校验 `systemId`，不会接受请求体提供的其他 Customer 身份。
 
 ## RechargeOrder
 

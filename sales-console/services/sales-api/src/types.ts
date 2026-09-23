@@ -15,8 +15,6 @@ export interface Staff {
 
 export interface Customer {
   id: string;
-  /** Verified business tenant represented by this Sales Hub customer. */
-  tenantId: string;
   systemId: string;
   name: string;
   environment: Environment;

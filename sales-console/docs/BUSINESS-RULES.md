@@ -4,12 +4,6 @@
 
 销售总台是多客户龙信系统的运营控制面，不直接承载普通用户的聊天或业务操作。它管理客户系统、系统级 Token 额度、充值订单、发布包和远程升级。
 
-身份映射固定为 `tenant -> customer -> system`。`tenant` 是龙信应用中的
-租户权限边界，`customer` 是销售总台客户档案，`system` 是被交付的实例。
-创建或修改 Customer 时，服务端拒绝重复的 tenant/customer/system 映射；
-旧数据在读取时以 `systemId`（缺失时以 Customer ID）作为兼容 tenant 映射，
-新数据应显式保存 `tenantId`。
-
 ## 用户权限与申请影响
 
 龙信 AI 助手的用户角色在客户系统内生效：

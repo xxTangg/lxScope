@@ -12,9 +12,9 @@
 	},
 	"dependencies": {
 		"@agentscope-ai/agentscope": "^0.0.15",
+		"@logto/react": "^4.0.14",
 		"@fontsource-variable/geist": "^5.2.8",
 		"@fontsource-variable/geist-mono": "^5.3.0",
-		"@logto/react": "^4.0.15",
 		"@neo4j-nvl/base": "1.2.2",
 		"@neo4j-nvl/react": "1.2.2",
 		"@shadcn/react": "^0.2.1",

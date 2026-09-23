@@ -44,14 +44,14 @@ function ProjectFailureList({ rows, empty, onOpen }: { rows: ObservabilityFailur
 
 export function AdminObservabilityPage() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
+	const { user } = useAuth();
 	const queryClient = useQueryClient();
 	const navigate = useNavigate();
 	const [days, setDays] = useState(14);
-	const runtimeAnalytics = useQuery({ queryKey: ['admin', user?.id, user?.tenant_id, 'observability', days], queryFn: () => adminApi.observability(days), enabled: hasPermission('tenant:manage') || hasPermission('platform:observe') });
+	const runtimeAnalytics = useQuery({ queryKey: ['admin', user?.id, 'observability', days], queryFn: () => adminApi.observability(days), enabled: user?.role === 'admin' });
 	const runtime = runtimeAnalytics.data;
 	const tokenUsage = runtime?.token_usage;
-	const refresh = () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id, user?.tenant_id, 'observability'] });
+	const refresh = () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id, 'observability'] });
 	const openComponentDetail = (component: 'model' | 'agent' | 'tool') => navigate(`/admin/observability/${component}`);
 	const clickable = (component: 'model' | 'agent' | 'tool') => ({ role: 'button' as const, tabIndex: 0, onClick: () => openComponentDetail(component), onKeyDown: (event: React.KeyboardEvent) => { if (event.key === 'Enter' || event.key === ' ') openComponentDetail(component); } });
 

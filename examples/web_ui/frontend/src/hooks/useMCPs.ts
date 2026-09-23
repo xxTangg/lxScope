@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { mcpApi } from '@/api';
 import type { MCPView, UpdateMCPRequest } from '@/api';
-import { ORGANIZATION_CHANGED_EVENT } from '@/context/auth-context';
 
 /**
  * The user's library of installed MCPs.
@@ -32,12 +31,6 @@ export function useMCPs() {
 
 	useEffect(() => {
 		refetch();
-	}, [refetch]);
-
-	useEffect(() => {
-		const refreshForOrganization = () => void refetch();
-		window.addEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
-		return () => window.removeEventListener(ORGANIZATION_CHANGED_EVENT, refreshForOrganization);
 	}, [refetch]);
 
 	const update = useCallback(

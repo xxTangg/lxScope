@@ -79,13 +79,11 @@ class AgentScopeTaskPlanner:
         *,
         storage: "StorageBase",
         resource_access_service: "ResourceAccessService",
-        quota_service: object | None = None,
     ) -> None:
         """Bind the existing application storage and access policy."""
 
         self._storage = storage
         self._access = resource_access_service
-        self._quota = quota_service
 
     async def plan(
         self,
@@ -124,8 +122,6 @@ class AgentScopeTaskPlanner:
             session.config.chat_model_config,
             self._access,
         )
-        if self._quota is not None and self._quota.enabled:
-            await self._quota.ensure_available()
         native_tasks = await _create_native_task_list(
             model=model,
             goal=goal.strip(),
@@ -146,19 +142,6 @@ class AgentScopeTaskPlanner:
             ],
             structured_model=TaskPlanDraft,
         )
-        if self._quota is not None and self._quota.enabled:
-            usage = getattr(response, "usage", None)
-            await self._quota.record_model_usage(
-                model=getattr(model, "model", None),
-                input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-                output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-                cache_input_tokens=int(getattr(usage, "cache_input_tokens", 0) or 0),
-                cache_creation_input_tokens=int(
-                    getattr(usage, "cache_creation_input_tokens", 0) or 0,
-                ),
-                membership_id=user_id,
-                source_id=f"task-plan:{context.session_id}",
-            )
         draft = TaskPlanDraft.model_validate(response.content)
         issues = validate_task_plan(draft, tool_schemas)
         if not issues:
@@ -176,19 +159,6 @@ class AgentScopeTaskPlanner:
             ],
             structured_model=TaskPlanDraft,
         )
-        if self._quota is not None and self._quota.enabled:
-            usage = getattr(repaired_response, "usage", None)
-            await self._quota.record_model_usage(
-                model=getattr(model, "model", None),
-                input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-                output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-                cache_input_tokens=int(getattr(usage, "cache_input_tokens", 0) or 0),
-                cache_creation_input_tokens=int(
-                    getattr(usage, "cache_creation_input_tokens", 0) or 0,
-                ),
-                membership_id=user_id,
-                source_id=f"task-plan-repair:{context.session_id}",
-            )
         repaired = TaskPlanDraft.model_validate(repaired_response.content)
         repaired_issues = validate_task_plan(repaired, tool_schemas)
         if repaired_issues:

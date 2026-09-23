@@ -1,4 +1,4 @@
-import { Check, CircleAlert, Download, Eye, Loader2, Play, RotateCcw, Square } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, CircleAlert, Download, Eye, Loader2, Play, RotateCcw, Square } from 'lucide-react';
 import * as React from 'react';
 
 import { TaskKnowledgeGraph } from './task-knowledge-graph';
@@ -6,6 +6,18 @@ import { taskApi } from '@/api';
 import type { NodeRunRecord, RunStatus, TaskArtifactRecord, TaskNode, TaskRunRecord, TaskStepType } from '@/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+} from '@/components/ui/dialog';
 
 interface TaskRunPanelProps {
 	run: TaskRunRecord | null;
@@ -16,7 +28,7 @@ interface TaskRunPanelProps {
 
 function runStatusLabel(status: RunStatus): string {
 	const labels: Record<RunStatus, string> = {
-		queued: '排队中',
+		queued: '等待启动',
 		running: '执行中',
 		succeeded: '已完成',
 		failed: '执行失败',
@@ -42,7 +54,7 @@ function nodeIcon(node: NodeRunRecord) {
 
 function stepTypeLabel(type: TaskStepType): string {
 	if (type === 'tool') return 'ToolStep';
-	if (type === 'python') return 'PythonStep';
+	if (type === 'python') return 'CodeStep';
 	return 'AgentStep';
 }
 
@@ -100,20 +112,22 @@ function artifactSizeLabel(size: number): string {
 export function TaskRunPanel({ run, width = 420, onCancel, onRetry }: TaskRunPanelProps) {
 	const [previewArtifact, setPreviewArtifact] = React.useState<TaskArtifactRecord | null>(null);
 	const [artifactBusyId, setArtifactBusyId] = React.useState<string | null>(null);
+	const [artifactsOpen, setArtifactsOpen] = React.useState(true);
+	const [previewGraphNodeId, setPreviewGraphNodeId] = React.useState<string | null>(null);
 
 	React.useEffect(() => {
 		setPreviewArtifact(null);
+		setPreviewGraphNodeId(null);
+		setArtifactsOpen(true);
 	}, [run?.id]);
 
-	const previewArtifactContent = async (artifact: TaskArtifactRecord) => {
-		setArtifactBusyId(artifact.id);
-		try {
-			const blob = await taskApi.getArtifactContent(run!.id, artifact.id);
-			const text = await blob.text();
-			setPreviewArtifact({ ...artifact, preview_text: text });
-		} finally {
-			setArtifactBusyId(null);
-		}
+	const previewGraphNode = run?.node_runs.find((node) => node.node_id === previewGraphNodeId);
+
+	const openArtifactPreview = (artifact: TaskArtifactRecord) => {
+		// ``preview_text`` is the task-owned, text-safe representation. Reading
+		// a .docx/.xlsx response as text produces binary gibberish, so previews
+		// deliberately use the metadata already returned for this Run.
+		setPreviewArtifact(artifact);
 	};
 
 	const downloadArtifact = async (artifact: TaskArtifactRecord) => {
@@ -207,14 +221,30 @@ export function TaskRunPanel({ run, width = 420, onCancel, onRetry }: TaskRunPan
 								</details>
 							)}
 							{definition?.knowledge_graph_enabled && (
-								<TaskKnowledgeGraph
-									taskId={run.task_id}
-									selectedIds={run.knowledge_base_ids ?? []}
-									runId={run.id}
-									nodeId={node.node_id}
-									compact
-									disabled={node.status === 'pending'}
-								/>
+								<>
+									<div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2">
+										<div className="min-w-0">
+											<div className="text-xs font-medium text-blue-900">节点知识图谱</div>
+											<div className="mt-0.5 text-[11px] text-blue-700/70">
+												在执行结果中按需查看该节点的实体关系
+											</div>
+										</div>
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											disabled={node.status === 'pending'}
+											onClick={() =>
+												setPreviewGraphNodeId((current) =>
+													current === node.node_id ? null : node.node_id,
+												)
+											}
+										>
+											<Eye />
+											预览图谱
+										</Button>
+									</div>
+								</>
 							)}
 							{node.error && (
 								<div className="mt-3 rounded-xl bg-red-50 p-3 text-sm leading-6 text-red-700">
@@ -246,17 +276,26 @@ export function TaskRunPanel({ run, width = 420, onCancel, onRetry }: TaskRunPan
 				)}
 			</div>
 			{run.artifacts?.length > 0 && (
-				<div className="mt-5 rounded-2xl border border-border bg-card p-4">
-					<div className="mb-3 flex items-center justify-between gap-2">
+				<Collapsible
+					open={artifactsOpen}
+					onOpenChange={setArtifactsOpen}
+					className="mt-5 rounded-2xl border border-border bg-card p-4"
+				>
+					<div className="flex items-center justify-between gap-2">
 						<div>
 							<div className="text-sm font-semibold">文件产物</div>
 							<div className="mt-1 text-xs text-muted-foreground">
 								已保存到当前 Workspace，并关联到本次 Run
 							</div>
 						</div>
-						<span className="text-xs text-muted-foreground">{run.artifacts.length} 个文件</span>
+						<CollapsibleTrigger asChild>
+							<Button variant="ghost" size="sm" aria-label={artifactsOpen ? '收起文件产物' : '展开文件产物'}>
+								<span>{run.artifacts.length} 个文件</span>
+								{artifactsOpen ? <ChevronUp /> : <ChevronDown />}
+							</Button>
+						</CollapsibleTrigger>
 					</div>
-					<div className="space-y-2">
+					<CollapsibleContent className="mt-3 space-y-2">
 						{run.artifacts.map((artifact) => (
 							<div key={artifact.id} className="rounded-xl border border-border/70 bg-background/70 p-3">
 								<div className="flex items-center gap-2">
@@ -270,8 +309,7 @@ export function TaskRunPanel({ run, width = 420, onCancel, onRetry }: TaskRunPan
 										<Button
 											variant="ghost"
 											size="sm"
-											disabled={artifactBusyId === artifact.id}
-											onClick={() => void previewArtifactContent(artifact)}
+											onClick={() => openArtifactPreview(artifact)}
 										>
 											<Eye />
 											预览
@@ -287,16 +325,56 @@ export function TaskRunPanel({ run, width = 420, onCancel, onRetry }: TaskRunPan
 										下载
 									</Button>
 								</div>
-								{previewArtifact?.id === artifact.id && (
-									<pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-3 text-xs leading-5">
-										{previewArtifact.preview_text}
-									</pre>
-								)}
 							</div>
 						))}
-					</div>
-				</div>
+					</CollapsibleContent>
+				</Collapsible>
 			)}
+			<Dialog
+				open={previewArtifact !== null}
+				onOpenChange={(open) => {
+					if (!open) setPreviewArtifact(null);
+				}}
+			>
+				{previewArtifact && (
+					<DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+						<DialogHeader>
+							<DialogTitle>文件预览 · {previewArtifact.name}</DialogTitle>
+							<DialogDescription>
+								{artifactFormatLabel(previewArtifact)} · {artifactSizeLabel(previewArtifact.size_bytes)}。预览内容为本次任务生成的文本摘要。
+							</DialogDescription>
+						</DialogHeader>
+						<pre className="max-h-[65vh] overflow-auto whitespace-pre-wrap rounded-xl bg-muted/50 p-4 text-sm leading-6">
+							{previewArtifact.preview_text}
+						</pre>
+					</DialogContent>
+				)}
+			</Dialog>
+			<Dialog
+				open={previewGraphNodeId !== null}
+				onOpenChange={(open) => {
+					if (!open) setPreviewGraphNodeId(null);
+				}}
+			>
+				{previewGraphNode && (
+					<DialogContent className="!w-[min(1500px,calc(100%-2rem))] !max-w-none max-h-[94vh] overflow-y-auto">
+						<DialogHeader>
+							<DialogTitle>节点知识图谱预览 · {previewGraphNode.name}</DialogTitle>
+							<DialogDescription>
+								在执行结果中查看该节点的实体关系、关系证据和来源片段；图谱支持拖动、缩放和适配视图。
+							</DialogDescription>
+						</DialogHeader>
+						<TaskKnowledgeGraph
+							taskId={run.task_id}
+							selectedIds={run.knowledge_base_ids ?? []}
+							runId={run.id}
+							nodeId={previewGraphNode.node_id}
+							preview
+							disabled={previewGraphNode.status === 'pending'}
+						/>
+					</DialogContent>
+				)}
+			</Dialog>
 			{!isTerminal(run.status) ? (
 				<div className="border-t border-border/70 px-6 py-4">
 					<Button variant="outline" size="sm" onClick={onCancel}>

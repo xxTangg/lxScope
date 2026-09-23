@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """AgentScope adapters for the typed Task step implementations."""
 
+import asyncio
 import inspect
 import json
+import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ._executor import StepExecutionResult
 from ._models import (
@@ -23,6 +25,9 @@ if TYPE_CHECKING:
     from agentscope.app.storage import StorageBase
 
 
+logger = logging.getLogger(__name__)
+
+
 class AgentScopeTaskExecutor:
     """Execute Task steps through AgentScope's existing runtime seams.
 
@@ -38,25 +43,30 @@ class AgentScopeTaskExecutor:
         *,
         storage: "StorageBase",
         resource_access_service: "ResourceAccessService",
-        quota_service: Any | None = None,
         workspace_manager: Any | None = None,
         scheduler_manager: Any | None = None,
         background_task_manager: Any | None = None,
         message_bus: Any | None = None,
         extra_agent_tools: Any | None = None,
         sub_agent_templates: dict[str, Any] | None = None,
+        mcp_reconciler: Callable[[str, str, Any, str], Awaitable[None]] | None = None,
     ) -> None:
         """Bind AgentScope storage, runtime services and access policy."""
 
         self._storage = storage
         self._access = resource_access_service
-        self._quota = quota_service
         self._workspace_manager = workspace_manager
         self._scheduler_manager = scheduler_manager
         self._background_task_manager = background_task_manager
         self._message_bus = message_bus
         self._extra_agent_tools = extra_agent_tools
         self._sub_agent_templates = sub_agent_templates
+        self._mcp_reconciler = mcp_reconciler
+        # A browser/stdin MCP owns an AnyIO stream and cannot be probed or
+        # reconnected concurrently.  The Task page can issue duplicate tool
+        # discovery requests during a React refresh, so serialize lifecycle
+        # operations per logical MCP/session.
+        self._mcp_refresh_locks: dict[tuple[str, ...], asyncio.Lock] = {}
 
     async def execute_node(
         self,
@@ -231,8 +241,6 @@ class AgentScopeTaskExecutor:
             session.config.chat_model_config,
             self._access,
         )
-        if self._quota is not None and self._quota.enabled:
-            await self._quota.ensure_available()
         response = await _collect_response(
             await model(messages=model_messages),
         )
@@ -240,18 +248,6 @@ class AgentScopeTaskExecutor:
 
         usage = None
         if response.usage is not None:
-            if self._quota is not None and self._quota.enabled:
-                await self._quota.record_model_usage(
-                    model=getattr(model, "model", None),
-                    input_tokens=int(response.usage.input_tokens),
-                    output_tokens=int(response.usage.output_tokens),
-                    cache_input_tokens=int(response.usage.cache_input_tokens),
-                    cache_creation_input_tokens=int(
-                        response.usage.cache_creation_input_tokens,
-                    ),
-                    membership_id=context.user_id,
-                    source_id=f"task:{context.run_id}:{node.id}",
-                )
             usage = Usage(
                 input_tokens=int(response.usage.input_tokens),
                 output_tokens=int(response.usage.output_tokens),
@@ -259,14 +255,6 @@ class AgentScopeTaskExecutor:
                 cache_creation_input_tokens=int(
                     response.usage.cache_creation_input_tokens,
                 ),
-            )
-        elif self._quota is not None and self._quota.enabled:
-            await self._quota.record_model_usage(
-                model=getattr(model, "model", None),
-                input_tokens=0,
-                output_tokens=0,
-                membership_id=context.user_id,
-                source_id=f"task:{context.run_id}:{node.id}",
             )
         await self._storage.upsert_message(
             context.user_id,
@@ -436,13 +424,12 @@ class AgentScopeTaskExecutor:
         workspace: Any,
         context: ExecutionContext,
     ) -> None:
-        """Repair stale stateful MCP sessions before building a Task Toolkit.
+        """Best-effort probe of stateful MCP sessions before Task Toolkit use.
 
-        The workspace owns the configured MCP records, but this application
-        adapter owns the Task request boundary. A cached client may still say
-        it is connected after its AnyIO stream has been closed. Probe it using
-        AgentScope's public MCPClient API; if that fails, close and reconnect
-        the same stored client before Toolkit assembles its MCP tools.
+        The workspace owns MCP lifecycle. Task must not close or reconnect a
+        cached stateful client here: doing so can move an AnyIO cancel scope
+        across request/reload tasks and wedge the whole Uvicorn process. A
+        stale optional MCP is therefore left unavailable for this Task call.
         """
         clients = await workspace.list_mcps(
             agent_id=context.agent_id,
@@ -451,17 +438,29 @@ class AgentScopeTaskExecutor:
         for client in clients:
             if not client.is_stateful:
                 continue
-            try:
-                await client.list_tools()
-                continue
-            except Exception:
-                # The cached session is stale or was never connected. The
-                # public close/connect lifecycle resets its private stream
-                # state without changing the Agentscope core implementation.
-                if client.is_connected:
-                    await client.close(ignore_errors=True)
-                await client.connect()
-                await client.list_tools()
+            lock_key = (
+                context.agent_id or "",
+                context.session_id or "",
+                context.workspace_id or "",
+                client.name,
+            )
+            lock = self._mcp_refresh_locks.setdefault(
+                lock_key,
+                asyncio.Lock(),
+            )
+            async with lock:
+                try:
+                    await client.list_tools()
+                    continue
+                except Exception as probe_error:
+                    logger.warning(
+                        "Task MCP '%s' is stale for agent=%s session=%s; "
+                        "skipping its tools for this call: %s",
+                        client.name,
+                        context.agent_id,
+                        context.session_id,
+                        probe_error,
+                    )
 
     async def _build_toolkit(self, context: ExecutionContext) -> Any:
         """Assemble AgentScope's standard Toolkit for the Task context."""
@@ -496,6 +495,13 @@ class AgentScopeTaskExecutor:
             context.session_id,
             session.config.workspace_id,
         )
+        if self._mcp_reconciler is not None and context.session_id is not None:
+            await self._mcp_reconciler(
+                context.user_id,
+                context.agent_id,
+                workspace,
+                context.session_id,
+            )
         await self._refresh_mcp_connections(workspace, context)
         return await get_toolkit(
             storage=self._storage,

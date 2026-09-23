@@ -71,6 +71,5 @@ class PlanOrderListResponse(BaseModel):
 
 class OrderDecisionRequest(BaseModel):
     reason: str = Field(min_length=4, max_length=300)
-    # Local-auth compatibility still verifies this value. Logto tenant
-    # administrators are authorized by TenantIdentity permissions instead.
-    admin_password: str | None = Field(default=None, min_length=1, max_length=1024)
+    admin_password: str = Field(min_length=1, max_length=1024)
+

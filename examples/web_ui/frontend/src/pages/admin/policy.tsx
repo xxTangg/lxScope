@@ -10,8 +10,8 @@ import { useTranslation } from '@/i18n/useI18n';
 
 export function AdminPolicyPage() {
 	const { t } = useTranslation();
-	const { user, hasPermission } = useAuth();
-	const policy = useQuery({ queryKey: ['admin', user?.id, 'policy'], queryFn: adminApi.policy, enabled: hasPermission('tenant:manage') });
+	const { user } = useAuth();
+	const policy = useQuery({ queryKey: ['admin', user?.id, 'policy'], queryFn: adminApi.policy, enabled: user?.role === 'admin' });
 	return (
 		<>
 			<AdminHeader title={t('admin.nav.policy')} description={t('admin.policyDescription')} />
