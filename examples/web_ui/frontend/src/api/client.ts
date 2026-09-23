@@ -1,4 +1,5 @@
 import { toast } from 'sonner';
+import i18n from '@/i18n';
 
 const getDefaultBaseUrl = () => {
 	const port = import.meta.env.VITE_AGENTSCOPE_API_PORT ?? '8001';
@@ -52,18 +53,132 @@ export const AUTH_UNAUTHORIZED_EVENT = 'agentscope:auth-unauthorized';
 
 /**
  * Structured error thrown for non-2xx HTTP responses.
- * `message` contains the human-readable detail extracted from the backend.
+ * `message` contains readable text; machine code and correlation ID remain
+ * available separately for diagnostics.
  */
 export class ApiError extends Error {
 	readonly status: number;
 	readonly detail: string;
+	readonly code?: string;
+	readonly requestId?: string;
 
-	constructor(status: number, detail: string) {
+	constructor(
+		status: number,
+		detail: string,
+		metadata: { code?: string; requestId?: string } = {},
+	) {
 		super(detail);
 		this.name = 'ApiError';
 		this.status = status;
 		this.detail = detail;
+		this.code = metadata.code;
+		this.requestId = metadata.requestId;
 	}
+}
+
+type ErrorRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): ErrorRecord | null {
+	return value && typeof value === 'object' && !Array.isArray(value)
+		? (value as ErrorRecord)
+		: null;
+}
+
+function parseJson(value: string): unknown {
+	try {
+		return JSON.parse(value) as unknown;
+	} catch {
+		return undefined;
+	}
+}
+
+function findErrorMetadata(
+	value: unknown,
+	depth = 0,
+): { code?: string; requestId?: string } {
+	if (depth > 5) return {};
+	if (typeof value === 'string') {
+		const parsed = parseJson(value);
+		return parsed === undefined ? {} : findErrorMetadata(parsed, depth + 1);
+	}
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const found = findErrorMetadata(item, depth + 1);
+			if (found.code || found.requestId) return found;
+		}
+		return {};
+	}
+	const record = asRecord(value);
+	if (!record) return {};
+	const code = typeof record.code === 'string' ? record.code : undefined;
+	const requestId =
+		typeof record.request_id === 'string'
+			? record.request_id
+			: typeof record.requestId === 'string'
+				? record.requestId
+				: undefined;
+	for (const key of ['detail', 'error', 'errors']) {
+		const found = findErrorMetadata(record[key], depth + 1);
+		if (found.code || found.requestId) {
+			return { code: code ?? found.code, requestId: requestId ?? found.requestId };
+		}
+	}
+	return { code, requestId };
+}
+
+function isSafePlainMessage(value: string): boolean {
+	return (
+		value.length > 0 &&
+		value.length <= 300 &&
+		!/[\r\n]/.test(value) &&
+		!['{', '[', '<'].includes(value.trimStart()[0] ?? '') &&
+		!/<\/?(?:html|!doctype)/i.test(value) &&
+		!/\b(?:traceback|stack trace|syntaxerror|referenceerror)\b/i.test(value)
+	);
+}
+
+function readHumanMessage(value: unknown, depth = 0): string | null {
+	if (depth > 5 || value == null) return null;
+	if (typeof value === 'string') {
+		const trimmed = value.trim();
+		if (!trimmed) return null;
+		const parsed = parseJson(trimmed);
+		if (parsed !== undefined) return readHumanMessage(parsed, depth + 1);
+		return isSafePlainMessage(trimmed) ? trimmed : null;
+	}
+	if (Array.isArray(value)) {
+		const messages = value
+			.map((item) => {
+				const record = asRecord(item);
+				return readHumanMessage(record?.msg ?? item, depth + 1);
+			})
+			.filter((message): message is string => Boolean(message));
+		return messages.length > 0 ? [...new Set(messages)].join('\n') : null;
+	}
+	const record = asRecord(value);
+	if (!record) return null;
+	for (const key of ['message', 'msg', 'detail', 'error_description', 'error', 'errors']) {
+		if (record[key] === undefined) continue;
+		const message = readHumanMessage(record[key], depth + 1);
+		if (message) return message;
+	}
+	return null;
+}
+
+/** Convert structured API error responses into plain user-facing text. */
+export function createApiError(status: number, responseBody: string, statusText = ''): ApiError {
+	const payload = parseJson(responseBody);
+	const metadata = findErrorMetadata(payload);
+	const message = readHumanMessage(payload) ??
+		(isSafePlainMessage(responseBody.trim()) ? responseBody.trim() : null) ??
+		(status === 0 ? i18n.t('apiErrors.network') : null) ??
+		(status === TIMEOUT_STATUS ? i18n.t('apiErrors.timeout') : null) ??
+		(statusText && isSafePlainMessage(statusText) ? statusText : null) ??
+		i18n.t('apiErrors.requestFailed', { status });
+	const localizedMessage = metadata.code && i18n.exists(`apiErrors.codes.${metadata.code}`)
+		? i18n.t(`apiErrors.codes.${metadata.code}`)
+		: message;
+	return new ApiError(status, localizedMessage, metadata);
 }
 
 interface RequestOptions {
@@ -94,19 +209,6 @@ async function buildHeaders(hasJsonBody: boolean, authenticated: boolean): Promi
 	if (authenticated && token) headers.Authorization = `Bearer ${token}`;
 	if (hasJsonBody) headers['Content-Type'] = 'application/json';
 	return headers;
-}
-
-/** Parse the response body and extract the `detail` field if the backend returned JSON. */
-async function extractErrorDetail(res: Response): Promise<string> {
-	const text = await res.text();
-	try {
-		const json = JSON.parse(text) as { detail?: unknown };
-		if (typeof json.detail === 'string') return json.detail;
-		if (json.detail !== undefined) return JSON.stringify(json.detail);
-	} catch {
-		// not JSON – fall through
-	}
-	return text || res.statusText;
 }
 
 async function streamRequest(path: string, options: RequestOptions = {}): Promise<Response> {
@@ -178,23 +280,19 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 			// server: wrong address, DNS failure, refused connection, blocked
 			// preflight. Status 0 distinguishes that from any HTTP-level failure.
 			const error = timedOut
-				? new ApiError(TIMEOUT_STATUS, 'The server took too long to respond.')
-				: new ApiError(
-						0,
-						'Cannot reach the server. Check the server address and your network.',
-					);
+				? createApiError(TIMEOUT_STATUS, '')
+				: createApiError(0, '');
 			if (!silent) toast.error(error.detail);
 			throw error;
 		}
 	}
 
 	if (!res.ok) {
-		const detail = await extractErrorDetail(res);
-		const error = new ApiError(res.status, detail);
+		const error = createApiError(res.status, await res.text(), res.statusText);
 		if (res.status === 401 && authenticated && getAccessToken()) {
 			window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT));
 		}
-		if (!silent) toast.error(detail);
+		if (!silent) toast.error(error.message);
 		throw error;
 	}
 

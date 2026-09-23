@@ -60,6 +60,15 @@
 		"retry": "Retry",
 		"home": "Back to home"
 	},
+	"apiErrors": {
+		"network": "Cannot reach the server. Check the network or server address and try again.",
+		"timeout": "The server took too long to respond. Please try again later.",
+		"requestFailed": "The request could not be completed ({{status}}). Please try again later.",
+		"codes": {
+			"hub_not_configured": "Sales Hub is not configured yet. Configure it before trying again.",
+			"sales_hub_not_configured": "Sales Hub is not configured yet. Configure it before trying again."
+		}
+	},
 	"tool": {
 		"callGeneric": "Call tool",
 		"read": {

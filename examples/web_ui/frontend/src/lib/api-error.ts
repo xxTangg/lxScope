@@ -1,12 +1,6 @@
 import { ApiError } from '@/api/client';
 
-/**
- * FastAPI 422 responses put a pydantic ``.errors()`` array in ``detail``.
- * `client.ts` stringifies that array, so what we get here is a JSON string
- * like ``[{"type":"value_error","loc":[...],"msg":"..."}]``. Show only the
- * ``msg`` fields — that's the human-readable part; ``type`` / ``loc`` /
- * ``input`` are noise for end users.
- */
+/** Keep a compatibility path for older callers that still pass serialized validation details. */
 export function formatApiErrorForAlert(err: unknown): string {
 	if (err instanceof ApiError) {
 		const { detail } = err;

@@ -60,6 +60,15 @@
 		"retry": "重试",
 		"home": "返回首页"
 	},
+	"apiErrors": {
+		"network": "无法连接服务器，请检查网络或服务器地址后重试。",
+		"timeout": "服务器响应超时，请稍后重试。",
+		"requestFailed": "请求未能完成（{{status}}），请稍后重试。",
+		"codes": {
+			"hub_not_configured": "销售总台尚未配置，暂时无法完成此操作。请先完成销售总台配置后重试。",
+			"sales_hub_not_configured": "销售总台尚未配置，暂时无法完成此操作。请先完成销售总台配置后重试。"
+		}
+	},
 	"tool": {
 		"callGeneric": "调用工具",
 		"read": {

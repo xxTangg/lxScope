@@ -92,27 +92,9 @@ export function PlanOrdersCard() {
 			return { message: t('billing.decisionErrorTimeout'), requestId: '' };
 		}
 
-		let code = '';
-		let message = decide.error.detail;
-		let requestId = '';
-		try {
-			const payload: unknown = JSON.parse(decide.error.detail);
-			if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-				const structured = payload as {
-					code?: unknown;
-					message?: unknown;
-					request_id?: unknown;
-				};
-				message = t('billing.decisionErrorGeneric');
-				if (typeof structured.code === 'string') code = structured.code;
-				if (typeof structured.message === 'string') message = structured.message;
-				if (typeof structured.request_id === 'string') requestId = structured.request_id;
-			} else if (Array.isArray(payload)) {
-				message = t('billing.decisionErrorGeneric');
-			}
-		} catch {
-			// Plain-text server errors are already suitable for display.
-		}
+		const code = decide.error.code ?? '';
+		const message = decide.error.detail || t('billing.decisionErrorGeneric');
+		const requestId = decide.error.requestId ?? '';
 
 		const localizedMessage: Record<string, string> = {
 			quota_insufficient: t('billing.decisionErrorQuotaInsufficient'),
