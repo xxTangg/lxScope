@@ -5,6 +5,7 @@ export type AdminUserStatus = 'active' | 'locked' | 'banned' | 'deleted';
 
 export interface AdminUser {
 	id: string;
+	subject_id?: string | null;
 	username: string;
 	role: 'user' | 'admin';
 	status: AdminUserStatus;

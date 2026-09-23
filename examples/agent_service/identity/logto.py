@@ -94,6 +94,7 @@ class LogtoAuthService:
                             "client_id": self._management_client_id,
                             "client_secret": self._management_client_secret,
                             "resource": self._management_api_resource,
+                            "scope": "all",
                         },
                     )
                     response.raise_for_status()

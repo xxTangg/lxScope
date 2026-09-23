@@ -210,6 +210,7 @@ def _load_ed25519_public_key(value: Any) -> Any:
 class AdminUserView(BaseModel):
     id: str
     username: str
+    subject_id: str | None = None
     role: Literal["user", "admin"]
     status: Literal["active", "locked", "banned", "deleted"]
     plan_id: str
@@ -752,6 +753,7 @@ class AdminService:
             )
         return AdminUserView(
             id=account.id,
+            subject_id=account.subject_id,
             username=account.username,
             role=account.role,
             status=account.status,

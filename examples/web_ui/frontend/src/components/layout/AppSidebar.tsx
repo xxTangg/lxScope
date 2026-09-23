@@ -231,6 +231,14 @@ export function AppSidebar() {
 									<div className="font-medium text-foreground">
 										{user?.username}
 									</div>
+									{user && (user.subject_id ?? user.id) !== user.username && (
+										<div
+											className="mt-0.5 truncate font-mono text-xs font-normal text-muted-foreground"
+											title={user.subject_id ?? user.id}
+										>
+											{t('auth.userId')}: {user.subject_id ?? user.id}
+										</div>
+									)}
 									<div className="mt-0.5 font-sans text-xs font-normal">
 										{t('auth.brand')}
 									</div>

@@ -68,6 +68,7 @@ class LogtoProfileResolutionTest(IsolatedAsyncioTestCase):
         self.assertEqual(second, "lxscope_admin")
         self.assertEqual(len(_ManagementClient.posts), 1)
         self.assertEqual(len(_ManagementClient.gets), 1)
+        self.assertEqual(_ManagementClient.posts[0][1]["scope"], "all")
         self.assertEqual(
             _ManagementClient.gets[0][0],
             "https://tenant.logto.app/api/users/dfalxplsltko",
