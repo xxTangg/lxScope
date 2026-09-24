@@ -1050,6 +1050,57 @@ tr.selected-row td {
   font-size: 12px;
 }
 
+.approval-modal-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(24 24 27 / 42%);
+}
+.approval-dialog {
+  width: min(100%, 460px);
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 24px 70px rgb(24 24 27 / 22%);
+}
+.approval-dialog > header,
+.approval-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.approval-dialog h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.approval-dialog header p,
+.approval-dialog-note {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.approval-dialog .field-label {
+  color: var(--ink);
+}
+.approval-dialog > footer {
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.approval-dialog > footer .primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
 @media (max-width: 1220px) {
   .sidebar {
     width: 210px;

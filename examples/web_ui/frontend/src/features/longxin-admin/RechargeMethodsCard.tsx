@@ -214,13 +214,15 @@ export function RechargeMethodsCard() {
 						: item.status === 'rejected'
 							? t('admin.rejected')
 							: t('admin.unknownStatus');
-			const statusLabel = isDelivered
+							const statusLabel = isDelivered
 								? t('admin.delivered')
 								: item.status === 'pending'
 									? t('admin.sentAwaitingApproval')
 									: item.status === 'approved'
 										? t('admin.approvedAwaitingSync')
-										: t('admin.waitingDelivery');
+										: item.status === 'rejected'
+											? t('admin.rejected')
+											: t('admin.unknownStatus');
 							return (
 								<div
 									key={item.order_id}
@@ -237,7 +239,15 @@ export function RechargeMethodsCard() {
 											</div>
 										)}
 									</div>
-									<Badge variant={isDelivered ? 'default' : 'outline'}>
+									<Badge
+										variant={
+											item.status === 'rejected'
+												? 'destructive'
+												: isDelivered
+													? 'default'
+													: 'outline'
+										}
+									>
 										{statusLabel}
 									</Badge>
 								</div>

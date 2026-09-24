@@ -1227,6 +1227,8 @@ function Requests({ refreshToken }: { refreshToken: number }) {
   >([]);
   const [error, setError] = useState('');
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [approvalOrder, setApprovalOrder] = useState<(typeof orders)[number] | null>(null);
+  const [approvalAmount, setApprovalAmount] = useState('');
   const load = useCallback(
     () => {
       setError('');
@@ -1242,14 +1244,13 @@ function Requests({ refreshToken }: { refreshToken: number }) {
   async function process(
     id: string,
     action: 'approve' | 'reject',
-    requestedAmount?: number | null,
+    amount?: number,
     requestId?: string,
   ) {
-    const amount =
-      action === 'approve'
-        ? Number(window.prompt('确认充值金额（元）', String(requestedAmount ?? '')))
-        : undefined;
-    if (action === 'approve' && (!amount || amount <= 0)) return;
+    if (action === 'approve' && (!Number.isFinite(amount) || amount! <= 0)) {
+      setError('请输入大于 0 的有效到账金额');
+      return;
+    }
     if (processingId) return;
     setProcessingId(id);
     setError('');
@@ -1257,11 +1258,12 @@ function Requests({ refreshToken }: { refreshToken: number }) {
       await api(`/api/v1/recharge-requests/${id}/${action}`, {
         method: 'POST',
         body: JSON.stringify({
-          ...(action === 'approve' ? { amount: Number(amount).toFixed(2) } : {}),
+          ...(action === 'approve' ? { amount: amount!.toFixed(2) } : {}),
           ...(requestId ? { request_id: requestId } : {}),
         }),
       });
-      load();
+      if (action === 'approve') setApprovalOrder(null);
+      await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '操作失败');
     } finally {
@@ -1307,9 +1309,11 @@ function Requests({ refreshToken }: { refreshToken: number }) {
                       <button
                         className="primary small"
                         disabled={processingId !== null}
-                        onClick={() =>
-                          process(order.id, 'approve', order.requestedAmount, order.requestId)
-                        }
+                        onClick={() => {
+                          setError('');
+                          setApprovalAmount(String(order.requestedAmount ?? ''));
+                          setApprovalOrder(order);
+                        }}
                       >
                         <Check size={14} />
                         批准
@@ -1336,6 +1340,76 @@ function Requests({ refreshToken }: { refreshToken: number }) {
           />
         )}
       </Panel>
+      {approvalOrder && (
+        <div className="approval-modal-backdrop">
+          <form
+            className="approval-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="approval-dialog-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void process(
+                approvalOrder.id,
+                'approve',
+                Number(approvalAmount),
+                approvalOrder.requestId,
+              );
+            }}
+          >
+            <header>
+              <div>
+                <h2 id="approval-dialog-title">确认充值审批</h2>
+                <p>
+                  {approvalOrder.customerName} · 申请金额{' '}
+                  {money(approvalOrder.requestedAmount ?? undefined)}
+                </p>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="关闭"
+                disabled={processingId !== null}
+                onClick={() => setApprovalOrder(null)}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            {error && <p className="form-error">{error}</p>}
+            <label className="field-label" htmlFor="approval-amount">
+              确认到账金额（元）
+              <input
+                autoFocus
+                id="approval-amount"
+                type="number"
+                min="0.01"
+                step="0.01"
+                required
+                value={approvalAmount}
+                onChange={(event) => setApprovalAmount(event.target.value)}
+                disabled={processingId !== null}
+              />
+            </label>
+            <p className="approval-dialog-note">
+              批准后会生成充值码并增加该客户的充值额度，请先核实到账凭证。
+            </p>
+            <footer>
+              <button
+                className="secondary"
+                type="button"
+                disabled={processingId !== null}
+                onClick={() => setApprovalOrder(null)}
+              >
+                取消
+              </button>
+              <button className="primary" type="submit" disabled={processingId !== null}>
+                <Check size={14} />
+                {processingId !== null ? '处理中…' : '确认批准'}
+              </button>
+            </footer>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

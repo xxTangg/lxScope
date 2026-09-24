@@ -1,0 +1,77 @@
+services:
+  sales-api:
+    image: node:20-bookworm-slim
+    working_dir: /app
+    command: >-
+      sh -c "corepack enable &&
+      pnpm install --filter sales-api... --frozen-lockfile=false &&
+      pnpm --filter sales-api dev"
+    environment:
+      NODE_ENV: development
+      SALES_API_PORT: "44100"
+      SALES_DATA_DIR: /data
+      SALES_ADMIN_USERNAME: ${SALES_ADMIN_USERNAME:-admin}
+      SALES_ADMIN_PASSWORD: ${SALES_ADMIN_PASSWORD:-change-me}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://127.0.0.1:44101}
+      SALES_PUBLIC_URL: ${SALES_PUBLIC_URL:-http://127.0.0.1:44100}
+      DATABASE_URL: ""
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "127.0.0.1:44100:44100"
+    volumes:
+      - .:/app
+      - sales-api-root-node-modules:/app/node_modules
+      - sales-api-node-modules:/app/services/sales-api/node_modules
+      - sales-api-data:/data
+      - sales-api-pnpm-store:/root/.local/share/pnpm/store
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:44100/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - customer
+
+  admin-web:
+    image: node:20-bookworm-slim
+    working_dir: /app
+    command: >-
+      sh -c "corepack enable &&
+      pnpm install --filter admin-web... --frozen-lockfile=false &&
+      pnpm --filter admin-web exec vite --host 0.0.0.0"
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      SALES_API_PROXY_TARGET: http://sales-api:44100
+    depends_on:
+      sales-api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:44101:44101"
+    volumes:
+      - .:/app
+      - admin-web-root-node-modules:/app/node_modules
+      - admin-web-node-modules:/app/apps/admin-web/node_modules
+      - admin-web-pnpm-store:/root/.local/share/pnpm/store
+    restart: unless-stopped
+    networks:
+      - customer
+
+networks:
+  customer:
+    external: true
+    name: ${CUSTOMER_DOCKER_NETWORK:-lxscope-h_default}
+
+volumes:
+  sales-api-root-node-modules:
+  sales-api-node-modules:
+  sales-api-data:
+  sales-api-pnpm-store:
+  admin-web-root-node-modules:
+  admin-web-node-modules:
+  admin-web-pnpm-store:

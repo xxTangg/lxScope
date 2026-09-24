@@ -406,6 +406,7 @@ export interface RechargeRequest {
 	delivery_status: 'not_delivered' | 'delivered';
 	created_at: string;
 	request_id: string;
+	decision_reason?: string | null;
 }
 
 export interface RechargeRequestListResponse {

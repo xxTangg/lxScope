@@ -39,6 +39,7 @@
 | 状态 | 方法 | 路径                                                   | 用途                     |
 | ---- | ---- | ------------------------------------------------------ | ------------------------ |
 | [x]  | POST | `/api/v1/integration/recharge-requests`                | 提交线上充值申请         |
+| [x]  | GET  | `/api/v1/integration/recharge-requests/status`          | 查询申请审批状态         |
 | [x]  | GET  | `/api/v1/integration/recharge-requests/poll`           | 轮询已审批充值码         |
 | [x]  | POST | `/api/v1/integration/recharge-requests/{order_id}/ack` | 确认已兑换               |
 | [x]  | GET  | `/api/v1/integration/recharge-codes/legacy`            | 同步历史离线充值码 nonce |

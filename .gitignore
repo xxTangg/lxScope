@@ -150,6 +150,7 @@ docs/tutorial/**/.doctrees/
 *.pickle
 
 node_modules/
+.pnpm-store/
 package-lock.json
 *.tsbuildinfo
 .wireit/

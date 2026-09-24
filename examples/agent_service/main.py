@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import os
 import sys
+from types import SimpleNamespace
 from uuid import uuid4
 
 import uvicorn
@@ -501,7 +502,7 @@ app.state.task_store = TaskStore()
 app.state.observability = project_observability
 
 
-async def _request_identity(request: Request) -> AuthUser | None:
+async def _request_identity(request: Request) -> AuthUser | SimpleNamespace | None:
     """Resolve the request identity for tenancy and project event context."""
     authorization = request.headers.get("authorization")
     auth = getattr(request.app.state, "auth", None)
@@ -513,6 +514,23 @@ async def _request_identity(request: Request) -> AuthUser | None:
         # Authentication dependencies remain the source of truth.  The
         # observability path must not turn an unauthenticated request into a
         # service failure.
+        if request.url.path.startswith("/integration/sales/v1/"):
+            admin_service = getattr(request.app.state, "admin_service", None)
+            resolve_tenant = getattr(
+                admin_service,
+                "sales_hub_tenant_for_authorization",
+                None,
+            )
+            if callable(resolve_tenant):
+                try:
+                    tenant_id = await resolve_tenant(authorization)
+                except Exception:
+                    tenant_id = None
+                if tenant_id:
+                    # Sales Hub callbacks use their customer token rather than
+                    # a Logto user token. Resolve the tenant here so the normal
+                    # tenant-scoped storage reads that tenant's config.
+                    return SimpleNamespace(id="", tenant_id=tenant_id)
         return None
 
 

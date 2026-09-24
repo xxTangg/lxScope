@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 from agentscope.app.storage import MCPRecord, SkillRecord
 from agentscope.mcp import MCPClient
 from auth import AuthUser, JWTAuthService
+from identity.context import current_tenant_id
 from longxin_admin.distributed_lock import DistributedLease
 from longxin_admin.plan_billing.catalog import (
     PLAN_VALUES,
@@ -38,6 +39,7 @@ _logger = logging.getLogger(__name__)
 
 _PREFIX = "longxin:admin:v1"
 _SALES_HUB_KEY = "longxin:sales-hub:v1:config"
+_SALES_HUB_TOKEN_TENANT_INDEX_PREFIX = "longxin:sales-hub:v1:tenant-by-token:"
 _LEDGER_KEY = f"{_PREFIX}:ledger"
 _AUDIT_KEY = f"{_PREFIX}:audit"
 _RESOURCE_PUBLICATIONS_KEY = f"{_PREFIX}:resource-publications"
@@ -435,9 +437,16 @@ class RechargeRequestView(BaseModel):
     delivery_status: Literal["not_delivered", "delivered"] = "not_delivered"
     created_at: str
     request_id: str = ""
+    decision_reason: str | None = None
 
 
 class RechargeRequestListResponse(BaseModel):
+    orders: list[RechargeRequestView]
+    total: int
+    request_id: str
+
+
+class RechargeRequestStatusResponse(BaseModel):
     orders: list[RechargeRequestView]
     total: int
     request_id: str
@@ -578,6 +587,63 @@ class AdminService:
         if client is None:
             raise _error("storage_not_ready", "Admin storage is not ready.", 503)
         return client
+
+    def _base_client(self) -> Any:
+        get_base_client = getattr(self._storage, "get_base_client", None)
+        if callable(get_base_client):
+            client = get_base_client()
+            if client is None:
+                raise _error("storage_not_ready", "Admin storage is not ready.", 503)
+            return client
+        return self._client()
+
+    @staticmethod
+    def _hub_token_tenant_index_key(token: str) -> str:
+        fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        return f"{_SALES_HUB_TOKEN_TENANT_INDEX_PREFIX}{fingerprint}"
+
+    @staticmethod
+    def _redis_text(value: Any) -> str | None:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="ignore")
+        return value if isinstance(value, str) and value else None
+
+    async def _register_hub_token_tenant(
+        self,
+        tenant_id: str,
+        token: str,
+        *,
+        previous_token: str | None = None,
+    ) -> None:
+        if not tenant_id or not token:
+            return
+        client = self._base_client()
+        index_key = self._hub_token_tenant_index_key(token)
+        existing_tenant = self._redis_text(await client.get(index_key))
+        if existing_tenant and existing_tenant != tenant_id:
+            raise _error(
+                "sales_hub_token_tenant_conflict",
+                "The Sales Hub token is already assigned to another tenant.",
+                409,
+            )
+        if previous_token and previous_token != token:
+            previous_key = self._hub_token_tenant_index_key(previous_token)
+            previous_tenant = self._redis_text(await client.get(previous_key))
+            if previous_tenant == tenant_id:
+                await client.delete(previous_key)
+        await client.set(index_key, tenant_id)
+
+    async def sales_hub_tenant_for_authorization(
+        self,
+        authorization: str | None,
+    ) -> str | None:
+        scheme, _, token = (authorization or "").partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            return None
+        tenant_id = await self._base_client().get(
+            self._hub_token_tenant_index_key(token.strip()),
+        )
+        return self._redis_text(tenant_id)
 
     async def _hub_connection_config(self) -> dict[str, Any]:
         value = await self._read_json(_SALES_HUB_KEY) or {}
@@ -2047,6 +2113,57 @@ class AdminService:
             value = await self._read_json(self._order_key(order_id))
             if value:
                 result.append(RechargeRequestView.model_validate(value))
+        linked_orders = [order for order in result if order.request_id]
+        if not linked_orders:
+            return result
+
+        system_id = (await self._system())["system_id"]
+        status_request_id = f"req-{uuid4().hex}"
+        try:
+            remote = await self._hub_request(
+                "GET",
+                "/api/v1/integration/recharge-requests/status",
+                request_id=status_request_id,
+                params={
+                    "system_id": system_id,
+                    "order_ids": ",".join(order.order_id for order in linked_orders),
+                },
+            )
+            snapshot = RechargeRequestStatusResponse.model_validate(remote)
+        except (HTTPException, ValidationError) as exc:
+            _logger.warning("Failed to refresh Sales Hub recharge statuses: %s", exc)
+            return result
+
+        if snapshot.request_id != status_request_id:
+            _logger.warning("Sales Hub recharge status response had a mismatched request ID")
+            return result
+
+        remote_by_id = {order.order_id: order for order in snapshot.orders}
+        for order in linked_orders:
+            remote_order = remote_by_id.get(order.order_id)
+            if (
+                remote_order is None
+                or remote_order.system_id != system_id
+                or remote_order.request_id != order.request_id
+            ):
+                continue
+            changed = (
+                order.status != remote_order.status
+                or order.delivery_status != remote_order.delivery_status
+                or order.decision_reason != remote_order.decision_reason
+            )
+            if not changed:
+                continue
+            order.status = remote_order.status
+            order.delivery_status = remote_order.delivery_status
+            order.decision_reason = remote_order.decision_reason
+            stored = await self._read_json(self._order_key(order.order_id))
+            if stored is not None:
+                stored["status"] = order.status
+                stored["delivery_status"] = order.delivery_status
+                if order.decision_reason is not None:
+                    stored["decision_reason"] = order.decision_reason
+                await self._write_json(self._order_key(order.order_id), stored)
         return result
 
     async def sync_recharge(
@@ -2571,6 +2688,11 @@ class AdminService:
             if existing is not None:
                 return existing
             value = await self._read_json(_SALES_HUB_KEY) or {}
+            previous_token = value.get("token")
+            if isinstance(previous_token, str) and previous_token:
+                previous_token = _unseal_secret(previous_token)
+            else:
+                previous_token = None
             if body.system_id is not None:
                 value["system_id"] = body.system_id
                 system = await self._system()
@@ -2588,6 +2710,14 @@ class AdminService:
                     _load_ed25519_public_key(body.public_key)
                 value["public_key"] = body.public_key
             await self._write_json(_SALES_HUB_KEY, value)
+            tenant_id = current_tenant_id()
+            current_token = body.token or previous_token
+            if tenant_id and current_token:
+                await self._register_hub_token_tenant(
+                    tenant_id,
+                    current_token,
+                    previous_token=previous_token,
+                )
             result = await self.hub_config()
             await self._audit(
                 actor=actor,
@@ -2617,6 +2747,11 @@ class AdminService:
                     "message": "Sales Hub is not configured.",
                 },
             )
+        stored_token = value.get("token")
+        token = _unseal_secret(stored_token) if isinstance(stored_token, str) else ""
+        tenant_id = current_tenant_id()
+        if tenant_id and token:
+            await self._register_hub_token_tenant(tenant_id, token)
         try:
             result = await self._hub_request(
                 "POST",

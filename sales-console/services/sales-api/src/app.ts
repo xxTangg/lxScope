@@ -285,6 +285,7 @@ function canonicalTarget(url: string, method: string): string | null {
     if (integrationPath === 'usage-reports') return `/api/reports${search}`;
     if (integrationPath === 'verify-connection') return `/api/verify-connection${search}`;
     if (integrationPath === 'recharge-codes/legacy') return `/api/recharge-codes/legacy${search}`;
+    if (integrationPath === 'recharge-requests/status') return `/api/recharge-requests/status${search}`;
     if (integrationPath === 'recharge-requests') return `/api/recharge-requests${search}`;
     if (integrationPath === 'recharge-requests/poll') return `/api/recharge-requests/poll${search}`;
     const ackMatch = /^recharge-requests\/([^/]+)\/ack$/.exec(integrationPath);
@@ -376,6 +377,14 @@ function canonicalResponseFor(
       system_id: converted.system_id ?? converted.systemId,
       status: 'pending',
       delivery_status: 'not_delivered',
+      request_id: id,
+    };
+  }
+  if (canonicalPath === '/api/v1/integration/recharge-requests/status' && req.method === 'GET') {
+    const raw = asRecord(body) ?? {};
+    return {
+      ...raw,
+      orders: Array.isArray(raw.orders) ? raw.orders.map(canonicalOrder) : [],
       request_id: id,
     };
   }
@@ -1244,6 +1253,52 @@ export async function createApp(): Promise<express.Express> {
       };
       await updateJson(db.files.orders, [], (items: RechargeOrder[]) => [order, ...items]);
       res.status(201).json({ ok: true, id: order.id, systemId: customer.systemId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/recharge-requests/status', async (req, res, next) => {
+    try {
+      const customer = await customerFromBearer(req);
+      if (!customer) {
+        res.status(401).json({ error: '无效的客户访问令牌' });
+        return;
+      }
+      const strictContract = req.headers['x-canonical-api'] === '1';
+      if (strictContract) requiredRequestID(req);
+      requiredSystemQuery(req, customer);
+      const rawOrderIDs = req.query.order_ids;
+      if (typeof rawOrderIDs !== 'string') {
+        res.status(400).json({ error: '必须提供 order_ids 查询参数' });
+        return;
+      }
+      const orderIDs = [
+        ...new Set(rawOrderIDs.split(',').map((value) => value.trim()).filter(Boolean)),
+      ];
+      if (!orderIDs.length || orderIDs.length > 200 || orderIDs.some((id) => id.length > 128)) {
+        res.status(400).json({ error: 'order_ids 参数不合法' });
+        return;
+      }
+      const requested = new Set(orderIDs);
+      const orders = (await db.orders())
+        .filter(
+          (order) =>
+            order.method === 'online' &&
+            order.customerID === customer.id &&
+            requested.has(order.id),
+        )
+        .map((order) => ({
+          id: order.id,
+          systemId: customer.systemId,
+          amount: order.amount ?? order.requestedAmount ?? 0,
+          status: order.status,
+          delivered: order.delivered === true,
+          createdAt: order.createdAt,
+          requestID: order.requestID ?? '',
+          decisionReason: order.decisionReason ?? null,
+        }));
+      res.json({ orders, total: orders.length });
     } catch (error) {
       next(error);
     }
