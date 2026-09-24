@@ -314,7 +314,10 @@ class LogtoAuthService:
         if user.status != "active":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="This organization member is disabled in lxScope.",
+                detail={
+                    "code": "organization_member_disabled",
+                    "message": "This organization member is disabled in lxScope.",
+                },
             )
         if new_member and self._on_authenticated is not None:
             identity_token = set_identity(user)

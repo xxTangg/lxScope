@@ -9,7 +9,7 @@
 - 建议至少 4 GB 可用内存
 - 服务器能够访问配置的模型 API
 
-使用 Logto 登录的 Windows 部署，可以运行 `scripts/setup-logto.ps1` 自动配置 Logto API 权限、组织角色、SPA 回调、初始管理员和项目 `.env`，并启动 Compose。首次需在 Logto 管理台创建 M2M 应用并授予 `Logto Management API access`。详细步骤见 [Logto 一键配置说明](./docs/LOGTO_部署与权限配置说明.md)。
+使用 Logto 登录的 Windows 部署，可以运行 `scripts/setup-logto.ps1` 自动配置 API 权限、组织角色、SPA 回调、演示组织与用户、项目 `.env`，并启动 Compose；只需输入已获 `Logto Management API access` 权限的 M2M App ID 和 Secret。运行 `scripts/setup-logto.ps1 -Dev` 可启用源码挂载、后端自动重载和前端 HMR。详细步骤见 [Logto 一键配置说明](./docs/LOGTO_部署与权限配置说明.md)。
 
 检查 Docker：
 

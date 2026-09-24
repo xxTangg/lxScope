@@ -1,14 +1,12 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Database, Loader2, Save, ShieldCheck } from 'lucide-react';
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Database, ShieldCheck } from 'lucide-react';
+import { useMemo, useState } from 'react';
 
 import { AdminErrorNotice, AdminHeader, Pagination } from './shared';
 import { adminApi, type LedgerEntry } from '@/api';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { RechargeMethodsCard } from '@/features/longxin-admin';
 import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
@@ -20,29 +18,25 @@ export function AdminQuotaPage() {
 	const { t } = useTranslation();
 	const { user } = useAuth();
 	const queryClient = useQueryClient();
-	const [testDefaultTokens, setTestDefaultTokens] = useState('');
 	const [ledgerPage, setLedgerPage] = useState(1);
 	const [ledgerType, setLedgerType] = useState('');
 	const [ledgerKeyword, setLedgerKeyword] = useState('');
 	const quota = useQuery({ queryKey: ['admin', user?.id, 'quota'], queryFn: adminApi.quota, enabled: user?.role === 'admin' });
 	const ledger = useQuery({ queryKey: ['admin', user?.id, 'ledger'], queryFn: () => adminApi.ledger(200), enabled: user?.role === 'admin' });
-	useEffect(() => { if (quota.data) setTestDefaultTokens(String(quota.data.test_default_tokens)); }, [quota.data]);
-	const updateQuota = useMutation({ mutationFn: adminApi.updateQuota, onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id] }) });
 	const filteredLedger = useMemo(() => {
 		const keyword = ledgerKeyword.trim().toLowerCase();
 		return (ledger.data?.entries ?? []).filter((entry) => (!ledgerType || entry.type === ledgerType) && (!keyword || [entry.ledger_id, entry.order_id, entry.related_user_id, entry.source].some((value) => value?.toLowerCase().includes(keyword))));
 	}, [ledger.data?.entries, ledgerKeyword, ledgerType]);
 	const pageItems = filteredLedger.slice((ledgerPage - 1) * LEDGER_PAGE_SIZE, ledgerPage * LEDGER_PAGE_SIZE);
-	const submitQuota = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); updateQuota.mutate(Number(testDefaultTokens) || 0); };
 	const refresh = () => void queryClient.invalidateQueries({ queryKey: ['admin', user?.id] });
 
 	return (
 		<>
 			<AdminHeader title={t('admin.nav.quota')} description={t('admin.quotaDescription')} onRefresh={refresh} loading={quota.isFetching || ledger.isFetching} />
-			<AdminErrorNotice message={quota.error?.message ?? ledger.error?.message ?? updateQuota.error?.message} />
+			<AdminErrorNotice message={quota.error?.message ?? ledger.error?.message} />
 			<Card>
 				<CardHeader><CardTitle className="flex items-center gap-2"><ShieldCheck className="size-4" />{t('admin.quota')}</CardTitle><CardDescription>{t('admin.quotaModuleDescription')}</CardDescription></CardHeader>
-				<CardContent><div className="grid gap-3 sm:grid-cols-3"><div className="rounded-lg bg-muted/60 p-3"><div className="text-xs text-muted-foreground">{t('admin.poolTokens')}</div><div className="mt-1 font-mono text-lg font-semibold">{quota.data ? formatNumber(quota.data.pool_tokens) : '...'}</div></div><div className="rounded-lg bg-muted/60 p-3"><div className="text-xs text-muted-foreground">{t('admin.totalRecharged')}</div><div className="mt-1 font-mono text-lg font-semibold">{quota.data?.total_recharged ?? '...'}</div></div><div className="rounded-lg bg-muted/60 p-3"><div className="text-xs text-muted-foreground">{t('admin.systemId')}</div><div className="mt-1 truncate font-mono text-xs">{quota.data?.system_id ?? '...'}</div></div></div><form onSubmit={submitQuota} className="mt-5 max-w-md space-y-2"><Label htmlFor="admin-test-default">{t('admin.testDefaultTokens')}</Label><div className="flex gap-2"><Input id="admin-test-default" type="number" min={0} value={testDefaultTokens} onChange={(e) => setTestDefaultTokens(e.target.value)} /><Button type="submit" variant="outline" disabled={updateQuota.isPending}>{updateQuota.isPending ? <Loader2 className="animate-spin" /> : <Save />}{t('common.save')}</Button></div></form></CardContent>
+				<CardContent><div className="grid gap-3 sm:grid-cols-3"><div className="rounded-lg bg-muted/60 p-3"><div className="text-xs text-muted-foreground">{t('admin.poolTokens')}</div><div className="mt-1 font-mono text-lg font-semibold">{quota.data ? formatNumber(quota.data.pool_tokens) : '...'}</div></div><div className="rounded-lg bg-muted/60 p-3"><div className="text-xs text-muted-foreground">{t('admin.totalRecharged')}</div><div className="mt-1 font-mono text-lg font-semibold">{quota.data?.total_recharged ?? '...'}</div></div><div className="rounded-lg bg-muted/60 p-3"><div className="text-xs text-muted-foreground">{t('admin.systemId')}</div><div className="mt-1 truncate font-mono text-xs">{quota.data?.system_id ?? '...'}</div></div></div></CardContent>
 			</Card>
 			<Card>
 				<CardHeader><CardTitle className="flex items-center gap-2"><Database className="size-4" />{t('admin.ledgerTitle')}</CardTitle><CardDescription>{t('admin.ledgerDescription')}</CardDescription></CardHeader>

@@ -91,7 +91,6 @@ class PlanBillingTest(TestCase):
             "system_id": "local-system",
             "pool_tokens": 500_000,
             "total_recharged": "0.00",
-            "test_default_tokens": 0,
             "updated_at": "",
         }
 
@@ -165,7 +164,6 @@ class PlanBillingTest(TestCase):
                     "system_id": "local-system",
                     "pool_tokens": 100_000,
                     "total_recharged": "0.00",
-                    "test_default_tokens": 0,
                     "updated_at": "",
                 },
             ),
@@ -252,7 +250,6 @@ class PlanBillingTest(TestCase):
                     "system_id": "local-system",
                     "pool_tokens": 1_000_000,
                     "total_recharged": "0.00",
-                    "test_default_tokens": 0,
                     "updated_at": "",
                 },
             ),

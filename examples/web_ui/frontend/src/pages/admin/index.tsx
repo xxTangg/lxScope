@@ -31,7 +31,6 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
 import {
 	ModelConfigCard,
 	PlanOrdersCard,
@@ -88,7 +87,6 @@ export function AdminPage() {
 	const [newPassword, setNewPassword] = useState('');
 	const [newPlanId, setNewPlanId] = useState('plan_basic');
 	const [bonusTokens, setBonusTokens] = useState('0');
-	const [testDefaultTokens, setTestDefaultTokens] = useState('');
 	const [systemId, setSystemId] = useState('');
 	const [hubUrl, setHubUrl] = useState('');
 	const [hubToken, setHubToken] = useState('');
@@ -139,10 +137,6 @@ export function AdminPage() {
 	});
 
 	useEffect(() => {
-		if (quota.data) setTestDefaultTokens(String(quota.data.test_default_tokens));
-	}, [quota.data]);
-
-	useEffect(() => {
 		if (!hub.data) return;
 		setSystemId(hub.data.system_id);
 		setHubUrl(hub.data.hub_url);
@@ -190,10 +184,6 @@ export function AdminPage() {
 			void refresh();
 		},
 	});
-	const updateQuota = useMutation({
-		mutationFn: adminApi.updateQuota,
-		onSuccess: refresh,
-	});
 	const updateHub = useMutation({
 		mutationFn: adminApi.updateHubConfig,
 		onSuccess: async () => {
@@ -221,7 +211,6 @@ export function AdminPage() {
 		plans.error?.message,
 		updateUser.error?.message,
 		deleteUser.error?.message,
-		updateQuota.error?.message,
 		updateHub.error?.message,
 		verifyHub.error?.message,
 		resetPassword.error?.message,
@@ -260,11 +249,6 @@ export function AdminPage() {
 			plan_id: newPlanId,
 			bonus_tokens: Number(bonusTokens) || 0,
 		});
-	};
-
-	const submitQuota = (event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		updateQuota.mutate(Number(testDefaultTokens) || 0);
 	};
 
 	const submitHub = (event: FormEvent<HTMLFormElement>) => {
@@ -586,23 +570,6 @@ export function AdminPage() {
 										</div>
 									</div>
 								</div>
-								<Separator className="my-4" />
-								<form onSubmit={submitQuota} className="space-y-2">
-									<Label htmlFor="admin-test-default">{t('admin.testDefaultTokens')}</Label>
-									<div className="flex gap-2">
-										<Input
-											id="admin-test-default"
-											type="number"
-											min={0}
-											value={testDefaultTokens}
-											onChange={(event) => setTestDefaultTokens(event.target.value)}
-										/>
-										<Button type="submit" variant="outline" disabled={updateQuota.isPending}>
-											<Save />
-											{t('common.save')}
-										</Button>
-									</div>
-								</form>
 							</CardContent>
 						</Card>
 

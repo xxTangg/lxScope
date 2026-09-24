@@ -373,7 +373,6 @@ export interface SystemQuota {
 	system_id: string;
 	pool_tokens: number;
 	total_recharged: string;
-	test_default_tokens: number;
 	account_count: number;
 	admin_count: number;
 	updated_at: string;
@@ -571,10 +570,6 @@ export const adminApi = {
 			headers: idempotencyHeaders(),
 		}),
 	quota: () => client.get<SystemQuota>('/admin/quota'),
-	updateQuota: (test_default_tokens: number) =>
-		client.patch<SystemQuota>('/admin/quota', { test_default_tokens }, undefined, {
-			headers: idempotencyHeaders(),
-		}),
 	ledger: (limit = 20) =>
 		client.get<LedgerResponse>('/admin/quota/ledger', toParams({ limit })),
 	auditEvents: (limit = 50) =>

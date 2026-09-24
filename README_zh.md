@@ -260,7 +260,7 @@ cp .env.example .env   # 填入模型与 Embedding 所需的 Key
 docker compose up -d
 ```
 
-Windows 用户若使用 Logto 登录，可运行 [`scripts/setup-logto.ps1`](./scripts/setup-logto.ps1) 自动配置角色、SPA、初始管理员并启动 Docker。首次 M2M 授权和详细步骤见 [Logto 一键配置说明](./docs/LOGTO_部署与权限配置说明.md)。
+Windows 用户若使用 Logto 登录，可运行 [`scripts/setup-logto.ps1`](./scripts/setup-logto.ps1) 自动配置 API 权限、组织角色、SPA、演示组织和用户并启动 Docker；只需输入已授权的 M2M App ID 和 Secret。开发热加载使用 `scripts/setup-logto.ps1 -Dev`。M2M 首次授权和详细步骤见 [Logto 一键配置说明](./docs/LOGTO_部署与权限配置说明.md)。
 
 **知识库 Embedding 配置要点**：在 Web UI 新建知识库时，凭据选择 `SiliconFlow`，
 Embedding 模型选择 `BAAI/bge-m3`，维度填写 `1024`。

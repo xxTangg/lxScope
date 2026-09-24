@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 $rootDir = Split-Path -Parent $PSScriptRoot
 $envFile = Join-Path $rootDir '.env'
 $migrationScript = Join-Path $rootDir 'deploy/logto/migration.py'
+$originalManagementEnv = @{}
 
 function Resolve-ProjectPath([string]$path) {
     if ([System.IO.Path]::IsPathRooted($path)) {
@@ -38,6 +39,31 @@ if (Test-Path -LiteralPath $envFile) {
     }
 }
 
+function Read-Value([string]$label, [string]$current, [string]$default = '') {
+    if (-not [string]::IsNullOrWhiteSpace($current)) { return $current.Trim() }
+    if ([Console]::IsInputRedirected) {
+        throw "Missing value for $label. Set it in .env or the process environment."
+    }
+    $suffix = if ($default) { " [$default]" } else { '' }
+    $answer = Read-Host "$label$suffix"
+    if ([string]::IsNullOrWhiteSpace($answer)) { $answer = $default }
+    if ([string]::IsNullOrWhiteSpace($answer)) { throw "A value is required for $label." }
+    return $answer.Trim()
+}
+
+function Read-Secret([string]$label) {
+    if ([Console]::IsInputRedirected) {
+        throw "Missing secret for $label. Set it in the process environment for non-interactive use."
+    }
+    $secure = Read-Host $label -AsSecureString
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+    }
+}
+
 $pythonName = if ($env:PYTHON_BIN) { $env:PYTHON_BIN } else { 'python' }
 $python = Get-Command $pythonName -ErrorAction SilentlyContinue
 if (-not $python) {
@@ -45,6 +71,24 @@ if (-not $python) {
 }
 if (-not (Test-Path -LiteralPath $migrationScript)) {
     throw "Migration engine is missing: $migrationScript"
+}
+
+if ($Command -in @('apply', 'export')) {
+    $endpoint = if ($env:LOGTO_MIGRATION_ENDPOINT) { $env:LOGTO_MIGRATION_ENDPOINT } else { $env:LOGTO_ENDPOINT }
+    if ([string]::IsNullOrWhiteSpace($endpoint)) {
+        throw 'Set LOGTO_ENDPOINT in .env or the process environment before running apply/export.'
+    }
+    $resourceDefault = "$($endpoint.TrimEnd('/'))/api"
+    foreach ($name in @('LOGTO_M2M_APP_ID', 'LOGTO_M2M_APP_SECRET', 'LOGTO_MANAGEMENT_API_RESOURCE')) {
+        $originalManagementEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+    $appId = Read-Value 'M2M App ID with Logto Management API access' $env:LOGTO_M2M_APP_ID
+    $appSecret = $env:LOGTO_M2M_APP_SECRET
+    if ([string]::IsNullOrWhiteSpace($appSecret)) { $appSecret = Read-Secret 'M2M App Secret' }
+    $managementResource = Read-Value 'Logto Management API Resource indicator' $env:LOGTO_MANAGEMENT_API_RESOURCE $resourceDefault
+    [Environment]::SetEnvironmentVariable('LOGTO_M2M_APP_ID', $appId, 'Process')
+    [Environment]::SetEnvironmentVariable('LOGTO_M2M_APP_SECRET', $appSecret, 'Process')
+    [Environment]::SetEnvironmentVariable('LOGTO_MANAGEMENT_API_RESOURCE', $managementResource, 'Process')
 }
 
 $arguments = @(
@@ -64,5 +108,8 @@ try {
     $resultCode = $LASTEXITCODE
 } finally {
     Pop-Location
+    foreach ($name in $originalManagementEnv.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $originalManagementEnv[$name], 'Process')
+    }
 }
 exit $resultCode

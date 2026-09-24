@@ -4,39 +4,80 @@
 
 ## 先看结论
 
-当前代码会读取 Logto 登录令牌、检查组织身份和权限，并按组织隔离用户数据。应用启动时不会自动创建 Logto 配置；仓库现已提供 `scripts/setup-logto.ps1`，可通过 Logto Management API 一次性创建/补齐应用所需配置、写入 `.env` 并启动 Docker Compose。
+当前代码由浏览器中的 Logto SPA 登录，取得带 Organization 上下文的 API Access Token；后端校验令牌签名、issuer、API Resource、`organization_id` 和 Scope，并用 Logto 用户 ID 与组织 ID 隔离数据。服务启动时不会自动创建 Logto 配置。
 
-至少需要配置：
+运行 Logto 登录至少需要配置：
 
 1. 一个 Logto API Resource 和两个权限：`agent:use`、`tenant:manage`。
 2. 一个 Logto SPA 应用，以及与实际访问地址匹配的回调地址。
 3. 一个 Organization，且登录用户已加入该组织并获得对应角色。
 4. 根目录 `.env` 中的 Logto 地址、SPA App ID 和 API Resource。
 
-## 一键配置并启动（推荐）
+## 一键部署
 
-交给其他人部署时，对方不需要逐个创建 API 权限、组织角色、SPA 应用或手动给初始用户分配角色。首次仍需在自己的 Logto 管理台做一次安全引导：创建一个 **M2M 应用**，并给它分配 Logto 内置的 **Logto Management API access** 角色；Management API 使用该 M2M 应用取得授权令牌，不能在没有任何管理员授权凭据的情况下替租户创建自己的管理凭据。[Logto Management API 文档](https://docs.logto.io/integrate-logto/interact-with-management-api)
+另一台电脑拿到项目后，安装 Docker Desktop 和 Python 3.10+，确保 Logto 中已有一个 M2M 应用，并给它分配 Logto 内置的 **Logto Management API access** 角色。该角色授予 Management API 的 `all` 权限。脚本无法在没有任何有效管理员凭据的情况下替 Logto 租户创建自己的管理凭据。[Logto Management API 文档](https://docs.logto.io/integrate-logto/interact-with-management-api)
 
-此外，先在 Logto 中创建准备作为 lxScope 初始管理员的用户。脚本会把这个现有用户加入 lxScope Organization 并分配管理员角色，不会替对方创建或设置登录密码。
-
-之后在项目根目录打开 PowerShell，运行：
+项目默认使用 `https://default.logto.app`、API Resource `https://api.lxscope.local` 和本机地址 `http://localhost:8000`。在项目根目录打开 PowerShell，运行：
 
 ```powershell
 .\scripts\setup-logto.ps1
 ```
 
-按提示提供 Logto 地址、M2M App ID/Secret、初始管理员邮箱和浏览器访问地址。Secret 在输入时隐藏，只用于本次初始化，不会写进 `.env`。脚本会自动创建或补齐 API Resource 与 `agent:use`、`tenant:manage` 权限，普通成员/管理员组织角色，SPA 登录回调与退出地址、lxScope Organization、初始管理员成员和角色；然后写入项目 `.env`，执行 `docker compose up -d --build` 并打开网页。角色和配置已存在时脚本会复用并补齐，适合重新运行。
+脚本只要求输入 M2M App ID 和 Secret（Secret 隐藏输入）。它会自动创建/补齐 API Resource、`agent:use` 与 `tenant:manage` 权限、普通成员/管理员角色、SPA 应用及回调 URI、Organization A/B、用户和角色分配；自动写入 SPA App ID 与运行配置到 `.env`，生成本机随机密钥和演示用户密码，然后构建并启动 Docker Compose。重复运行会复用已创建的 Logto 对象，重复使用 `.env` 中保存的用户密码。M2M Secret 只在本次脚本进程中使用，不写入 `.env`。
 
-常用选项：
+首次运行时若没有 `.env`，脚本会从 `.env.example` 自动生成；已经部署后再次运行同一命令即可刷新 Logto 配置、重建镜像并应用环境变量。每次需要输入 M2M 凭据，因为 Secret 不会保存到项目文件。
+
+默认普通部署**不启用热加载**。在另一台电脑开发/修改源码并需要后端自动重载、前端 Vite HMR 时运行：
+
+```powershell
+.\scripts\setup-logto.ps1 -Dev
+```
+
+`-Dev` 会叠加 `docker-compose.dev.yml` 并挂载源码。仅配置、不启动容器时运行 `-ConfigureOnly`。
+
+只有切换到其他 Logto 租户时，才需先在 `.env` 更新 `LOGTO_ENDPOINT`、`VITE_LOGTO_ENDPOINT`、`LOGTO_MIGRATION_ENDPOINT` 和 `LOGTO_MANAGEMENT_API_RESOURCE`；默认部署无需改填这些值。只想配置而不启动 Docker 时运行：
 
 ```powershell
 # 只配置 Logto 和 .env，稍后自己启动 Docker Compose
 .\scripts\setup-logto.ps1 -ConfigureOnly
 ```
 
-使用 Logto Cloud 自定义域名时，脚本会额外询问 Management API 地址；应填该租户默认的 `*.logto.app` 地址。Logto OSS 若跑在同一台 Docker Desktop 主机上，脚本会询问容器可访问的 Logto 地址，并默认建议 `host.docker.internal`。Linux 或自定义网络部署时，请在该提示中填写容器实际可访问的地址。若其他电脑会通过局域网访问，在浏览器访问地址提示中填写服务器 IP，例如 `http://192.168.1.20:8000`。
+默认示例会生成以下共享用户和组织角色：
 
-脚本自动设置的是**第一个初始管理员**。新用户需要先在 Logto 注册/创建；如果组织启用了适用的 JIT 自动加入，新用户会获得普通成员角色，否则仍需由 Logto 管理员把用户加入 Organization。脚本不迁移 Logto 用户库或 lxScope 业务数据，也不创建模型服务 API Key；使用 AI 功能前仍需在 `.env` 填好相应模型提供商的密钥，例如 `SILICONFLOW_API_KEY`。
+| Organization | Username | Role |
+| --- | --- | --- |
+| A | `user_1` | 管理员 |
+| A | `user_2` | 普通成员 |
+| A | `user_3` | 普通成员 |
+| B | `user_3` | 管理员 |
+
+`user_3` 是同一个 Logto 用户，同时属于两个组织，在 A、B 中拥有各自的组织角色。脚本生成的演示登录密码写入本机 `.env` 和 `deploy/logto/generated/demo-credentials.txt`；这两个文件已加入忽略规则，不要提交或公开。脚本还会为本机 JWT 和下载功能生成随机密钥。示例组织和账号适合演示；正式部署时可在运行前编辑 `deploy/logto/migration.json`。使用 AI 功能仍需自行在 `.env` 配置模型服务 API Key，例如 `SILICONFLOW_API_KEY`。Logto OSS 如运行在 Docker 主机上，后端容器还需能访问 Logto 的 JWKS 地址，可在 `.env` 设置 `LOGTO_INTERNAL_ENDPOINT` 与 `LOGTO_JWKS_URI`。
+
+## 导出、迁移和导入 Logto 组织成员
+
+仓库提供 `deploy/logto/migration.py` 迁移引擎和 `scripts/migrate-logto.ps1` PowerShell 入口。`export` 会读取当前 Logto 租户的组织、组织成员、用户名/邮箱、显示名和角色，生成 `deploy/logto/generated/migration-manifest.json`；`apply` 会在目标租户创建/补齐应用、组织和成员，并生成身份映射。PowerShell 入口会从 `.env` 读取地址；若 M2M 信息没配置，会安全提示输入 App ID 和隐藏的 Secret。
+
+从源租户导出：
+
+```powershell
+$env:LOGTO_ENDPOINT = 'https://source-tenant.logto.app'
+$env:LOGTO_M2M_APP_ID = Read-Host 'Source M2M App ID'
+$env:LOGTO_MANAGEMENT_API_RESOURCE = 'https://source-tenant.logto.app/api'
+.\scripts\migrate-logto.ps1 -Command export
+```
+
+运行后按提示输入源租户 M2M Secret。切换到目标租户后导入：
+
+```powershell
+$env:LOGTO_ENDPOINT = 'https://target-tenant.logto.app'
+$env:LOGTO_M2M_APP_ID = Read-Host 'Target M2M App ID'
+$env:LOGTO_MANAGEMENT_API_RESOURCE = 'https://target-tenant.logto.app/api'
+.\scripts\migrate-logto.ps1 -Command apply -Manifest deploy/logto/generated/migration-manifest.json
+```
+
+如浏览器 issuer 地址与 Management API 调用地址不同，用 `LOGTO_MIGRATION_ENDPOINT` 指定后者。目标租户若已有同邮箱或用户名的用户，迁移会复用该用户；若目标用户不存在，必须在清单中为该用户添加 `password_env`，并在进程环境中提供对应变量。Logto 不导出密码或密码摘要，脚本不能保留源密码。源租户自定义组织角色需在导入清单中改成 `lxscope_admin` 或 `lxscope_member`。
+
+迁移完成后检查 `deploy/logto/generated/identity-map.json` 和 `migration-result.json`，确认组织/用户映射及 SPA 回调地址。该工具只迁移 Logto 身份与授权配置，**不会搬运或改写 lxScope Redis/数据库中的业务数据**；跨租户时 Logto 用户/组织 ID 会变化，现有业务数据仍关联原 ID。业务数据迁移需单独处理并校验映射。不要直接把源租户的 `LOGTO_ENDPOINT`、SPA App ID 或 M2M 凭据用于目标应用。
 
 ## 一、Logto 中配置 API Resource 和权限
 

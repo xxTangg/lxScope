@@ -160,7 +160,6 @@ class PlanBillingService:
             "system_id": "local-system",
             "pool_tokens": 0,
             "total_recharged": "0.00",
-            "test_default_tokens": 0,
             "updated_at": _now(),
         }
 

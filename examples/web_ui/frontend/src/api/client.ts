@@ -50,6 +50,7 @@ export const setAccessTokenProvider = (provider: AccessTokenProvider | null) => 
 };
 
 export const AUTH_UNAUTHORIZED_EVENT = 'agentscope:auth-unauthorized';
+export const AUTH_MEMBER_DISABLED_EVENT = 'agentscope:auth-member-disabled';
 
 /**
  * Structured error thrown for non-2xx HTTP responses.
@@ -289,10 +290,16 @@ async function streamRequest(path: string, options: RequestOptions = {}): Promis
 
 	if (!res.ok) {
 		const error = createApiError(res.status, await res.text(), res.statusText);
+		const memberDisabled =
+			res.status === 403 && error.code === 'organization_member_disabled';
 		if (res.status === 401 && authenticated && getAccessToken()) {
 			window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT));
 		}
-		if (!silent) toast.error(error.message);
+		if (memberDisabled) {
+			window.dispatchEvent(new Event(AUTH_MEMBER_DISABLED_EVENT));
+		} else if (!silent) {
+			toast.error(error.message);
+		}
 		throw error;
 	}
 

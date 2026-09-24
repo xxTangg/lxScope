@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { MEMBER_DISABLED_LOGOUT_KEY } from '@/context/auth-context';
 import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { formatApiErrorForAlert } from '@/lib/api-error';
@@ -39,6 +40,7 @@ export function LoginPage() {
 	const [tenantId, setTenantId] = useState('');
 	const autoLoginStarted = useRef(false);
 	const autoTenantAttempted = useRef('');
+	const memberDisabledLogout = sessionStorage.getItem(MEMBER_DISABLED_LOGOUT_KEY) === '1';
 
 	useEffect(() => {
 		if (organizations.includes(tenantId)) return;
@@ -52,6 +54,7 @@ export function LoginPage() {
 		if (
 			!logtoEnabled ||
 			status !== 'anonymous' ||
+			memberDisabledLogout ||
 			autoLoginStarted.current
 		) {
 			return;
@@ -60,7 +63,7 @@ export function LoginPage() {
 		void beginLogin().catch((reason) => {
 			setError(reason instanceof Error ? reason.message : 'Logto 登录失败。');
 		});
-	}, [beginLogin, logtoEnabled, status]);
+	}, [beginLogin, logtoEnabled, memberDisabledLogout, status]);
 
 	useEffect(() => {
 		if (
@@ -80,6 +83,7 @@ export function LoginPage() {
 				navigate(from || '/chat', { replace: true });
 			})
 			.catch((reason) => {
+				if (reason instanceof ApiError && reason.code === 'organization_member_disabled') return;
 				setError(reason instanceof Error ? reason.message : '进入组织失败。');
 			})
 			.finally(() => setSubmitting(false));
@@ -96,6 +100,7 @@ export function LoginPage() {
 	if (
 		logtoEnabled &&
 		status === 'anonymous' &&
+		!memberDisabledLogout &&
 		!error &&
 		!authError
 	) {
@@ -117,6 +122,7 @@ export function LoginPage() {
 				const from = (location.state as { from?: string } | null)?.from;
 				navigate(from || '/chat', { replace: true });
 			} catch (reason) {
+				if (reason instanceof ApiError && reason.code === 'organization_member_disabled') return;
 				setError(reason instanceof Error ? reason.message : '进入组织失败。');
 			} finally {
 				setSubmitting(false);
@@ -213,6 +219,9 @@ export function LoginPage() {
 								<div className="space-y-4">
 									{(error || authError) && (
 										<Alert variant="destructive"><CircleAlert /><AlertDescription>{error || authError}</AlertDescription></Alert>
+									)}
+									{memberDisabledLogout && (
+										<Alert variant="destructive"><CircleAlert /><AlertDescription>{t('auth.memberDisabled')}</AlertDescription></Alert>
 									)}
 									<Button className="w-full" onClick={() => void startLogtoLogin()} disabled={submitting}>
 										{submitting && <Loader2 className="size-3.5 animate-spin" />}

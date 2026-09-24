@@ -329,7 +329,7 @@
 | 成员 | `PATCH/DELETE /admin/users/{user_id}` | 状态、套餐、bonus、软删除 |
 | 成员 | `POST /admin/users/{user_id}/reset-password` | 管理员确认后生成临时密码 |
 | 成员 | `DELETE /admin/users/{user_id}/sessions` | 撤销成员会话 |
-| 额度 | `GET/PATCH /admin/quota` | 查询系统池、修改测试默认额度 |
+| 额度 | `GET /admin/quota` | 查询系统池和额度统计 |
 | 账本 | `GET /admin/quota/ledger` | 查询额度流水 |
 | 本地套餐 | `GET /admin/plans`、`GET /admin/orders` | 套餐目录和套餐订单 |
 | 本地套餐 | `POST /admin/orders/{order_id}/approve|reject` | 审批本地套餐订单 |

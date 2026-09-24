@@ -270,15 +270,10 @@ class SystemAccountView(BaseModel):
     system_id: str
     pool_tokens: int
     total_recharged: str
-    test_default_tokens: int
     account_count: int
     admin_count: int
     updated_at: str
     request_id: str
-
-
-class QuotaUpdateRequest(BaseModel):
-    test_default_tokens: int = Field(ge=0, le=100_000_000)
 
 
 class LedgerEntryView(BaseModel):
@@ -708,7 +703,6 @@ class AdminService:
             "total_recharged": "0.00",
             "cumulative_consumed": 0,
             "cumulative_credits": 0,
-            "test_default_tokens": 0,
             "updated_at": _now(),
         }
 
@@ -1772,7 +1766,6 @@ class AdminService:
             "system_id": system["system_id"],
             "pool_tokens": int(system["pool_tokens"]),
             "total_recharged": str(system["total_recharged"]),
-            "test_default_tokens": int(system["test_default_tokens"]),
             "account_count": len(accounts),
             "admin_count": sum(item.role == "admin" for item in accounts),
             "updated_at": system["updated_at"],
@@ -1791,42 +1784,6 @@ class AdminService:
             request_id_enforced=True,
             generated_at=_now(),
         )
-
-    async def update_quota(self, body: QuotaUpdateRequest) -> dict[str, Any]:
-        async with self._mutation_lock():
-            system = await self._system()
-            system["test_default_tokens"] = body.test_default_tokens
-            await self._save_system(system)
-        return await self.quota()
-
-    async def update_quota_idempotent(
-        self,
-        body: QuotaUpdateRequest,
-        actor: AuthUser,
-        *,
-        request_id: str,
-        idempotency_key: str,
-    ) -> dict[str, Any]:
-        request_fingerprint = {"operation": "quota.update_test_default", **body.model_dump()}
-        idem_key = self._idempotency_key(f"quota-update:{actor.id}", idempotency_key)
-        async with self._mutation_lock():
-            existing = await self._read_idempotent(idem_key, request_fingerprint)
-            if existing is not None:
-                return existing
-            system = await self._system()
-            system["test_default_tokens"] = body.test_default_tokens
-            await self._save_system(system)
-            await self._audit(
-                actor=actor,
-                action="quota.update_test_default",
-                target_id=None,
-                reason="Administrator updated the test account default.",
-                request_id=request_id,
-                result_summary=f"test_default_tokens={body.test_default_tokens}",
-            )
-            result = await self.quota()
-            await self._write_idempotent(idem_key, request_fingerprint, result)
-            return result
 
     async def revoke_user_sessions(
         self,
@@ -3342,25 +3299,6 @@ async def get_quota(
     service: AdminService = Depends(get_admin_service),
 ) -> SystemAccountView:
     value = await service.quota()
-    return SystemAccountView(**value, request_id=service._request_id(request))
-
-
-@admin_router.patch("/quota", response_model=SystemAccountView)
-async def update_quota(
-    body: QuotaUpdateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    actor: AuthUser = Depends(require_admin),
-    service: AdminService = Depends(get_admin_service),
-) -> SystemAccountView:
-    if not idempotency_key:
-        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
-    value = await service.update_quota_idempotent(
-        body,
-        actor,
-        request_id=service._request_id(request),
-        idempotency_key=idempotency_key,
-    )
     return SystemAccountView(**value, request_id=service._request_id(request))
 
 

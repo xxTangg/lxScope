@@ -4,6 +4,8 @@ import type { AuthUser } from '@/api';
 
 export type AuthStatus = 'loading' | 'authenticated' | 'anonymous' | 'selecting_tenant';
 
+export const MEMBER_DISABLED_LOGOUT_KEY = 'lxscope_member_disabled_logout';
+
 export interface AuthContextValue {
 	status: AuthStatus;
 	user: AuthUser | null;

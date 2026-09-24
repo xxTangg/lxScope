@@ -1,8 +1,10 @@
 import { LogtoProvider, Prompt, UserScope, useHandleSignInCallback, useLogto, type LogtoConfig } from '@logto/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 
 import { authApi, type AuthUser } from '@/api';
 import {
+	AUTH_MEMBER_DISABLED_EVENT,
 	AUTH_UNAUTHORIZED_EVENT,
 	ApiError,
 	clearAccessToken,
@@ -10,7 +12,8 @@ import {
 	setAccessToken,
 	setAccessTokenProvider,
 } from '@/api/client';
-import { AuthContext, type AuthStatus } from '@/context/auth-context';
+import { AuthContext, MEMBER_DISABLED_LOGOUT_KEY, type AuthStatus } from '@/context/auth-context';
+import i18n from '@/i18n';
 import { queryClient } from '@/lib/query-client';
 
 const LOGTO_ENDPOINT = import.meta.env.VITE_LOGTO_ENDPOINT?.trim() ?? '';
@@ -73,7 +76,12 @@ function LocalAuthProvider({ children }: { children: React.ReactNode }) {
 
 	useEffect(() => {
 		const handleUnauthorized = () => becomeAnonymous();
+		const handleMemberDisabled = () => {
+			toast.error(i18n.t('auth.memberDisabled'));
+			becomeAnonymous();
+		};
 		window.addEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
+		window.addEventListener(AUTH_MEMBER_DISABLED_EVENT, handleMemberDisabled);
 
 		if (!getAccessToken()) {
 			setStatus('anonymous');
@@ -87,7 +95,10 @@ function LocalAuthProvider({ children }: { children: React.ReactNode }) {
 				.catch(() => becomeAnonymous());
 		}
 
-		return () => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
+		return () => {
+			window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
+			window.removeEventListener(AUTH_MEMBER_DISABLED_EVENT, handleMemberDisabled);
+		};
 	}, [becomeAnonymous]);
 
 	const login = useCallback(async (username: string, password: string) => {
@@ -160,6 +171,7 @@ function LogtoAuthProviderContent({ children }: { children: React.ReactNode }) {
 	const activeTenant = useRef<string | null>(null);
 	const claimsRequested = useRef(false);
 	const authGeneration = useRef(0);
+	const disabledLogoutStarted = useRef(false);
 
 	useEffect(() => {
 		if (!isLoading) return;
@@ -172,6 +184,7 @@ function LogtoAuthProviderContent({ children }: { children: React.ReactNode }) {
 
 	const selectTenant = useCallback(
 		async (tenantId: string) => {
+			disabledLogoutStarted.current = false;
 			setStatus('loading');
 			setError('');
 			queryClient.clear();
@@ -204,6 +217,12 @@ function LogtoAuthProviderContent({ children }: { children: React.ReactNode }) {
 				setUser(currentUser);
 				setStatus('authenticated');
 			} catch (reason) {
+				if (
+					reason instanceof ApiError &&
+					reason.code === 'organization_member_disabled'
+				) {
+					throw reason;
+				}
 				if (
 					reason instanceof ApiError &&
 					reason.status === 403 &&
@@ -321,6 +340,8 @@ function LogtoAuthProviderContent({ children }: { children: React.ReactNode }) {
 	}, [fetchUserInfo, getIdTokenClaims, isAuthenticated, isLoading]);
 
 	const beginLogin = useCallback(async () => {
+		disabledLogoutStarted.current = false;
+		sessionStorage.removeItem(MEMBER_DISABLED_LOGOUT_KEY);
 		await signIn({
 			redirectUri: `${window.location.origin}/auth/callback`,
 			postRedirectUri: `${window.location.origin}/login`,
@@ -351,6 +372,25 @@ function LogtoAuthProviderContent({ children }: { children: React.ReactNode }) {
 			setStatus('loading');
 			await signOut(window.location.origin);
 		}
+	}, [signOut]);
+
+	useEffect(() => {
+		const handleMemberDisabled = () => {
+			if (disabledLogoutStarted.current) return;
+			disabledLogoutStarted.current = true;
+			sessionStorage.setItem(MEMBER_DISABLED_LOGOUT_KEY, '1');
+			toast.error(i18n.t('auth.memberDisabled'));
+			activeTenant.current = null;
+			localStorage.removeItem(ACTIVE_TENANT_KEY);
+			sessionStorage.removeItem(SCOPE_REFRESH_TENANT_KEY);
+			setAccessTokenProvider(null);
+			clearUserState();
+			setUser(null);
+			setStatus('loading');
+			void signOut(window.location.origin).catch(() => setStatus('anonymous'));
+		};
+		window.addEventListener(AUTH_MEMBER_DISABLED_EVENT, handleMemberDisabled);
+		return () => window.removeEventListener(AUTH_MEMBER_DISABLED_EVENT, handleMemberDisabled);
 	}, [signOut]);
 
 	const value = useMemo(

@@ -1,0 +1,33 @@
+{
+  "api_resource": {
+    "name": "lxScope API",
+    "identifier": "${LOGTO_API_RESOURCE:-https://api.lxscope.local}"
+  },
+  "permissions": [
+    {
+      "name": "agent:use",
+      "description": "Use lxScope"
+    },
+    {
+      "name": "tenant:manage",
+      "description": "Manage the current lxScope organization"
+    }
+  ],
+  "roles": [
+    {
+      "name": "lxscope_admin",
+      "description": "lxScope organization administrator",
+      "permissions": [
+        "agent:use",
+        "tenant:manage"
+      ]
+    },
+    {
+      "name": "lxscope_member",
+      "description": "lxScope organization member",
+      "permissions": [
+        "agent:use"
+      ]
+    }
+  ]
+}
