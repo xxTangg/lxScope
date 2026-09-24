@@ -328,27 +328,15 @@ function LogtoAuthProviderContent({ children }: { children: React.ReactNode }) {
 	}, [signIn]);
 
 	const switchAccount = useCallback(async () => {
-		activeTenant.current = null;
-		localStorage.removeItem(ACTIVE_TENANT_KEY);
-		sessionStorage.removeItem(SCOPE_REFRESH_TENANT_KEY);
-		setAccessTokenProvider(null);
-		clearUserState();
-		try {
-			await clearAllTokens();
-			await signIn({
-				redirectUri: `${window.location.origin}/auth/callback`,
-				postRedirectUri: `${window.location.origin}/login`,
-				prompt: [Prompt.Login, Prompt.Consent],
-			});
-		} catch (reason) {
-			setUser(null);
-			setOrganizations([]);
-			setOrganizationNames({});
-			setError(reason instanceof Error ? reason.message : 'Logto 登录失败。');
-			setStatus('anonymous');
-			throw reason;
-		}
-	}, [clearAllTokens, signIn]);
+		// Keep the current session valid until Logto redirects away. If the user
+		// presses Back to cancel account switching, the restored app must still
+		// have a usable bearer token instead of issuing anonymous API requests.
+		await signIn({
+			redirectUri: `${window.location.origin}/auth/callback`,
+			postRedirectUri: `${window.location.origin}/login`,
+			prompt: [Prompt.Login, Prompt.Consent],
+		});
+	}, [signIn]);
 
 	const logout = useCallback(async () => {
 		try {
