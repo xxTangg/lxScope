@@ -45,6 +45,42 @@ services:
       timeout: 3s
       retries: 20
 
+  logto-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${LOGTO_DB_NAME:-logto}
+      POSTGRES_USER: ${LOGTO_DB_USER:-logto}
+      POSTGRES_PASSWORD: ${LOGTO_DB_PASSWORD:-change-me}
+    volumes:
+      - logto-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  logto:
+    image: ${LOGTO_IMAGE:-ghcr.io/logto-io/logto:latest}
+    restart: unless-stopped
+    depends_on:
+      logto-db:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - npm run cli db seed -- --swe && npm start
+    ports:
+      - "${LOGTO_CORE_PORT:-3001}:3001"
+      - "${LOGTO_ADMIN_PORT:-3002}:3002"
+    environment:
+      TRUST_PROXY_HEADER: ${LOGTO_TRUST_PROXY_HEADER:-1}
+      DB_URL: postgres://${LOGTO_DB_USER:-logto}:${LOGTO_DB_PASSWORD:-change-me}@logto-db:5432/${LOGTO_DB_NAME:-logto}
+      ENDPOINT: ${LOGTO_ENDPOINT:-http://localhost:3001}
+      ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT:-http://localhost:3002}
+
   agentscope:
     image: agentscope-intranet:latest
     build:
@@ -186,6 +222,7 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  logto-postgres-data:
   agentscope-workspaces:
   agentscope-blobs:
   qdrant-data:
