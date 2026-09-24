@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   BarChart3,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleDollarSign,
   ClipboardList,
@@ -272,8 +273,8 @@ function Login({ onLoggedIn }: { onLoggedIn: (staff: Staff) => void }) {
   return (
     <main className="login-shell">
       <section className="login-card">
-        <div className="brand-mark large">
-          <Gauge size={24} />
+        <div className="brand-mark large login-brand-mark">
+          <img src="/longxin-logo.png" alt="龙信" />
         </div>
         <p className="eyebrow">LONGXIN · SALES OPERATIONS</p>
         <h1>销售运营中心</h1>
@@ -343,6 +344,7 @@ function Overview({
 }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState('');
+  const [showAllActivities, setShowAllActivities] = useState(false);
   const load = useCallback(
     () => {
       setError('');
@@ -366,6 +368,7 @@ function Overview({
   if (!data) return <Loading />;
   const max = Math.max(...data.days.map((day) => day.amount), 1);
   const todayAmount = data.days.at(-1)?.amount ?? 0;
+  const visibleActivities = showAllActivities ? data.activities : data.activities.slice(0, 3);
   return (
     <div className="page-content">
       <PageHeading
@@ -471,8 +474,8 @@ function Overview({
           </div>
         </Panel>
         <Panel title="最近动态" subtitle="充值与审核记录">
-          <div className="activity-list">
-            {data.activities.map((activity) => (
+          <div className="activity-list" id="recent-activities">
+            {visibleActivities.map((activity) => (
               <div className="activity" key={activity.id}>
                 <span
                   className={`activity-dot ${activity.status === 'pending' ? 'pending' : ''}`}
@@ -494,6 +497,18 @@ function Overview({
               </div>
             ))}
           </div>
+          {data.activities.length > 3 && (
+            <button
+              className="link-button activity-toggle"
+              type="button"
+              aria-expanded={showAllActivities}
+              aria-controls="recent-activities"
+              onClick={() => setShowAllActivities((expanded) => !expanded)}
+            >
+              {showAllActivities ? '收起' : `展开全部 ${data.activities.length} 条`}
+              <ChevronDown size={14} />
+            </button>
+          )}
         </Panel>
       </div>
       <Panel title="系统运行概况" subtitle="按最近上报判断连接状态，不代表实时探测">

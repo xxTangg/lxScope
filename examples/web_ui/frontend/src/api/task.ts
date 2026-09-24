@@ -237,7 +237,10 @@ export const taskApi = {
 	listKnowledgeBases: () =>
 		client.get<TaskKnowledgeBaseOption[]>('/tasks/knowledge-bases'),
 
-	get: (taskId: string) => client.get<TaskRecord>(`/tasks/${taskId}`),
+	get: (
+		taskId: string,
+		options?: { silent?: boolean; timeoutMs?: number },
+	) => client.get<TaskRecord>(`/tasks/${taskId}`, undefined, options),
 
 	create: (body: CreateTaskRequest) => client.post<TaskRecord>('/tasks/', body),
 
@@ -246,6 +249,7 @@ export const taskApi = {
 			// The backend has its own planner deadline. Keep the browser deadline
 			// slightly longer so it can return the persisted fallback/failed state.
 			timeoutMs: 60_000,
+			silent: true,
 		}),
 
 	listTools: (context: TaskContext = {}) =>

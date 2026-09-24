@@ -263,12 +263,18 @@ export const knowledgeBaseApi = {
 	},
 
 	/**
-	 * Fetch the raw file as text through the authenticated client —
-	 * for markdown / plain-text previews that render in-app.
+	 * Fetch the raw file as text for markdown / plain-text previews.
+	 * The raw-file endpoint accepts a signed download token rather than
+	 * the app's bearer token, so mint one before requesting the content.
 	 */
 	fetchDocumentText: async (knowledgeBaseId: string, documentId: string) => {
+		const { token } = await knowledgeBaseApi.createDocumentDownloadToken(
+			knowledgeBaseId,
+			documentId,
+		);
 		const res = await client.stream(
 			`/knowledge_bases/${knowledgeBaseId}/documents/${documentId}`,
+			{ params: { token } },
 		);
 		return res.text();
 	},

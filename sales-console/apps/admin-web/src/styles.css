@@ -75,6 +75,18 @@ button {
   border-radius: 14px;
   font-size: 18px;
 }
+.login-brand-mark {
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+}
+.login-brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
 .eyebrow,
 .sidebar-label {
   color: var(--muted);
@@ -222,13 +234,18 @@ textarea {
 
 .app-shell {
   display: flex;
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
 }
 .sidebar {
   width: 236px;
   flex: 0 0 236px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 28px 16px 22px;
   color: var(--ink);
   background: var(--sidebar);
@@ -328,8 +345,8 @@ textarea {
   color: #71717a;
 }
 .sidebar-bottom {
-  margin-top: auto;
-  padding-top: 24px;
+  margin-top: 20px;
+  padding-top: 18px;
   border-top: 1px solid var(--line);
 }
 .user-chip {
@@ -381,6 +398,32 @@ textarea {
 .main-area {
   min-width: 0;
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.sidebar,
+.main-area {
+  scrollbar-width: thin;
+  scrollbar-color: #d4d4d8 transparent;
+}
+.sidebar::-webkit-scrollbar,
+.main-area::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.sidebar::-webkit-scrollbar-track,
+.main-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar::-webkit-scrollbar-thumb,
+.main-area::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #d4d4d8;
+}
+.sidebar::-webkit-scrollbar-thumb:hover,
+.main-area::-webkit-scrollbar-thumb:hover {
+  background: #a1a1aa;
 }
 .topbar {
   height: 69px;
@@ -666,6 +709,22 @@ textarea {
   font-family: 'DM Mono', monospace;
   font-size: 10px;
   white-space: nowrap;
+}
+.activity-toggle {
+  width: 100%;
+  justify-content: center;
+  margin-top: 6px;
+  padding: 8px;
+  color: var(--muted);
+}
+.activity-toggle:hover {
+  color: var(--accent);
+}
+.activity-toggle svg {
+  transition: transform 0.16s ease;
+}
+.activity-toggle[aria-expanded='true'] svg {
+  transform: rotate(180deg);
 }
 .action-row {
   width: 100%;

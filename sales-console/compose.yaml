@@ -15,6 +15,10 @@ services:
       timeout: 5s
       retries: 12
     restart: unless-stopped
+    networks:
+      sales-db:
+        aliases:
+          - sales-postgres
 
   sales-api:
     build:
@@ -33,7 +37,7 @@ services:
       SALES_PUBLIC_URL: ${SALES_PUBLIC_URL:-http://127.0.0.1:44100}
       SALES_ADMIN_USERNAME: ${SALES_ADMIN_USERNAME:-admin}
       SALES_ADMIN_PASSWORD: ${SALES_ADMIN_PASSWORD:-}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://sales:change-me-in-production@postgres:5432/sales_console}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://sales:change-me-in-production@sales-postgres:5432/sales_console}
     ports:
       - '44100:44100'
     volumes:
@@ -48,6 +52,9 @@ services:
       timeout: 5s
       retries: 12
     restart: unless-stopped
+    networks:
+      - default
+      - sales-db
 
   admin-web:
     build:
@@ -70,3 +77,5 @@ networks:
   default:
     name: ${CUSTOMER_DOCKER_NETWORK:-lxscope2_default}
     external: true
+  sales-db:
+    internal: true
