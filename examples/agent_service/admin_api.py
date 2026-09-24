@@ -210,6 +210,7 @@ def _load_ed25519_public_key(value: Any) -> Any:
 class AdminUserView(BaseModel):
     id: str
     username: str
+    subject_id: str | None = None
     role: Literal["user", "admin"]
     status: Literal["active", "locked", "banned", "deleted"]
     plan_id: str
@@ -269,15 +270,10 @@ class SystemAccountView(BaseModel):
     system_id: str
     pool_tokens: int
     total_recharged: str
-    test_default_tokens: int
     account_count: int
     admin_count: int
     updated_at: str
     request_id: str
-
-
-class QuotaUpdateRequest(BaseModel):
-    test_default_tokens: int = Field(ge=0, le=100_000_000)
 
 
 class LedgerEntryView(BaseModel):
@@ -707,7 +703,6 @@ class AdminService:
             "total_recharged": "0.00",
             "cumulative_consumed": 0,
             "cumulative_credits": 0,
-            "test_default_tokens": 0,
             "updated_at": _now(),
         }
 
@@ -752,6 +747,7 @@ class AdminService:
             )
         return AdminUserView(
             id=account.id,
+            subject_id=account.subject_id,
             username=account.username,
             role=account.role,
             status=account.status,
@@ -928,6 +924,19 @@ class AdminService:
             elif kind == "skill":
                 source = await self._storage.get_skill(source_user_id, source_record_id)
 
+        if publication.get("tenant_id"):
+            # Organization-owned records are shared in place. The legacy
+            # local-account flow below still provisions individual copies.
+            for user_id, record_id in provisioned.items():
+                if kind == "mcp":
+                    await self._storage.delete_mcp(user_id, record_id)
+                elif kind == "skill":
+                    await self._storage.delete_skill(user_id, record_id)
+            if provisioned:
+                publication["provisioned"] = {}
+                return True
+            return False
+
         if source is not None and kind in {"mcp", "skill"}:
             for user_id in targets:
                 copied = (
@@ -1062,12 +1071,24 @@ class AdminService:
             if await self._sync_resource_publication(publication, accounts):
                 await self._save_resource_publications(resources)
 
-            record_id = (publication.get("provisioned") or {}).get(user.id)
-            record = (
-                await self._storage.get_mcp(user.id, record_id)
-                if isinstance(record_id, str)
-                else None
-            )
+            if publication.get("tenant_id"):
+                if publication.get("tenant_id") != user.tenant_id:
+                    raise _error(
+                        "mcp_not_authorized",
+                        "The MCP is not published to your organization.",
+                        403,
+                    )
+                record = await self._storage.get_mcp(
+                    str(publication.get("tenant_id")),
+                    str(publication.get("source_record_id") or ""),
+                )
+            else:
+                record_id = (publication.get("provisioned") or {}).get(user.id)
+                record = (
+                    await self._storage.get_mcp(user.id, record_id)
+                    if isinstance(record_id, str)
+                    else None
+                )
             if record is None:
                 raise _error(
                     "mcp_publication_unavailable",
@@ -1081,7 +1102,8 @@ class AdminService:
         body: ResourcePublicationRequest,
         actor: AuthUser,
     ) -> ResourcePublicationView:
-        if body.scope == "selected" and not body.user_ids:
+        is_tenant_resource = bool(actor.tenant_id)
+        if not is_tenant_resource and body.scope == "selected" and not body.user_ids:
             raise _error(
                 "users_required",
                 "Select at least one user for a selected publication.",
@@ -1090,7 +1112,7 @@ class AdminService:
 
         accounts = await self._auth.list_accounts()
         known_ids = {account.id for account in accounts if account.status == "active"}
-        unknown_ids = set(body.user_ids) - known_ids
+        unknown_ids = set(body.user_ids) - known_ids if not is_tenant_resource else set()
         if unknown_ids:
             raise _error(
                 "user_not_found",
@@ -1099,11 +1121,12 @@ class AdminService:
             )
 
         source_record: MCPRecord | SkillRecord | None = None
+        source_owner_id = actor.tenant_id or actor.id
         if body.source_record_id:
             if body.kind == "mcp":
-                source_record = await self._storage.get_mcp(actor.id, body.source_record_id)
+                source_record = await self._storage.get_mcp(source_owner_id, body.source_record_id)
             else:
-                source_record = await self._storage.get_skill(actor.id, body.source_record_id)
+                source_record = await self._storage.get_skill(source_owner_id, body.source_record_id)
             if source_record is None:
                 raise _error("resource_not_found", "The administrator resource was not found.", 404)
         elif body.kind == "mcp":
@@ -1125,9 +1148,16 @@ class AdminService:
                 **(existing or {}),
                 **body.model_dump(),
                 "id": publication_id,
-                "source_user_id": actor.id,
+                "source_user_id": source_owner_id,
                 "updated_at": _now(),
             }
+            if is_tenant_resource:
+                publication.update(
+                    tenant_id=actor.tenant_id,
+                    scope="all",
+                    user_ids=[],
+                    provisioned={},
+                )
             if source_record is not None:
                 publication["source_record_id"] = source_record.id
             if existing is None:
@@ -1736,7 +1766,6 @@ class AdminService:
             "system_id": system["system_id"],
             "pool_tokens": int(system["pool_tokens"]),
             "total_recharged": str(system["total_recharged"]),
-            "test_default_tokens": int(system["test_default_tokens"]),
             "account_count": len(accounts),
             "admin_count": sum(item.role == "admin" for item in accounts),
             "updated_at": system["updated_at"],
@@ -1755,42 +1784,6 @@ class AdminService:
             request_id_enforced=True,
             generated_at=_now(),
         )
-
-    async def update_quota(self, body: QuotaUpdateRequest) -> dict[str, Any]:
-        async with self._mutation_lock():
-            system = await self._system()
-            system["test_default_tokens"] = body.test_default_tokens
-            await self._save_system(system)
-        return await self.quota()
-
-    async def update_quota_idempotent(
-        self,
-        body: QuotaUpdateRequest,
-        actor: AuthUser,
-        *,
-        request_id: str,
-        idempotency_key: str,
-    ) -> dict[str, Any]:
-        request_fingerprint = {"operation": "quota.update_test_default", **body.model_dump()}
-        idem_key = self._idempotency_key(f"quota-update:{actor.id}", idempotency_key)
-        async with self._mutation_lock():
-            existing = await self._read_idempotent(idem_key, request_fingerprint)
-            if existing is not None:
-                return existing
-            system = await self._system()
-            system["test_default_tokens"] = body.test_default_tokens
-            await self._save_system(system)
-            await self._audit(
-                actor=actor,
-                action="quota.update_test_default",
-                target_id=None,
-                reason="Administrator updated the test account default.",
-                request_id=request_id,
-                result_summary=f"test_default_tokens={body.test_default_tokens}",
-            )
-            result = await self.quota()
-            await self._write_idempotent(idem_key, request_fingerprint, result)
-            return result
 
     async def revoke_user_sessions(
         self,
@@ -3306,25 +3299,6 @@ async def get_quota(
     service: AdminService = Depends(get_admin_service),
 ) -> SystemAccountView:
     value = await service.quota()
-    return SystemAccountView(**value, request_id=service._request_id(request))
-
-
-@admin_router.patch("/quota", response_model=SystemAccountView)
-async def update_quota(
-    body: QuotaUpdateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    actor: AuthUser = Depends(require_admin),
-    service: AdminService = Depends(get_admin_service),
-) -> SystemAccountView:
-    if not idempotency_key:
-        raise _error("idempotency_required", "Idempotency-Key is required.", 400)
-    value = await service.update_quota_idempotent(
-        body,
-        actor,
-        request_id=service._request_id(request),
-        idempotency_key=idempotency_key,
-    )
     return SystemAccountView(**value, request_id=service._request_id(request))
 
 

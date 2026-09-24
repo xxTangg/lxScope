@@ -1,4 +1,4 @@
-import { ApiError, client, getAccessToken, getBaseUrl } from './client';
+import { client, createApiError, getAccessToken, getBaseUrl } from './client';
 import type {
 	ChatRequest,
 	ListChatAttachmentContentTypesResponse,
@@ -26,17 +26,9 @@ function parseAttachment(file: File): Promise<ParseChatAttachmentResponse> {
 				}
 				return;
 			}
-			let detail = xhr.responseText || xhr.statusText;
-			try {
-				const json = JSON.parse(xhr.responseText) as { detail?: unknown };
-				if (typeof json.detail === 'string') detail = json.detail;
-				else if (json.detail !== undefined) detail = JSON.stringify(json.detail);
-			} catch {
-				// Keep the raw response when it is not JSON.
-			}
-			reject(new ApiError(xhr.status, detail));
+			reject(createApiError(xhr.status, xhr.responseText, xhr.statusText));
 		};
-		xhr.onerror = () => reject(new ApiError(0, 'Network error'));
+		xhr.onerror = () => reject(createApiError(0, ''));
 		xhr.send(formData);
 	});
 }

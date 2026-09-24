@@ -49,6 +49,7 @@ from agentscope.workspace import WorkspaceBase
 
 from admin_api import AdminService, admin_router, resource_router, sales_hub_router
 from auth import AuthUser, load_auth_from_env
+from identity import TenantScopedStorage, reset_identity, set_identity
 from longxin_admin.credential_policy import AdminManagedCredentialPolicy
 from longxin_admin.user_credential_provisioning import (
     provision_siliconflow_credential,
@@ -117,10 +118,12 @@ default_mcps = [
     ),
 ]
 
-storage = RedisStorage(
-    host=os.getenv("REDIS_HOST", "localhost"),
-    port=int(os.getenv("REDIS_PORT", "6379")),
-    password=os.getenv("REDIS_PASSWORD") or None,
+storage = TenantScopedStorage(
+    RedisStorage(
+        host=os.getenv("REDIS_HOST", "localhost"),
+        port=int(os.getenv("REDIS_PORT", "6379")),
+        password=os.getenv("REDIS_PASSWORD") or None,
+    ),
 )
 
 # Skill analysis persistence is an application-level optional sink.  The
@@ -131,6 +134,8 @@ skill_observation_store: PostgresSkillObservationStore | None = None
 project_observability_store: PostgresProjectObservabilityStore | None = None
 application_database: ApplicationDatabase | None = None
 project_observability = ProjectObservability()
+_default_publication_tenants: set[str] = set()
+_default_publication_seed_lock = asyncio.Lock()
 
 # Product-owned office skills are seeded into every new workspace. They do
 # not become user-installed library records, so every account can use them
@@ -161,6 +166,11 @@ async def _provision_registered_user(user_id: str) -> None:
 auth = load_auth_from_env(
     storage=storage,
     on_registered=_provision_registered_user,
+    on_authenticated=lambda user: provision_siliconflow_credential(
+        storage,
+        (),
+        tenant_ids=(user.tenant_id,) if user.tenant_id else (),
+    ),
 )
 
 
@@ -491,19 +501,19 @@ app.state.task_store = TaskStore()
 app.state.observability = project_observability
 
 
-async def _request_user_id(request: Request) -> str:
-    """Resolve the request identity once for project-level event context."""
+async def _request_identity(request: Request) -> AuthUser | None:
+    """Resolve the request identity for tenancy and project event context."""
     authorization = request.headers.get("authorization")
     auth = getattr(request.app.state, "auth", None)
     if not authorization or auth is None:
-        return ""
+        return None
     try:
-        return await auth.get_current_user_id(authorization)
+        return await auth.get_current_user(authorization)
     except Exception:
         # Authentication dependencies remain the source of truth.  The
         # observability path must not turn an unauthenticated request into a
         # service failure.
-        return ""
+        return None
 
 
 _ADMIN_ONLY_WORKSPACE_MCP_WRITES = {
@@ -548,16 +558,24 @@ async def _reject_unmanaged_mcp_write(request: Request) -> JSONResponse | None:
 @app.middleware("http")
 async def observability_middleware(request: Request, call_next):
     """Correlate and measure every HTTP request at the app boundary."""
+    identity = await _request_identity(request)
+    identity_token = set_identity(identity)
     blocked = await _reject_unmanaged_mcp_write(request)
     if blocked is not None:
+        reset_identity(identity_token)
         return blocked
     request_id = new_request_id(request)
     request.state.request_id = request_id
     started_at = asyncio.get_running_loop().time()
     response = None
     status_code = 500
-    user_id = await _request_user_id(request)
+    user_id = identity.id if identity is not None else ""
     try:
+        if identity is not None and identity.tenant_id:
+            async with _default_publication_seed_lock:
+                if identity.tenant_id not in _default_publication_tenants:
+                    await request.app.state.admin_service.ensure_default_builtin_publications()
+                    _default_publication_tenants.add(identity.tenant_id)
         with project_observability.http_span(request) as span:
             request.state.trace_id = project_observability.trace_id(span)
             with project_observability.context(
@@ -590,6 +608,7 @@ async def observability_middleware(request: Request, call_next):
             trace_id=getattr(request.state, "trace_id", ""),
             user_id=user_id,
         )
+        reset_identity(identity_token)
 
     assert response is not None
     response.headers["X-Request-ID"] = request_id
@@ -776,7 +795,8 @@ async def _application_lifespan(app_instance):
 
     try:
         async with _base_lifespan(app_instance):
-            await app_instance.state.admin_service.ensure_default_builtin_publications()
+            if os.getenv("LXSCOPE_AUTH_PROVIDER", "logto").strip().lower() != "logto":
+                await app_instance.state.admin_service.ensure_default_builtin_publications()
             accounts = await auth.list_accounts()
             await provision_siliconflow_credential(
                 storage,

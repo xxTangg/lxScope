@@ -49,7 +49,7 @@ export function AppSidebar() {
 	const location = useLocation();
 	const { t } = useTranslation();
 	const { startOnborda } = useOnborda();
-	const { user, logout } = useAuth();
+	const { user, logout, switchAccount, logtoEnabled } = useAuth();
 	const isObservability = location.pathname.startsWith('/admin/observability');
 
 	const handleStartTour = () => {
@@ -70,7 +70,12 @@ export function AppSidebar() {
 
 	const handleLogout = async () => {
 		await logout();
-		navigate('/login', { replace: true });
+		if (!logtoEnabled) navigate('/login', { replace: true });
+	};
+
+	const handleSwitchAccount = async () => {
+		await switchAccount();
+		if (!logtoEnabled) navigate('/login', { replace: true });
 	};
 
 	return (
@@ -226,6 +231,14 @@ export function AppSidebar() {
 									<div className="font-medium text-foreground">
 										{user?.username}
 									</div>
+									{user && (user.subject_id ?? user.id) !== user.username && (
+										<div
+											className="mt-0.5 truncate font-mono text-xs font-normal text-muted-foreground"
+											title={user.subject_id ?? user.id}
+										>
+											{t('auth.userId')}: {user.subject_id ?? user.id}
+										</div>
+									)}
 									<div className="mt-0.5 font-sans text-xs font-normal">
 										{t('auth.brand')}
 									</div>
@@ -246,7 +259,7 @@ export function AppSidebar() {
 									{t('common.settings')}
 								</DropdownMenuItem>
 								<DropdownMenuSeparator />
-								<DropdownMenuItem onSelect={() => void handleLogout()}>
+								<DropdownMenuItem onSelect={() => void handleSwitchAccount()}>
 									<Repeat2 />
 									{t('auth.switchAccount')}
 								</DropdownMenuItem>

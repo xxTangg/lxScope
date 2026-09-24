@@ -56,7 +56,6 @@ export function AdminOverviewPage() {
 					<CardContent className="space-y-3 text-sm">
 						<div className="flex items-center justify-between gap-3"><span>{t('admin.systemHealth')}</span><Badge variant={overview.data?.health === 'ok' ? 'default' : 'outline'}>{overview.data?.health === 'ok' ? t('admin.healthy') : t('admin.unknown')}</Badge></div>
 						<div className="flex items-center justify-between gap-3"><span>{t('admin.poolTokens')}</span><span className="font-mono">{quota.data ? formatNumber(quota.data.pool_tokens) : '...'}</span></div>
-						<div className="flex items-center justify-between gap-3"><span>{t('admin.testDefaultTokens')}</span><span className="font-mono">{quota.data ? formatNumber(quota.data.test_default_tokens) : '...'}</span></div>
 						<div className="flex items-center gap-2 text-xs text-muted-foreground"><RefreshCw className="size-3.5" />{overview.data?.updated_at ? new Date(overview.data.updated_at).toLocaleString() : '...'}</div>
 					</CardContent>
 				</Card>

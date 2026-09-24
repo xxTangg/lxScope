@@ -243,7 +243,6 @@ Idempotency-Key: idem_01J...
   "system_id": "lx_01J...",
   "pool_tokens": 4200000,
   "total_recharged": "999.00",
-  "test_default_tokens": 0,
   "account_count": 12,
   "admin_count": 1,
   "updated_at": "2026-09-15T08:30:00Z"
@@ -333,7 +332,6 @@ Idempotency-Key: idem_01J...
 | POST | `/admin/orders/{order_id}/approve` | 审批订单，原子扣减系统池并分配额度 |
 | POST | `/admin/orders/{order_id}/reject` | 拒绝待处理订单，不扣额度 |
 | GET | `/admin/quota` | 查询系统池和额度统计 |
-| PATCH | `/admin/quota` | 修改测试账号默认额度等系统配置 |
 | GET | `/admin/quota/ledger` | 查询额度账本，支持时间、类型、用户和订单过滤 |
 | POST | `/admin/quota/redeem-code` | 验证并兑换总部签发的离线/在线充值码 |
 | POST | `/admin/quota/recharge-requests` | 发起线上充值请求，由后端 SalesHub adapter 调总部 |

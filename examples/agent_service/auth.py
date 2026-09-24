@@ -48,6 +48,9 @@ class AuthUser(BaseModel):
     status: Literal["active", "locked", "banned", "deleted"] = "active"
     capabilities: list[str] = Field(default_factory=list)
     token_version: int = Field(default=0, exclude=True)
+    tenant_id: str | None = None
+    subject_id: str | None = None
+    organization_scopes: list[str] = Field(default_factory=list)
 
 
 class LoginResponse(BaseModel):
@@ -802,7 +805,27 @@ def load_auth_from_env(
     *,
     storage: Any | None = None,
     on_registered: Callable[[str], Awaitable[None]] | None = None,
-) -> JWTAuthService:
+    on_authenticated: Callable[[AuthUser], Awaitable[None]] | None = None,
+) -> Any:
+    provider = os.getenv("LXSCOPE_AUTH_PROVIDER", "logto").strip().lower()
+    if provider == "logto":
+        from identity.logto import LogtoAuthService
+
+        return LogtoAuthService(
+            endpoint=os.getenv("LOGTO_ENDPOINT", ""),
+            internal_endpoint=os.getenv("LOGTO_INTERNAL_ENDPOINT") or None,
+            api_resource=os.getenv("LOGTO_API_RESOURCE", ""),
+            storage=storage,
+            jwks_uri=os.getenv("LOGTO_JWKS_URI") or os.getenv("LOGTO_JWKS_URL") or None,
+            management_client_id=os.getenv("LOGTO_M2M_APP_ID"),
+            management_client_secret=os.getenv("LOGTO_M2M_APP_SECRET"),
+            management_api_resource=os.getenv("LOGTO_MANAGEMENT_API_RESOURCE"),
+            access_scope=os.getenv("LOGTO_ACCESS_SCOPE", "agent:use"),
+            admin_scope=os.getenv("LOGTO_ADMIN_SCOPE", "tenant:manage"),
+            on_authenticated=on_authenticated,
+        )
+    if provider not in {"local", "jwt"}:
+        raise ValueError("LXSCOPE_AUTH_PROVIDER must be 'local' or 'logto'.")
     raw_users = os.getenv("AGENTSCOPE_AUTH_USERS")
     if raw_users:
         users = _parse_users(raw_users)

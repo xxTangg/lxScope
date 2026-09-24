@@ -16,10 +16,12 @@ from pydantic import BaseModel, Field
 try:
     from admin_api import require_admin
     from auth import AuthUser
+    from identity.context import current_tenant_id
     from token_usage_analytics import collect_token_usage
 except ModuleNotFoundError:
     from examples.agent_service.admin_api import require_admin
     from examples.agent_service.auth import AuthUser
+    from examples.agent_service.identity.context import current_tenant_id
     from examples.agent_service.token_usage_analytics import collect_token_usage
 
 
@@ -175,9 +177,15 @@ async def get_skill_analytics(
         result = _empty_skill_analytics()
     else:
         try:
+            tenant_user_ids = (
+                [account.id for account in await request.app.state.auth.list_accounts()]
+                if current_tenant_id()
+                else None
+            )
             result = await store.query_skill_analytics(
                 start=normalized_start,
                 end=normalized_end,
+                user_ids=tenant_user_ids,
             )
         except Exception as exc:
             raise HTTPException(

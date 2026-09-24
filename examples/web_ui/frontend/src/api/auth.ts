@@ -6,6 +6,9 @@ export interface AuthUser {
 	role: 'user' | 'admin';
 	status: 'active' | 'locked' | 'banned' | 'deleted';
 	capabilities: string[];
+	tenant_id?: string | null;
+	subject_id?: string | null;
+	organization_scopes?: string[];
 }
 
 export interface LoginResponse {

@@ -134,6 +134,11 @@ class ObservabilityEventStore:
         with self._lock:
             self._events = list(events[-self.max_events :])
 
+    def snapshot(self) -> list[ObservabilityEvent]:
+        """Return an isolated copy of the bounded event window."""
+        with self._lock:
+            return list(self._events)
+
     def query(self, *, start: datetime, end: datetime) -> list[ObservabilityEvent]:
         normalized_start = _utc(start)
         normalized_end = _utc(end)

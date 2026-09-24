@@ -160,7 +160,6 @@ class PlanBillingService:
             "system_id": "local-system",
             "pool_tokens": 0,
             "total_recharged": "0.00",
-            "test_default_tokens": 0,
             "updated_at": _now(),
         }
 
@@ -364,6 +363,13 @@ class PlanBillingService:
         if order_status is not None:
             orders = [item for item in orders if item.get("status") == order_status]
         orders = orders[:limit]
+        if orders:
+            accounts = await self._auth.list_accounts()
+            usernames = {account.id: account.username for account in accounts}
+            orders = [
+                {**item, "username": usernames.get(item.get("user_id"), item["username"])}
+                for item in orders
+            ]
         return PlanOrderListResponse(
             orders=[self._order_view(item, request_id) for item in orders],
             total=len(orders),
@@ -533,8 +539,6 @@ class PlanBillingService:
         idempotency_key: str,
         request_id: str = "",
     ) -> PlanOrderView:
-        if not await self._auth.verify_password(actor.id, body.admin_password):
-            raise _error("admin_password_invalid", "The administrator password is invalid.", 403)
         idem_key = self._order_idempotency_key(f"admin:{actor.id}", idempotency_key)
         request_fingerprint = {
             "operation": "approve_order",
@@ -629,8 +633,6 @@ class PlanBillingService:
         idempotency_key: str,
         request_id: str = "",
     ) -> PlanOrderView:
-        if not await self._auth.verify_password(actor.id, body.admin_password):
-            raise _error("admin_password_invalid", "The administrator password is invalid.", 403)
         idem_key = self._order_idempotency_key(f"admin:{actor.id}", idempotency_key)
         request_fingerprint = {
             "operation": "reject_order",

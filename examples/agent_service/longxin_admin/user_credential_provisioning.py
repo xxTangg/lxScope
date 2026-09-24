@@ -40,6 +40,8 @@ def siliconflow_credential_from_env() -> OpenAICredential | None:
 async def provision_siliconflow_credential(
     storage: StorageBase,
     user_ids: Iterable[str],
+    *,
+    tenant_ids: Iterable[str] = (),
 ) -> int:
     """Upsert the deployment credential for the supplied account ids.
 
@@ -56,6 +58,16 @@ async def provision_siliconflow_credential(
         return 0
 
     count = 0
+    tenant_upsert = getattr(storage, "upsert_tenant_credential", None)
+    for tenant_id in set(tenant_ids):
+        if not tenant_id:
+            continue
+        if callable(tenant_upsert):
+            await tenant_upsert(tenant_id, credential)
+        else:
+            await storage.upsert_credential(tenant_id, credential)
+        count += 1
+
     for user_id in set(user_ids):
         if not user_id:
             continue

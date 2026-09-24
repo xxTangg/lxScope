@@ -7,14 +7,14 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import { PlanAccountCard } from '@/features/longxin-admin';
 import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { formatNumber } from '@/utils/common';
-import { PlanAccountCard } from '@/features/longxin-admin';
 
 export function AccountPage() {
 	const { t } = useTranslation();
-	const { user, logout } = useAuth();
+	const { user, logout, switchAccount, logtoEnabled, organizations, organizationNames, selectTenant } = useAuth();
 	const navigate = useNavigate();
 	const usage = useQuery({
 		queryKey: ['auth', 'usage', user?.id],
@@ -24,6 +24,11 @@ export function AccountPage() {
 
 	const leaveAccount = async () => {
 		await logout();
+		if (!logtoEnabled) navigate('/login', { replace: true });
+	};
+
+	const beginAccountSwitch = async () => {
+		await switchAccount();
 		navigate('/login', { replace: true });
 	};
 
@@ -71,9 +76,22 @@ export function AccountPage() {
 								<div className="mt-1 truncate font-mono text-sm">{user?.id}</div>
 							</div>
 						</div>
+						{logtoEnabled && organizations.length > 1 && (
+							<div className="space-y-1.5">
+								<label htmlFor="account-tenant" className="text-xs text-muted-foreground">当前组织</label>
+								<select
+									id="account-tenant"
+									className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+									value={user?.tenant_id ?? ''}
+								onChange={(event) => void selectTenant(event.target.value).catch(() => undefined)}
+								>
+									{organizations.map((id) => <option key={id} value={id}>{organizationNames[id] || id}</option>)}
+								</select>
+							</div>
+						)}
 						<Separator />
 						<div className="flex flex-wrap gap-2">
-							<Button variant="outline" onClick={() => void leaveAccount()}>
+							<Button variant="outline" onClick={() => void beginAccountSwitch()}>
 								<Repeat2 />
 								{t('auth.switchAccount')}
 							</Button>
