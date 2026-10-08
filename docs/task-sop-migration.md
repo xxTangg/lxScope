@@ -20,6 +20,9 @@ Task 的取消、排队和文件生成失败是业务生命周期，官方 SOP �
 已有运行默认识别为 `engine=legacy`，保持历史内容；新运行使用 `engine=sop`。
 执行始终采用 Run 内冻结的节点定义；修改任务不会改变正在等待回答的运行。
 Task 的 PostgreSQL/Redis 存储均复用 JSON 字段，不需要增加 Task 数据库列。
+PostgreSQL 必须应用 `0004_task_awaiting_input.sql`，为 `task_runs` 和
+`task_run_nodes` 的状态约束添加 `awaiting_input`。现有自动迁移会在服务启动时应用；
+仅更新 Python 枚举或修改已执行的旧迁移，无法更新已有数据库约束。
 使用官方 SQL 主存储的部署仍应按官方升级流程迁移其新增 SOP 表。
 
 ## 输入协议
@@ -90,8 +93,14 @@ Agent 使用结构化模型调用。旧任务中的 Agent 也会区分缺数据�
 ## 验证
 
 新增 `tests/task_sop_test.py`、`tests/task_input_protocol_test.py`：覆盖缺数据阻塞、同 Run 恢复、冻结定义、重复/过期/跨用户回答、验收重做、异常状态一致性、跨 worker 取消、Redis JSON 往返、结构化模型调用及 HTTP/SSE。
+`tests/task_postgres_sop_test.py` 使用真实 PostgreSQL 验证旧数据库升级、历史保留、
+约束覆盖所有运行/节点状态、无效状态拒绝，以及显式 Input 和模型提问的挂起、服务重建、
+重复回答、同 Run 恢复。测试仅接受显式配置的 `LXSCOPE_TASK_TEST_DATABASE_URL`，
+数据库名必须以 `lxscope_task_test` 开头；每项测试创建并清理自己的临时数据库。
 同时运行官方 SOP、Chat/Agent 兼容、存储、模型、权限、工具和格式器相关回归测试。
 本次验证共 658 项测试通过，另有 345 个参数化子测试通过；使用隔离目录、模拟模型与测试存储，未修改生产任务数据。
+后续数据库兼容修复额外通过两项真实 PostgreSQL 集成测试，并在现有出差任务的新运行中
+验证真实模型能生成问题、保存 `awaiting_input`，保持后续步骤未执行。
 前端通过 TypeScript、ESLint 与生产构建；Vite 改用原生加载 `.mjs` 配置，避免 Windows 上将原生依赖当文本打包。
 
 等待输入的运行可以在服务重启后继续；普通执行中的进程崩溃不自动重放有副作用的工具，仍需用户发起重试。
