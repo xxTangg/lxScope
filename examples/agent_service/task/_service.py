@@ -957,6 +957,8 @@ class TaskService:
                 history=self._execution_history(current),
                 initial_input=run.input,
                 user_answers=answers,
+                clarification_state=state.metadata.get("clarification", {}),
+                clarification_rounds=len(state.answers),
                 verification_feedback=(
                     state.verifications[-1].message
                     if state.verifications
@@ -1003,6 +1005,8 @@ class TaskService:
                 task_revision=run.task_revision,
                 initial_input=run.input,
                 knowledge_context=state.knowledge_context,
+                clarification_state=state.metadata.get("clarification", {}),
+                clarification_rounds=len(state.answers),
                 history=self._execution_history(current or run),
                 user_answers=[
                     TaskInputReply.model_validate(answer)

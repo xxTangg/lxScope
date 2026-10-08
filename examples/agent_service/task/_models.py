@@ -382,6 +382,8 @@ class ExecutionContext(TaskContext):
     history: list[dict[str, Any]] = Field(default_factory=list)
     initial_input: str = ""
     user_answers: list[TaskInputReply] = Field(default_factory=list)
+    clarification_state: dict[str, Any] = Field(default_factory=dict)
+    clarification_rounds: int = Field(default=0, ge=0)
     verification_feedback: str = ""
     knowledge_context: str = ""
 

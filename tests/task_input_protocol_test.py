@@ -16,6 +16,7 @@ from examples.agent_service.task._agentscope_executor import (
     _render_task_value,
 )
 from examples.agent_service.task._executor import StepExecutionResult
+from examples.agent_service.task._clarification import EffectiveRequirements
 from examples.agent_service.task._models import (
     AgentStepConfig,
     AgentStepOutcome,
@@ -152,10 +153,16 @@ class TaskAgentProtocolTest(IsolatedAsyncioTestCase):
         model = AsyncMock()
         model.generate_structured_output.return_value = SimpleNamespace(
             content={
-                "status": "needs_input",
-                "output": "",
-                "reason": "缺少日期",
-                "questions": [{"key": "date", "label": "出差日期？"}],
+                "effective_goal": "规划出差",
+                "fields": [
+                    {
+                        "key": "date",
+                        "label": "出差日期",
+                        "status": "unknown",
+                        "blocking": True,
+                        "blocking_reason": "筛选车次需要确定日期。",
+                    }
+                ],
             },
             usage=None,
         )
@@ -181,11 +188,13 @@ class TaskAgentProtocolTest(IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "needs_input")
         self.assertEqual(result.questions[0].key, "date")
         arguments = model.generate_structured_output.call_args.kwargs
-        self.assertIs(arguments["structured_model"], AgentStepOutcome)
+        self.assertIs(arguments["structured_model"], EffectiveRequirements)
         prompt = arguments["messages"][-1].get_text_content()
         self.assertIn("从上海出发", prompt)
-        self.assertNotIn("{{user_input}}", prompt)
-        self.assertIn("needs_input", prompt)
+        self.assertIn("answers_in_chronological_order", prompt)
+        stored_prompt = storage.upsert_message.call_args_list[0].args[-1]
+        self.assertNotIn("{{user_input}}", stored_prompt.get_text_content())
+        self.assertIn("当前有效需求", stored_prompt.get_text_content())
         self.assertIn("资料中的 {{unknown}} 是原文", prompt)
 
 
