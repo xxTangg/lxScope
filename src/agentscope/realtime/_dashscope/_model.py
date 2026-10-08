@@ -92,6 +92,11 @@ class DashScopeRealtimeModel(RealtimeModelBase):
         """Open the WebSocket and send the session config."""
         import websockets
 
+        # Stop the previous session and drop its terminal events.
+        await self.close()
+        while not self._queue.empty():
+            self._queue.get_nowait()
+
         if kwargs.get("turn_detection_disabled"):
             self.parameters = self.parameters.model_copy(
                 update={"turn_detection": "none"},
@@ -326,10 +331,13 @@ class DashScopeRealtimeModel(RealtimeModelBase):
                     at_ms=data.get("audio_end_ms", 0),
                 )
 
-            case "response.output_item.added" | "response.output_item.done":
+            case "response.output_item.added":
                 item = data.get("item", {})
                 if item.get("type") == "function_call" and item.get("name"):
                     self._tool_names[item["call_id"]] = item["name"]
+                return None
+
+            case "response.output_item.done":
                 return None
 
             case "response.function_call_arguments.delta":
@@ -348,7 +356,9 @@ class DashScopeRealtimeModel(RealtimeModelBase):
                 call_id = data.get("call_id", "")
                 accumulated = self._tool_args.pop(call_id, "")
                 arguments = data.get("arguments") or accumulated
-                name = data.get("name") or self._tool_names.pop(call_id, "")
+                name = self._tool_names.pop(call_id, "")
+                if data.get("name"):
+                    name = data["name"]
                 return me.ToolCallEvent(
                     item_id=self._item_id,
                     tool_call=ToolCallBlock(

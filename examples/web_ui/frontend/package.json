@@ -4,8 +4,8 @@
 	"version": "0.0.0",
 	"type": "module",
 	"scripts": {
-		"dev": "vite",
-		"build": "tsc -b && vite build",
+		"dev": "vite --configLoader native",
+		"build": "tsc -b && vite build --configLoader native",
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
 		"preview": "vite preview"

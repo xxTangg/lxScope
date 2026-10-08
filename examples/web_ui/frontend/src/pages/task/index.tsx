@@ -28,7 +28,6 @@ import { Textarea } from '@/components/ui/textarea';
 import { useAgents } from '@/hooks/useAgents';
 import { useSessions } from '@/hooks/useSessions';
 
-
 interface TaskDraft {
 	id: string;
 	title: string;
@@ -39,12 +38,7 @@ interface TaskDraft {
 	generation_error?: string | null;
 }
 
-const TERMINAL_RUN_STATUSES = new Set([
-	'succeeded',
-	'failed',
-	'canceled',
-	'timed_out',
-]);
+const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'timed_out']);
 
 function toDraft(task: TaskRecord): TaskDraft {
 	return {
@@ -200,9 +194,7 @@ export function TaskPage() {
 			return undefined;
 		}
 		let disposed = false;
-		const selectedSession = sessions.find(
-			(view) => view.session.id === executionSessionId,
-		);
+		const selectedSession = sessions.find((view) => view.session.id === executionSessionId);
 		void taskApi
 			.listTools({
 				agent_id: executionAgentId,
@@ -222,11 +214,8 @@ export function TaskPage() {
 		};
 	}, [executionAgentId, executionSessionId, sessions]);
 
-
 	const buildExecutionContext = (): TaskContext => {
-		const selectedSession = sessions.find(
-			(view) => view.session.id === executionSessionId,
-		);
+		const selectedSession = sessions.find((view) => view.session.id === executionSessionId);
 		return {
 			...(executionAgentId ? { agent_id: executionAgentId } : {}),
 			...(executionSessionId ? { session_id: executionSessionId } : {}),
@@ -281,11 +270,12 @@ export function TaskPage() {
 			} else {
 				restoreRequestRef.current += 1;
 				setCurrentRun(null);
-		setRunEvents([]);
+				setRunEvents([]);
 				setIsRunning(false);
 			}
 			setIsDirty(false);
-			if (selected && selected.id !== taskId) navigate(`/task/${selected.id}`, { replace: true });
+			if (selected && selected.id !== taskId)
+				navigate(`/task/${selected.id}`, { replace: true });
 		} catch (requestError) {
 			setError(errorMessage(requestError));
 		} finally {
@@ -298,7 +288,24 @@ export function TaskPage() {
 	}, [loadTasks]);
 
 	const currentRunId = currentRun?.id ?? null;
+	const currentRunIdRef = React.useRef(currentRunId);
+	React.useEffect(() => { currentRunIdRef.current = currentRunId; }, [currentRunId]);
 	const shouldStreamCurrentRun = Boolean(currentRunId);
+
+	React.useEffect(() => {
+		if (!currentRunId || currentRun?.status !== 'awaiting_input') return;
+		let disposed = false;
+		const timer = window.setInterval(() => {
+			void taskApi.getRun(currentRunId).then((latest) => {
+				if (disposed) return;
+				setCurrentRun(latest);
+				setIsRunning(!TERMINAL_RUN_STATUSES.has(latest.status));
+				setTasks((previous) => previous.map((task) => task.id === latest.task_id
+					? { ...task, last_run_id: latest.id, last_run_status: latest.status } : task));
+			}).catch(() => undefined);
+		}, 5_000);
+		return () => { disposed = true; window.clearInterval(timer); };
+	}, [currentRunId, currentRun?.status]);
 
 	React.useEffect(() => {
 		if (!currentRunId || !shouldStreamCurrentRun) return undefined;
@@ -324,13 +331,19 @@ export function TaskPage() {
 
 		void (async () => {
 			try {
-				for await (const event of taskApi.streamRunEvents(currentRunId, controller.signal)) {
+				for await (const event of taskApi.streamRunEvents(
+					currentRunId,
+					controller.signal,
+				)) {
 					if (disposed || event.run_id !== currentRunId) return;
-					setRunEvents((previous) => previous.some((item) => item.id === event.id) ? previous : [...previous, event]);
+					setRunEvents((previous) =>
+						previous.some((item) => item.id === event.id)
+							? previous
+							: [...previous, event],
+					);
 					const latest = await taskApi.getRun(currentRunId);
 					if (disposed) return;
 					syncRun(latest);
-
 				}
 			} catch (requestError) {
 				if (!disposed && !controller.signal.aborted) {
@@ -343,7 +356,7 @@ export function TaskPage() {
 			disposed = true;
 			controller.abort();
 		};
-	}, [currentRunId, shouldStreamCurrentRun]);
+	}, [currentRunId, shouldStreamCurrentRun, currentRun?.status]);
 
 	const selectTask = (task: TaskRecord) => {
 		setSelectedTaskId(task.id);
@@ -488,7 +501,7 @@ export function TaskPage() {
 		if (!draft || isSaving || isRunning || isGenerating) return;
 		const saved = isDirty
 			? await saveDraft()
-			: tasks.find((task) => task.id === draft.id) ?? null;
+			: (tasks.find((task) => task.id === draft.id) ?? null);
 		if (!saved) return;
 		setError(null);
 		await generateTask(saved, buildExecutionContext());
@@ -500,7 +513,9 @@ export function TaskPage() {
 			setError('请先填写任务目的并配置至少一个任务步骤。');
 			return;
 		}
-		const saved = isDirty ? await saveDraft() : tasks.find((task) => task.id === draft.id) ?? null;
+		const saved = isDirty
+			? await saveDraft()
+			: (tasks.find((task) => task.id === draft.id) ?? null);
 		if (!saved) return;
 		setError(null);
 		setRunEvents([]);
@@ -527,7 +542,9 @@ export function TaskPage() {
 
 	const handleRerun = () => {
 		if (!currentRun || isSaving || isRunning || isGenerating) return;
-		const confirmed = window.confirm('确定重新执行此任务？\n\n已有执行结果将保留为历史运行记录。');
+		const confirmed = window.confirm(
+			'确定重新执行此任务？\n\n已有执行结果将保留为历史运行记录。',
+		);
 		if (!confirmed) return;
 		void handleRun();
 	};
@@ -569,6 +586,31 @@ export function TaskPage() {
 		}
 	};
 
+	const handleAnswer = async (requestId: string, answers: Record<string, string>) => {
+		if (!currentRun) return;
+		let run: TaskRunRecord;
+		try {
+			run = await taskApi.answerRun(currentRun.id, requestId, answers);
+		} catch (cause) {
+			const latest = await taskApi.getRun(currentRun.id).catch(() => null);
+			if (latest && currentRunIdRef.current === latest.id) {
+				setCurrentRun(latest);
+				setIsRunning(!TERMINAL_RUN_STATUSES.has(latest.status));
+			}
+			throw cause;
+		}
+		if (currentRunIdRef.current !== run.id) return;
+		setCurrentRun(run);
+		setIsRunning(!TERMINAL_RUN_STATUSES.has(run.status));
+		setTasks((previous) =>
+			previous.map((task) =>
+				task.id === run.task_id
+					? { ...task, last_run_id: run.id, last_run_status: run.status }
+					: task,
+			),
+		);
+	};
+
 	const handleDelete = async (task: TaskRecord) => {
 		if (!window.confirm(`确认删除任务“${task.title}”吗？`)) return;
 		try {
@@ -582,7 +624,7 @@ export function TaskPage() {
 				setSelectedTaskId(null);
 				setDraft(null);
 				setCurrentRun(null);
-		setRunEvents([]);
+				setRunEvents([]);
 				navigate('/task');
 			}
 			toast.success('任务已删除');
@@ -638,6 +680,7 @@ export function TaskPage() {
 								isDirty={isDirty}
 								isSaving={isSaving}
 								isRunning={isRunning}
+								isAwaitingInput={currentRun?.status === 'awaiting_input'}
 								isGenerating={isGenerating}
 								canRerun={Boolean(currentRun && currentRun.task_id === draft.id)}
 								onTitleChange={(title) => updateDraft({ title })}
@@ -664,40 +707,59 @@ export function TaskPage() {
 									<div className="mb-4 grid gap-3 md:grid-cols-2">
 										<section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4">
 											<div className="mb-2 flex h-9 items-center justify-between gap-3">
-												<div className="text-xs font-semibold text-slate-800">任务目标</div>
+												<div className="text-xs font-semibold text-slate-800">
+													任务目标
+												</div>
 												<Button
 													variant="ghost"
 													size="sm"
-															onClick={() => void handleRegenerate()}
-															disabled={isSaving || isRunning || isGenerating || !draft.goal.trim()}
-															className="h-7 px-2 text-[10px] text-blue-700"
-														>
-															{isGenerating ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-															{isGenerating
-																? isSyncingGeneration
-																	? '同步节点中…'
-																	: '生成中…'
-																: '重新生成步骤'}
-														</Button>
-													</div>
+													onClick={() => void handleRegenerate()}
+													disabled={
+														isSaving ||
+														isRunning ||
+														isGenerating ||
+														!draft.goal.trim()
+													}
+													className="h-7 px-2 text-[10px] text-blue-700"
+												>
+													{isGenerating ? (
+														<Loader2 className="animate-spin" />
+													) : (
+														<RefreshCw />
+													)}
+													{isGenerating
+														? isSyncingGeneration
+															? '同步节点中…'
+															: '生成中…'
+														: '重新生成步骤'}
+												</Button>
+											</div>
 											<Textarea
 												value={draft.goal}
-												onChange={(event) => updateDraft({ goal: event.target.value })}
-																										disabled={isSaving || isRunning || isGenerating}
-																										placeholder="描述任务最终要完成什么..."
-																									className="task-goal-input border-slate-100 bg-slate-50/70 text-xs leading-5 focus-visible:bg-white"
+												onChange={(event) =>
+													updateDraft({ goal: event.target.value })
+												}
+												disabled={isSaving || isRunning || isGenerating}
+												placeholder="描述任务最终要完成什么..."
+												className="task-goal-input border-slate-100 bg-slate-50/70 text-xs leading-5 focus-visible:bg-white"
 											/>
 										</section>
 										<section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4">
 											<div className="mb-2 flex h-9 items-center justify-between gap-3">
 												<div>
-													<div className="text-xs font-semibold text-slate-800">执行输入（可选）</div>
-													<div className="mt-0.5 text-[10px] text-slate-500">只作用于本次运行，不修改任务目标</div>
+													<div className="text-xs font-semibold text-slate-800">
+														执行输入（可选）
+													</div>
+													<div className="mt-0.5 text-[10px] text-slate-500">
+														只作用于本次运行，不修改任务目标
+													</div>
 												</div>
 											</div>
 											<Textarea
 												value={runInput}
-												onChange={(event) => setRunInput(event.target.value)}
+												onChange={(event) =>
+													setRunInput(event.target.value)
+												}
 												disabled={isSaving || isRunning || isGenerating}
 												placeholder="补充任务背景、特殊要求或参考信息..."
 												className="task-run-input border-slate-100 bg-slate-50/70 text-xs leading-5 focus-visible:bg-white"
@@ -706,34 +768,65 @@ export function TaskPage() {
 									</div>
 
 									<details className="mb-4 rounded-xl border border-slate-200 bg-slate-50/50 px-4 py-3">
-										<summary className="cursor-pointer list-none text-xs font-semibold text-slate-700">执行上下文 <span className="ml-1 font-normal text-slate-500">Agent、会话与工作区</span></summary>
+										<summary className="cursor-pointer list-none text-xs font-semibold text-slate-700">
+											执行上下文{' '}
+											<span className="ml-1 font-normal text-slate-500">
+												Agent、会话与工作区
+											</span>
+										</summary>
 										<div className="mt-3 grid gap-3 sm:grid-cols-2">
 											<label className="space-y-1.5 text-[11px] text-slate-500">
 												<span>智能体</span>
 												<select
 													value={executionAgentId ?? ''}
 													onChange={(event) => {
-														setExecutionAgentId(event.target.value || null);
-														setExecutionSessionId(event.target.value ? undefined : null);
+														setExecutionAgentId(
+															event.target.value || null,
+														);
+														setExecutionSessionId(
+															event.target.value ? undefined : null,
+														);
 														setIsDirty(true);
 													}}
 													disabled={isSaving || isRunning}
 													className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
 												>
 													<option value="">不绑定（仅手动编排）</option>
-													{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.data.name}</option>)}
+													{agents.map((agent) => (
+														<option key={agent.id} value={agent.id}>
+															{agent.data.name}
+														</option>
+													))}
 												</select>
 											</label>
 											<label className="space-y-1.5 text-[11px] text-slate-500">
 												<span>会话</span>
 												<select
 													value={executionSessionId ?? ''}
-													onChange={(event) => { setExecutionSessionId(event.target.value || null); setIsDirty(true); }}
-													disabled={!executionAgentId || isSaving || isRunning || isGenerating}
+													onChange={(event) => {
+														setExecutionSessionId(
+															event.target.value || null,
+														);
+														setIsDirty(true);
+													}}
+													disabled={
+														!executionAgentId ||
+														isSaving ||
+														isRunning ||
+														isGenerating
+													}
 													className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
 												>
 													<option value="">不绑定（仅手动编排）</option>
-													{sessions.map((view) => <option key={view.session.id} value={view.session.id}>{view.session.config.name || view.session.id}</option>)}
+													{sessions.map((view) => (
+														<option
+															key={view.session.id}
+															value={view.session.id}
+														>
+															{view.session.config.name ||
+																view.session.id}
+														</option>
+													))}
 												</select>
 											</label>
 										</div>
@@ -747,7 +840,9 @@ export function TaskPage() {
 									<TaskKnowledgeSelector
 										selectedIds={draft.knowledge_base_ids}
 										disabled={isSaving || isRunning || isGenerating}
-										onChange={(knowledge_base_ids) => updateDraft({ knowledge_base_ids })}
+										onChange={(knowledge_base_ids) =>
+											updateDraft({ knowledge_base_ids })
+										}
 									/>
 									<TaskKnowledgeGraph
 										taskId={draft.id}
@@ -766,18 +861,39 @@ export function TaskPage() {
 						</>
 					) : (
 						<div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-							{error && <div className="mb-6 flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2.5 text-left text-sm text-red-700"><AlertCircle className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
-							<div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-700"><Plus className="size-6" /></div>
-							<div className="text-xl font-semibold text-slate-900">创建你的第一个任务</div>
-							<div className="mt-2 max-w-md text-sm leading-6 text-slate-500">把一个目标拆成多个步骤，保存后即可重复执行。</div>
-							<Button className="mt-6 bg-blue-600 text-white hover:bg-blue-700" onClick={() => setNewTaskOpen(true)}><Plus />新建任务</Button>
+							{error && (
+								<div className="mb-6 flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2.5 text-left text-sm text-red-700">
+									<AlertCircle className="mt-0.5 size-4 shrink-0" />
+									<span>{error}</span>
+								</div>
+							)}
+							<div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-700">
+								<Plus className="size-6" />
+							</div>
+							<div className="text-xl font-semibold text-slate-900">
+								创建你的第一个任务
+							</div>
+							<div className="mt-2 max-w-md text-sm leading-6 text-slate-500">
+								把一个目标拆成多个步骤，保存后即可重复执行。
+							</div>
+							<Button
+								className="mt-6 bg-blue-600 text-white hover:bg-blue-700"
+								onClick={() => setNewTaskOpen(true)}
+							>
+								<Plus />
+								新建任务
+							</Button>
 						</div>
 					)}
 				</section>
 				<ResizeHandle
 					label="调整执行情报宽度"
 					onPointerDown={(event) => beginResize('results', event)}
-					onNudge={(delta) => setResultWidth((value) => clamp(value - delta, MIN_RESULT_WIDTH, getResultWidthLimit()))}
+					onNudge={(delta) =>
+						setResultWidth((value) =>
+							clamp(value - delta, MIN_RESULT_WIDTH, getResultWidthLimit()),
+						)
+					}
 				/>
 				<TaskRunPanel
 					run={draft ? currentRun : null}
@@ -787,6 +903,7 @@ export function TaskPage() {
 					knowledgeBaseNames={[]}
 					width={resultWidth}
 					onCancel={() => void handleCancel()}
+					onAnswer={handleAnswer}
 					onRetry={() => void handleRetry()}
 				/>
 			</main>

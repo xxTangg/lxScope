@@ -9,6 +9,7 @@ from ._models import (
     ExecutionContext,
     PythonStepConfig,
     TaskNode,
+    TaskInputQuestion,
     ToolStepConfig,
 )
 
@@ -20,6 +21,9 @@ class StepExecutionResult:
     text: str
     result: Any = None
     metadata: dict[str, Any] | None = None
+    status: str = "completed"
+    questions: list[TaskInputQuestion] | None = None
+    reason: str = ""
 
 
 class TaskExecutor(Protocol):
@@ -55,6 +59,7 @@ class TaskArtifactWriter(Protocol):
     ) -> bytes:
         """Read one previously stored artifact."""
 
+
 class PreviewTaskExecutor:
     """Local adapter used when no AgentScope session is attached.
 
@@ -86,16 +91,14 @@ class PreviewTaskExecutor:
             description = "PythonStep 已在预览模式跳过实际执行。"
         else:
             description = f"Prompt：{node.prompt}"
-        return (
-            StepExecutionResult(
-                text=(
-                    f"{node.name} 已完成（预览执行）\n\n"
-                    f"{description}\n\n"
-                    f"上一节点上下文：{excerpt}"
-                ),
-                result={
-                    "mode": "preview",
-                    "step_type": node.type.value,
-                },
-            )
+        return StepExecutionResult(
+            text=(
+                f"{node.name} 已完成（预览执行）\n\n"
+                f"{description}\n\n"
+                f"上一节点上下文：{excerpt}"
+            ),
+            result={
+                "mode": "preview",
+                "step_type": node.type.value,
+            },
         )

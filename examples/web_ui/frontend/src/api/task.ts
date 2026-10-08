@@ -5,12 +5,19 @@ export type TaskGenerationStatus = 'idle' | 'generating' | 'succeeded' | 'failed
 export type RunStatus =
 	| 'queued'
 	| 'running'
+	| 'awaiting_input'
 	| 'succeeded'
 	| 'failed'
 	| 'canceled'
 	| 'timed_out';
-export type NodeRunStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'canceled';
-export type TaskStepType = 'agent' | 'tool' | 'python';
+export type NodeRunStatus =
+	| 'pending'
+	| 'running'
+	| 'awaiting_input'
+	| 'succeeded'
+	| 'failed'
+	| 'canceled';
+export type TaskStepType = 'agent' | 'tool' | 'python' | 'input';
 export type TaskArtifactFormat = 'markdown' | 'docx' | 'xlsx';
 
 export interface AgentStepConfig {
@@ -32,7 +39,28 @@ export interface PythonStepConfig {
 	timeout_seconds: number;
 }
 
-export type TaskStepConfig = AgentStepConfig | ToolStepConfig | PythonStepConfig;
+export interface TaskInputQuestion {
+	key: string;
+	label: string;
+	required: boolean;
+	options: string[];
+}
+
+export interface InputStepConfig {
+	type: 'input';
+	reason: string;
+	questions: TaskInputQuestion[];
+}
+
+export interface TaskInputRequest {
+	id: string;
+	node_id: string;
+	reason: string;
+	questions: TaskInputQuestion[];
+	created_at: string;
+}
+
+export type TaskStepConfig = AgentStepConfig | ToolStepConfig | PythonStepConfig | InputStepConfig;
 
 export interface TaskArtifactConfig {
 	format: TaskArtifactFormat;
@@ -63,6 +91,8 @@ export interface TaskNode {
 	knowledge_graph_enabled?: boolean;
 	knowledge_base_mode?: 'inherit' | 'override' | 'disabled';
 	knowledge_base_ids?: string[];
+	acceptance_criteria?: string;
+	max_attempts?: number;
 }
 
 export interface TaskContext {
@@ -145,6 +175,8 @@ export interface TaskRunRecord {
 	created_at: string;
 	started_at?: string | null;
 	finished_at?: string | null;
+	engine?: 'legacy' | 'sop';
+	pending_input?: TaskInputRequest | null;
 }
 
 export interface CreateTaskRequest {
@@ -234,13 +266,10 @@ export interface GenerateTaskRequest {
 export const taskApi = {
 	list: () => client.get<TaskRecord[]>('/tasks/'),
 
-	listKnowledgeBases: () =>
-		client.get<TaskKnowledgeBaseOption[]>('/tasks/knowledge-bases'),
+	listKnowledgeBases: () => client.get<TaskKnowledgeBaseOption[]>('/tasks/knowledge-bases'),
 
-	get: (
-		taskId: string,
-		options?: { silent?: boolean; timeoutMs?: number },
-	) => client.get<TaskRecord>(`/tasks/${taskId}`, undefined, options),
+	get: (taskId: string, options?: { silent?: boolean; timeoutMs?: number }) =>
+		client.get<TaskRecord>(`/tasks/${taskId}`, undefined, options),
 
 	create: (body: CreateTaskRequest) => client.post<TaskRecord>('/tasks/', body),
 
@@ -273,28 +302,18 @@ export const taskApi = {
 		taskId: string,
 		params: { knowledge_base_ids?: string[]; query?: string } = {},
 	) =>
-		client.get<TaskKnowledgeGraphResponse>(
-			`/tasks/${taskId}/knowledge-graph`,
-			{
-				...(params.knowledge_base_ids?.length
-					? { knowledge_base_ids: params.knowledge_base_ids.join(',') }
-					: {}),
-				...(params.query ? { query: params.query } : {}),
-			},
-		),
+		client.get<TaskKnowledgeGraphResponse>(`/tasks/${taskId}/knowledge-graph`, {
+			...(params.knowledge_base_ids?.length
+				? { knowledge_base_ids: params.knowledge_base_ids.join(',') }
+				: {}),
+			...(params.query ? { query: params.query } : {}),
+		}),
 
-	rebuildKnowledgeGraph: (
-		taskId: string,
-		knowledge_base_ids?: string[],
-		force_extract = false,
-	) =>
-		client.post<TaskKnowledgeGraphRebuildResponse>(
-			`/tasks/${taskId}/knowledge-graph/rebuild`,
-			{
-				...(knowledge_base_ids?.length ? { knowledge_base_ids } : {}),
-				force_extract,
-			},
-		),
+	rebuildKnowledgeGraph: (taskId: string, knowledge_base_ids?: string[], force_extract = false) =>
+		client.post<TaskKnowledgeGraphRebuildResponse>(`/tasks/${taskId}/knowledge-graph/rebuild`, {
+			...(knowledge_base_ids?.length ? { knowledge_base_ids } : {}),
+			force_extract,
+		}),
 
 	getStepKnowledgeGraph: (
 		runId: string,
@@ -318,6 +337,12 @@ export const taskApi = {
 	cancelRun: (runId: string) => client.post<TaskRunRecord>(`/tasks/runs/${runId}/cancel`),
 
 	retryRun: (runId: string) => client.post<TaskRunRecord>(`/tasks/runs/${runId}/retry`),
+
+	answerRun: (runId: string, requestId: string, answers: Record<string, string>) =>
+		client.post<TaskRunRecord>(`/tasks/runs/${runId}/input`, {
+			request_id: requestId,
+			answers,
+		}),
 
 	getArtifactContent: async (runId: string, artifactId: string, download = false) => {
 		const response = await client.stream(

@@ -43,6 +43,7 @@ class RunStatus(StrEnum):
 
     QUEUED = "queued"
     RUNNING = "running"
+    AWAITING_INPUT = "awaiting_input"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELED = "canceled"
@@ -54,6 +55,7 @@ class NodeRunStatus(StrEnum):
 
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_INPUT = "awaiting_input"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELED = "canceled"
@@ -65,6 +67,7 @@ class StepType(StrEnum):
     AGENT = "agent"
     TOOL = "tool"
     PYTHON = "python"
+    INPUT = "input"
 
 
 class ArtifactFormat(StrEnum):
@@ -97,6 +100,99 @@ class TaskArtifactRecord(BaseModel):
     preview_text: str = ""
     created_at: datetime = Field(default_factory=_utc_now)
 
+
+class TaskInputQuestion(BaseModel):
+    """A business-data question; options are suggestions, free text is allowed."""
+
+    key: str = Field(min_length=1, max_length=80, pattern=r"^[\w.-]+$")
+    label: str = Field(min_length=1, max_length=500)
+    required: bool = True
+    options: list[str] = Field(default_factory=list, max_length=8)
+
+
+class TaskInputRequest(BaseModel):
+    """Persisted correlation between a question batch and its parked step."""
+
+    id: str = Field(default_factory=_generate_id)
+    node_id: str
+    reason: str = Field(default="", max_length=2_000)
+    questions: list[TaskInputQuestion] = Field(min_length=1, max_length=16)
+    created_at: datetime = Field(default_factory=_utc_now)
+
+    @field_validator("questions")
+    @classmethod
+    def unique_keys(
+        cls, questions: list[TaskInputQuestion]
+    ) -> list[TaskInputQuestion]:
+        """Keep answers unambiguous."""
+        if len({question.key for question in questions}) != len(questions):
+            raise ValueError("Question keys must be unique.")
+        return questions
+
+
+class TaskInputReply(BaseModel):
+    """Answer exactly one outstanding question batch."""
+
+    request_id: str = Field(min_length=1, max_length=80)
+    answers: dict[str, str] = Field(min_length=1, max_length=16)
+
+    @field_validator("answers")
+    @classmethod
+    def bounded_answers(cls, answers: dict[str, str]) -> dict[str, str]:
+        """Bound user data before it reaches model context or persistence."""
+        if any(
+            len(key) > 80 or len(value) > 20_000
+            for key, value in answers.items()
+        ):
+            raise ValueError("An answer is too long.")
+        return {key: value.strip() for key, value in answers.items()}
+
+
+class InputStepConfig(BaseModel):
+    """An explicit data-collection milestone in a reusable SOP."""
+
+    type: Literal["input"] = "input"
+    reason: str = Field(default="请补充本步骤需要的信息。", max_length=2_000)
+    questions: list[TaskInputQuestion] = Field(min_length=1, max_length=16)
+
+    @field_validator("questions")
+    @classmethod
+    def unique_keys(
+        cls, questions: list[TaskInputQuestion]
+    ) -> list[TaskInputQuestion]:
+        return TaskInputRequest.unique_keys(questions)
+
+
+class AgentStepOutcome(BaseModel):
+    """The model must explicitly distinguish a result from a request for input."""
+
+    status: Literal["completed", "needs_input", "failed"]
+    output: str = Field(default="", max_length=100_000)
+    reason: str = Field(default="", max_length=2_000)
+    questions: list[TaskInputQuestion] = Field(
+        default_factory=list, max_length=16
+    )
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "AgentStepOutcome":
+        if self.status == "needs_input":
+            if not self.questions:
+                raise ValueError("needs_input requires questions.")
+            TaskInputRequest.unique_keys(self.questions)
+        elif self.questions:
+            raise ValueError("Only needs_input may contain questions.")
+        if self.status == "completed" and not self.output.strip():
+            raise ValueError("completed requires an actual result.")
+        return self
+
+
+class StepVerdict(BaseModel):
+    """Structured business acceptance, separate from successful execution."""
+
+    passed: bool
+    message: str = ""
+
+
 class AgentStepConfig(BaseModel):
     """Configuration for one AgentScope model step."""
 
@@ -123,7 +219,7 @@ class PythonStepConfig(BaseModel):
 
 
 StepConfig = Annotated[
-    AgentStepConfig | ToolStepConfig | PythonStepConfig,
+    AgentStepConfig | ToolStepConfig | PythonStepConfig | InputStepConfig,
     Field(discriminator="type"),
 ]
 
@@ -146,6 +242,8 @@ class TaskNode(BaseModel):
     knowledge_graph_enabled: bool = False
     knowledge_base_mode: Literal["inherit", "override", "disabled"] = "inherit"
     knowledge_base_ids: list[str] = Field(default_factory=list, max_length=16)
+    acceptance_criteria: str = Field(default="", max_length=4_000)
+    max_attempts: int = Field(default=3, ge=1, le=10)
 
     @model_validator(mode="before")
     @classmethod
@@ -171,6 +269,11 @@ class TaskNode(BaseModel):
                     "type": StepType.TOOL,
                     "tool_name": payload.get("tool_name", ""),
                     "arguments": payload.get("arguments", {}),
+                }
+            elif step_type == StepType.INPUT:
+                config = {
+                    "type": StepType.INPUT,
+                    "questions": payload.get("questions", []),
                 }
             else:
                 config = {
@@ -277,6 +380,10 @@ class ExecutionContext(TaskContext):
     run_id: str
     task_revision: int
     history: list[dict[str, Any]] = Field(default_factory=list)
+    initial_input: str = ""
+    user_answers: list[TaskInputReply] = Field(default_factory=list)
+    verification_feedback: str = ""
+    knowledge_context: str = ""
 
 
 class TaskRecord(BaseModel):
@@ -305,7 +412,10 @@ class TaskRecord(BaseModel):
     def normalize_node_order(cls, nodes: list[TaskNode]) -> list[TaskNode]:
         """Keep persisted order contiguous and deterministic."""
 
-        return [node.model_copy(update={"order": index}) for index, node in enumerate(nodes)]
+        return [
+            node.model_copy(update={"order": index})
+            for index, node in enumerate(nodes)
+        ]
 
 
 class NodeRunRecord(BaseModel):
@@ -347,6 +457,9 @@ class TaskRunRecord(BaseModel):
     created_at: datetime = Field(default_factory=_utc_now)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    engine: Literal["legacy", "sop"] = "legacy"
+    sop_state: dict[str, Any] | None = None
+    pending_input: TaskInputRequest | None = None
 
 
 class TaskEventRecord(BaseModel):
@@ -370,6 +483,8 @@ class TaskPlanNode(BaseModel):
     type: StepType = StepType.AGENT
     config: StepConfig | None = None
     artifact: ArtifactConfig | None = None
+    acceptance_criteria: str = Field(default="", max_length=4_000)
+    max_attempts: int = Field(default=3, ge=1, le=10)
 
     @model_validator(mode="before")
     @classmethod
