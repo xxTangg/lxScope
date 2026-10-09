@@ -21,23 +21,28 @@ _PLANNER_PROMPT = """你是一个通用任务流程规划器。
 1. 任务名称简短明确，通常不超过 20 个汉字；
 2. intent 用一句话概括任务真正要完成的业务目标；
 3. 节点数量选择完成目标所需的最少数量，通常为 2 到 8 个；
-4. 节点必须是线性顺序，不生成分支、循环、并行或人工节点；
+4. 节点必须是线性顺序，不生成分支、循环或并行；允许 InputStep 收集用户信息；
 5. 每个节点必须根据实际职责选择一种 Step：
    - AgentStep：理解、分析、总结、生成和分类；
    - ToolStep：调用当前可用的 MCP/API/工具获取外部数据或执行动作；
    - PythonStep：参数转换、确定性计算和结构化数据处理；
+   - InputStep：收集用户需要提供的参数、资料或选择，config.questions 列出 key、label、required、options；
 6. AgentStep 必须填写可直接执行的 Prompt；
 7. ToolStep 必须从“可用工具清单”中选择准确的 tool_name，并填写 arguments；
 8. PythonStep 必须填写可执行的 Python code，可使用 previous_output 变量；
 9. 不要为了凑数量添加无意义节点；
 10. 后一个节点必须能使用前一个节点的输出；
 11. 最后一个节点负责整理可交付的最终结果；
-12. 不要虚构用户没有提供的关键信息；不确定时在 Prompt 或参数中明确列出待确认信息；
-13. 如果当前没有合适的工具，不要生成 ToolStep，改用 AgentStep 明确说明数据待获取。
+12. 缺少用户关键信息时，在依赖步骤之前添加 InputStep；不能用 AgentStep 输出待确认模板后继续执行；
+13. 没有合适的外部数据工具时，使用 InputStep 请用户提供必要资料，不能把待获取数据当作成功结果；
 14. AgentStep 不能用文字要求另一个 Agent “调用工具”；需要外部数据时必须生成真实 ToolStep；
 15. ToolStep 的 tool_name 必须逐字匹配工具清单，不能猜测、改写或留空；
 16. 最终 AgentStep 必须基于所有前序节点结果生成交付内容，而不是只描述下一步操作；
 17. 需要多个外部数据时，按依赖顺序生成多个 ToolStep，再生成最终 AgentStep；
+18. AgentStep 必须填写 acceptance_criteria，描述可检验的完成条件；max_attempts 通常为 3；
+19. AgentStep 运行时可返回 needs_input 继续追问，因此不要在 Prompt 中要求缺数据时编造或自动假设；
+20. 可用输入变量只有双花括号包裹的 user_input、previous_output、answers.字段名。字段名必须对应此前 InputStep 的 key；
+21. ToolStep 参数中仅引用确定可取得的数据；PythonStep 可使用 previous_output、user_input、user_answers；
 
 用户任务目的：
 {goal}
@@ -65,6 +70,7 @@ _NATIVE_TASK_SYSTEM_PROMPT = """你是任务规划阶段的 Agentscope 原生任
 6. 不要调用 MCP、浏览器或业务工具，只创建任务清单；
 7. 创建完成后即可结束，不要输出长篇解释。
 """
+
 
 class AgentScopeTaskPlanner:
     """Generate Task drafts with the selected AgentScope session model.
@@ -150,8 +156,7 @@ class AgentScopeTaskPlanner:
         repaired_prompt = (
             plan_prompt
             + "\n\n上一版计划未通过管理系统校验。请只修复以下问题，"
-            "然后重新输出完整的结构化计划：\n"
-            + format_plan_issues(issues)
+            "然后重新输出完整的结构化计划：\n" + format_plan_issues(issues)
         )
         repaired_response = await model.generate_structured_output(
             messages=[
@@ -180,7 +185,13 @@ async def _create_native_task_list(*, model: object, goal: str) -> list[dict]:
     from agentscope.agent import Agent
     from agentscope.message import UserMsg
     from agentscope.state import AgentState
-    from agentscope.tool import TaskCreate, TaskGet, TaskList, TaskUpdate, Toolkit
+    from agentscope.tool import (
+        TaskCreate,
+        TaskGet,
+        TaskList,
+        TaskUpdate,
+        Toolkit,
+    )
 
     state = AgentState()
     planner = Agent(
@@ -196,8 +207,7 @@ async def _create_native_task_list(*, model: object, goal: str) -> list[dict]:
         UserMsg(
             name="task-goal",
             content=(
-                "请为以下用户目标创建 Agentscope 原生任务清单：\n\n"
-                + goal
+                "请为以下用户目标创建 Agentscope 原生任务清单：\n\n" + goal
             ),
         ),
     )
@@ -208,6 +218,7 @@ async def _create_native_task_list(*, model: object, goal: str) -> list[dict]:
             "Agentscope 原生 TaskCreate 未生成任务清单，无法生成 Task 节点。",
         )
     return [task.model_dump(mode="json") for task in tasks]
+
 
 def _format_tools(tool_schemas: list[TaskToolSchema]) -> str:
     """Format available tools without exposing unrelated runtime details."""

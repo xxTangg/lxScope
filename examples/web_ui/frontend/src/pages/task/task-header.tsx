@@ -12,6 +12,7 @@ interface TaskHeaderProps {
 	isDirty: boolean;
 	isSaving: boolean;
 	isRunning: boolean;
+	isAwaitingInput?: boolean;
 	isGenerating: boolean;
 	canRerun: boolean;
 	onTitleChange: (title: string) => void;
@@ -27,6 +28,7 @@ export function TaskHeader({
 	isDirty,
 	isSaving,
 	isRunning,
+	isAwaitingInput = false,
 	isGenerating,
 	canRerun,
 	onTitleChange,
@@ -59,7 +61,7 @@ export function TaskHeader({
 					<RefreshCw />重新执行
 				</Button>
 				<Button size="sm" onClick={onRun} disabled={isSaving || isRunning || isGenerating} className="bg-blue-600 text-white shadow-sm hover:bg-blue-700">
-					{isRunning ? <Loader2 className="animate-spin" /> : <Play />}{isRunning ? '执行中…' : '执行任务'}
+					{isRunning && !isAwaitingInput ? <Loader2 className="animate-spin" /> : <Play />}{isAwaitingInput ? '等待补充信息' : isRunning ? '执行中…' : '执行任务'}
 				</Button>
 			</div>
 		</header>

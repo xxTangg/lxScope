@@ -9,6 +9,8 @@ graph.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Iterator
+import re
 from typing import Any
 
 import jsonschema
@@ -41,7 +43,9 @@ def _nodes(plan: Any) -> list[Any]:
 
 def _node_type(node: Any) -> str:
     data = _dump(node)
-    value = data.get("type") or data.get("node_type") or getattr(node, "type", "")
+    value = (
+        data.get("type") or data.get("node_type") or getattr(node, "type", "")
+    )
     return str(value or "").strip().lower()
 
 
@@ -53,11 +57,11 @@ def _node_config(node: Any) -> dict[str, Any]:
     value = getattr(node, "config", None)
     return _dump(value)
 
+
 def _tool_arguments(node: Any) -> dict[str, Any]:
     config = _node_config(node)
     value = config.get("arguments")
     return value if isinstance(value, dict) else {}
-
 
 
 def _tool_name(node: Any) -> str:
@@ -83,7 +87,7 @@ def validate_task_plan(
     issues: list[PlanIssue] = []
     nodes = _nodes(plan)
     schema_by_name: dict[str, dict[str, Any]] = {}
-    for schema in (tool_schemas or []):
+    for schema in tool_schemas or []:
         data = _dump(schema)
         name = str(data.get("name") or data.get("tool_name") or "").strip()
         if name:
@@ -94,6 +98,7 @@ def validate_task_plan(
         return [PlanIssue("nodes", "计划至少需要一个节点")]
 
     seen_tool = False
+    input_keys: set[str] = set()
     for index, node in enumerate(nodes):
         path = f"nodes[{index}]"
         node_type = _node_type(node)
@@ -101,11 +106,33 @@ def validate_task_plan(
             issues.append(PlanIssue(path, "节点类型不能为空"))
             continue
 
+        config = _node_config(node)
+        if node_type == "input":
+            input_keys.update(
+                question["key"] for question in config.get("questions", [])
+            )
+        for text in _strings(config):
+            for variable in re.findall(r"\{\{([\w.-]+)\}\}", text):
+                if variable in {"user_input", "previous_output"}:
+                    continue
+                if (
+                    variable.startswith("answers.")
+                    and variable[8:] in input_keys
+                ):
+                    continue
+                issues.append(
+                    PlanIssue(
+                        f"{path}.config", f"输入变量尚无来源: {variable}"
+                    )
+                )
+
         if node_type in {"tool", "toolstep"} or node_type.endswith("toolstep"):
             seen_tool = True
             name = _tool_name(node)
             if not name:
-                issues.append(PlanIssue(f"{path}.config.tool_name", "工具名称不能为空"))
+                issues.append(
+                    PlanIssue(f"{path}.config.tool_name", "工具名称不能为空")
+                )
             elif tool_schemas is not None and not available:
                 issues.append(
                     PlanIssue(
@@ -116,26 +143,68 @@ def validate_task_plan(
             elif tool_schemas is None:
                 pass
             elif name not in available:
-                issues.append(PlanIssue(f"{path}.config.tool_name", f"工具不存在: {name}"))
+                issues.append(
+                    PlanIssue(
+                        f"{path}.config.tool_name", f"工具不存在: {name}"
+                    )
+                )
             else:
                 input_schema = schema_by_name[name].get("input_schema")
                 if isinstance(input_schema, dict) and input_schema:
                     try:
-                        jsonschema.validate(_tool_arguments(node), input_schema)
-                    except jsonschema.ValidationError as error:
+                        jsonschema.Draft202012Validator.check_schema(
+                            input_schema
+                        )
+                        for error in jsonschema.Draft202012Validator(
+                            input_schema
+                        ).iter_errors(_tool_arguments(node)):
+                            # Exact input bindings are typed and validated after
+                            # the user answers, before any real tool executes.
+                            if isinstance(
+                                error.instance, str
+                            ) and re.fullmatch(
+                                r"\{\{(?:answers\.[\w.-]+|previous_output|user_input)\}\}",
+                                error.instance,
+                            ):
+                                continue
+                            issues.append(
+                                PlanIssue(
+                                    f"{path}.config.arguments",
+                                    f"参数不符合工具 schema: {error.message}",
+                                )
+                            )
+                    except jsonschema.SchemaError as error:
                         issues.append(
-                            PlanIssue(f"{path}.config.arguments", f"参数不符合工具 schema: {error.message}")
+                            PlanIssue(
+                                f"{path}.config.arguments",
+                                f"工具 schema 无效: {error.message}",
+                            )
                         )
 
-        if node_type in {"agent", "agentstep"} or node_type.endswith("agentstep"):
+        if node_type in {"agent", "agentstep"} or node_type.endswith(
+            "agentstep"
+        ):
             prompt = _node_config(node).get("prompt")
             prompt_text = str(prompt or "").strip()
             if not prompt_text:
-                issues.append(PlanIssue(f"{path}.config.prompt", "AgentStep 提示词不能为空"))
-            if prompt_text and any(
-                marker in prompt_text.lower()
-                for marker in ("调用工具", "使用工具", "use tool", "call tool")
-            ) and not seen_tool:
+                issues.append(
+                    PlanIssue(
+                        f"{path}.config.prompt", "AgentStep 提示词不能为空"
+                    )
+                )
+            if (
+                prompt_text
+                and any(
+                    marker in prompt_text.lower()
+                    for marker in (
+                        "调用工具",
+                        "使用工具",
+                        "use tool",
+                        "call tool",
+                    )
+                )
+                and not seen_tool
+            ):
                 issues.append(
                     PlanIssue(
                         f"{path}.config.prompt",
@@ -149,10 +218,23 @@ def validate_task_plan(
             last_type in {"agent", "agentstep"}
             or last_type.endswith("agentstep")
         ):
-            issues.append(PlanIssue("nodes[-1]", "最终节点应负责汇总结果的 AgentStep"))
+            issues.append(
+                PlanIssue("nodes[-1]", "最终节点应负责汇总结果的 AgentStep")
+            )
 
     return issues
 
 
 def format_plan_issues(issues: list[PlanIssue]) -> str:
     return "\n".join(f"- {issue.as_text()}" for issue in issues)
+
+
+def _strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)

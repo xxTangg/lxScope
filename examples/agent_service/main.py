@@ -105,7 +105,7 @@ playwright_mcp_args = (
 
 default_mcps = [
     MCPClient(
-        name="browser-use",
+        name="playwright",
         mcp_config=StdioMCPConfig(
             command=playwright_mcp_command,
             args=playwright_mcp_args,
@@ -827,6 +827,7 @@ async def _application_lifespan(app_instance):
                 )
             app_instance.state.task_service = TaskService(
                 app_instance.state.task_store,
+                message_bus=app_instance.state.message_bus,
                 agentscope_executor=AgentScopeTaskExecutor(
                     storage=storage,
                     resource_access_service=(

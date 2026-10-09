@@ -1,9 +1,12 @@
 import path from 'path';
+import { fileURLToPath } from 'node:url';
 
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import svgr from 'vite-plugin-svgr';
+
+const configDirectory = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
 	plugins: [react(), tailwindcss(), svgr()],
@@ -21,8 +24,8 @@ export default defineConfig({
 	},
 	resolve: {
 		alias: {
-			'@': path.resolve(__dirname, './src'),
-			'next/navigation': path.resolve(__dirname, './src/lib/next-navigation-shim.ts'),
+			'@': path.resolve(configDirectory, './src'),
+			'next/navigation': path.resolve(configDirectory, './src/lib/next-navigation-shim.ts'),
 		},
 	},
 });

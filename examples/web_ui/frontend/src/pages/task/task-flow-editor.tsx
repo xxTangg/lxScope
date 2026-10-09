@@ -1,6 +1,17 @@
-import { ArrowDown, ArrowUp, Bot, Code2, GripVertical, Plus, Trash2, Wrench } from 'lucide-react';
+import {
+	ArrowDown,
+	ArrowUp,
+	Bot,
+	Code2,
+	GripVertical,
+	Plus,
+	Trash2,
+	Wrench,
+	MessageSquareText,
+} from 'lucide-react';
 import * as React from 'react';
 
+import { TaskInputStepEditor } from './task-input-step-editor';
 import type { TaskArtifactFormat, TaskNode, TaskStepType, TaskToolSchema } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,10 +28,13 @@ const STEP_LABELS: Record<TaskStepType, string> = {
 	agent: 'AgentStep',
 	tool: 'ToolStep',
 	python: 'CodeStep',
+	input: '用户输入',
 };
 
 function normalizeNode(node: TaskNode, index: number): TaskNode {
 	const config = node.config;
+	if (node.type === 'input' && config?.type === 'input')
+		return { ...node, order: index, prompt: '', config };
 	if (node.type === 'tool' && config?.type === 'tool') {
 		return { ...node, order: index, prompt: '', config };
 	}
@@ -34,6 +48,7 @@ function normalizeNode(node: TaskNode, index: number): TaskNode {
 		type: 'agent',
 		prompt,
 		config: {
+			...(config?.type === 'agent' ? config : {}),
 			type: 'agent',
 			prompt,
 		},
@@ -44,11 +59,12 @@ function normalizeNodes(nodes: TaskNode[]): TaskNode[] {
 	const normalized = nodes.map(normalizeNode);
 	return normalized.map((node, index) => ({
 		...node,
-		artifact: index === normalized.length - 1 ? node.artifact ?? null : null,
+		artifact: index === normalized.length - 1 ? (node.artifact ?? null) : null,
 	}));
 }
 
 function stepIcon(type: TaskStepType) {
+	if (type === 'input') return <MessageSquareText className="size-4 text-amber-600" />;
 	if (type === 'tool') return <Wrench className="size-4 text-amber-600" />;
 	if (type === 'python') return <Code2 className="size-4 text-violet-600" />;
 	return <Bot className="size-4 text-primary" />;
@@ -85,17 +101,29 @@ export function TaskFlowEditor({
 					? {
 							type: 'tool' as const,
 							tool_name: node.config?.type === 'tool' ? node.config.tool_name : '',
-							arguments:
-								node.config?.type === 'tool' ? node.config.arguments : {},
+							arguments: node.config?.type === 'tool' ? node.config.arguments : {},
 						}
-					: {
-							type: 'python' as const,
-							code: node.config?.type === 'python' ? node.config.code : '',
-							timeout_seconds:
-								node.config?.type === 'python'
-									? node.config.timeout_seconds
-									: 30,
-						};
+					: type === 'input'
+						? {
+								type: 'input' as const,
+								reason: '请补充本步骤需要的信息。',
+								questions: [
+									{
+										key: 'details',
+										label: '请提供所需信息',
+										required: true,
+										options: [],
+									},
+								],
+							}
+						: {
+								type: 'python' as const,
+								code: node.config?.type === 'python' ? node.config.code : '',
+								timeout_seconds:
+									node.config?.type === 'python'
+										? node.config.timeout_seconds
+										: 30,
+							};
 		updateNode(index, {
 			type,
 			prompt: type === 'agent' ? config.prompt : '',
@@ -163,6 +191,7 @@ export function TaskFlowEditor({
 					const toolConfig = node.config?.type === 'tool' ? node.config : null;
 					const pythonConfig = node.config?.type === 'python' ? node.config : null;
 					const agentConfig = node.config?.type === 'agent' ? node.config : null;
+					const inputConfig = node.config?.type === 'input' ? node.config : null;
 					const argumentText =
 						argumentDrafts[node.id] ??
 						JSON.stringify(toolConfig?.arguments ?? {}, null, 2);
@@ -180,7 +209,10 @@ export function TaskFlowEditor({
 											<select
 												value={node.type}
 												onChange={(event) =>
-													updateStepType(index, event.target.value as TaskStepType)
+													updateStepType(
+														index,
+														event.target.value as TaskStepType,
+													)
 												}
 												disabled={disabled}
 												className="h-8 rounded-lg border border-input bg-background px-2 text-xs font-medium text-foreground outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
@@ -188,6 +220,7 @@ export function TaskFlowEditor({
 												<option value="agent">AgentStep</option>
 												<option value="tool">ToolStep</option>
 												<option value="python">CodeStep</option>
+												<option value="input">用户输入</option>
 											</select>
 											<Input
 												value={node.name}
@@ -206,16 +239,17 @@ export function TaskFlowEditor({
 											<input
 												type="checkbox"
 												checked={node.knowledge_graph_enabled ?? false}
-								onChange={(event) =>
-									updateNode(index, {
-										knowledge_graph_enabled: event.target.checked,
-									})
-								}
+												onChange={(event) =>
+													updateNode(index, {
+														knowledge_graph_enabled:
+															event.target.checked,
+													})
+												}
 												disabled={disabled}
 												className="size-3.5 accent-primary"
 											/>
-																					<span>允许在此步骤按需生成知识图谱</span>
-																				</label>
+											<span>允许在此步骤按需生成知识图谱</span>
+										</label>
 										{agentConfig && (
 											<Textarea
 												value={agentConfig.prompt}
@@ -233,6 +267,51 @@ export function TaskFlowEditor({
 												className="min-h-24 resize-y bg-card text-sm leading-6"
 											/>
 										)}
+										{inputConfig && (
+											<TaskInputStepEditor
+												config={inputConfig}
+												disabled={disabled}
+												onChange={(config) => updateNode(index, { config })}
+											/>
+										)}
+										<div className="space-y-2">
+											<label className="block text-xs text-muted-foreground">
+												完成条件与验收标准
+											</label>
+											<Textarea
+												value={node.acceptance_criteria ?? ''}
+												disabled={disabled}
+												rows={2}
+												placeholder="例如：目的地、日期、人数和预算均已确认，结果有明确依据"
+												onChange={(event) =>
+													updateNode(index, {
+														acceptance_criteria: event.target.value,
+													})
+												}
+											/>
+											<label className="flex items-center gap-2 text-xs text-muted-foreground">
+												最多尝试次数
+												<Input
+													type="number"
+													min={1}
+													max={10}
+													className="w-20"
+													value={node.max_attempts ?? 3}
+													disabled={disabled}
+													onChange={(event) =>
+														updateNode(index, {
+															max_attempts: Math.min(
+																10,
+																Math.max(
+																	1,
+																	Number(event.target.value) || 1,
+																),
+															),
+														})
+													}
+												/>
+											</label>
+										</div>
 
 										{toolConfig && (
 											<div className="space-y-3">
@@ -259,12 +338,16 @@ export function TaskFlowEditor({
 													))}
 												</datalist>
 												{toolConfig.tool_name &&
-													tools.find((tool) => tool.name === toolConfig.tool_name)
-														?.description && (
+													tools.find(
+														(tool) =>
+															tool.name === toolConfig.tool_name,
+													)?.description && (
 														<div className="text-xs leading-5 text-muted-foreground">
 															{
 																tools.find(
-																	(tool) => tool.name === toolConfig.tool_name,
+																	(tool) =>
+																		tool.name ===
+																		toolConfig.tool_name,
 																)?.description
 															}
 														</div>
@@ -278,7 +361,9 @@ export function TaskFlowEditor({
 															[node.id]: text,
 														}));
 														try {
-															const parsed = JSON.parse(text) as Record<string, unknown>;
+															const parsed = JSON.parse(
+																text,
+															) as Record<string, unknown>;
 															if (
 																parsed &&
 																typeof parsed === 'object' &&
@@ -315,7 +400,7 @@ export function TaskFlowEditor({
 														})
 													}
 													disabled={disabled}
-												placeholder="编写 CodeStep 数据处理代码，可使用 previous_output 变量"
+													placeholder="编写 CodeStep 数据处理代码，可使用 previous_output 变量"
 													className="min-h-32 resize-y bg-card font-mono text-xs leading-5"
 												/>
 												<label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -329,7 +414,10 @@ export function TaskFlowEditor({
 															updateNode(index, {
 																config: {
 																	...pythonConfig,
-																	timeout_seconds: Number(event.target.value) || 30,
+																	timeout_seconds:
+																		Number(
+																			event.target.value,
+																		) || 30,
 																},
 															})
 														}
@@ -337,60 +425,76 @@ export function TaskFlowEditor({
 														className="h-8 w-24 bg-card text-sm"
 													/>
 												</label>
+											</div>
+										)}
 
-															</div>
-														)}
-
-						{index === nodes.length - 1 && (
-							<div className="space-y-3 rounded-xl border border-dashed border-primary/30 bg-primary/[0.03] p-3">
-								<div className="text-xs font-medium text-foreground">最终文件产物（可选）</div>
-								<div className="grid gap-3 sm:grid-cols-2">
-									<label className="space-y-1.5 text-xs text-muted-foreground">
-										<span>文件格式</span>
-										<select
-											value={node.artifact?.format ?? ''}
-											onChange={(event) => {
-												const format = event.target.value as TaskArtifactFormat;
-												updateNode(index, {
-													artifact: format
-														? { format, filename: node.artifact?.filename ?? null }
-														: null,
-												});
-											}}
-											disabled={disabled}
-											className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:border-ring focus:ring-3 focus:ring-ring/50 disabled:opacity-50"
-										>
-											<option value="">不生成文件</option>
-											<option value="markdown">Markdown（.md）</option>
-											<option value="docx">Word（.docx）</option>
-											<option value="xlsx">Excel（.xlsx）</option>
-										</select>
-									</label>
-									{node.artifact && (
-										<label className="space-y-1.5 text-xs text-muted-foreground">
-											<span>文件名（可选）</span>
-											<Input
-												value={node.artifact.filename ?? ''}
-												onChange={(event) =>
-													updateNode(index, {
-														artifact: {
-															...node.artifact!,
-															filename: event.target.value,
-														},
-													})
-												}
-												disabled={disabled}
-												placeholder="例如：北京出行建议"
-												className="h-8 bg-card text-sm"
-											/>
-										</label>
-									)}
-								</div>
-								<div className="text-[11px] leading-5 text-muted-foreground">
-									执行完成后，最后一个节点的输出会保存到当前 Workspace，并关联到本次 Run。
-								</div>
-							</div>
-						)}
+										{index === nodes.length - 1 && (
+											<div className="space-y-3 rounded-xl border border-dashed border-primary/30 bg-primary/[0.03] p-3">
+												<div className="text-xs font-medium text-foreground">
+													最终文件产物（可选）
+												</div>
+												<div className="grid gap-3 sm:grid-cols-2">
+													<label className="space-y-1.5 text-xs text-muted-foreground">
+														<span>文件格式</span>
+														<select
+															value={node.artifact?.format ?? ''}
+															onChange={(event) => {
+																const format = event.target
+																	.value as TaskArtifactFormat;
+																updateNode(index, {
+																	artifact: format
+																		? {
+																				format,
+																				filename:
+																					node.artifact
+																						?.filename ??
+																					null,
+																			}
+																		: null,
+																});
+															}}
+															disabled={disabled}
+															className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:border-ring focus:ring-3 focus:ring-ring/50 disabled:opacity-50"
+														>
+															<option value="">不生成文件</option>
+															<option value="markdown">
+																Markdown（.md）
+															</option>
+															<option value="docx">
+																Word（.docx）
+															</option>
+															<option value="xlsx">
+																Excel（.xlsx）
+															</option>
+														</select>
+													</label>
+													{node.artifact && (
+														<label className="space-y-1.5 text-xs text-muted-foreground">
+															<span>文件名（可选）</span>
+															<Input
+																value={node.artifact.filename ?? ''}
+																onChange={(event) =>
+																	updateNode(index, {
+																		artifact: {
+																			...node.artifact!,
+																			filename:
+																				event.target.value,
+																		},
+																	})
+																}
+																disabled={disabled}
+																placeholder="例如：北京出行建议"
+																className="h-8 bg-card text-sm"
+															/>
+														</label>
+													)}
+												</div>
+												<div className="text-[11px] leading-5 text-muted-foreground">
+													执行完成后，最后一个节点的输出会保存到当前
+													Workspace，并关联到本次 Run。
+												</div>
+											</div>
+										)}
 									</div>
 									<div className="flex shrink-0 items-center gap-1">
 										<Button
@@ -435,7 +539,6 @@ export function TaskFlowEditor({
 					<span className="text-sm font-medium">结束</span>
 				</div>
 			</div>
-
 		</section>
 	);
 }

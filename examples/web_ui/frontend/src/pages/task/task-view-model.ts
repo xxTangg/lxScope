@@ -15,7 +15,7 @@ export function getTaskRunStatus(task: TaskRecord): RunStatus | null {
 
 export function isTaskRunning(task: TaskRecord): boolean {
 	const status = getTaskRunStatus(task);
-	return status === 'queued' || status === 'running';
+	return status === 'queued' || status === 'running' || status === 'awaiting_input';
 }
 
 export function getTaskStatusLabel(task: TaskRecord): string {
@@ -26,6 +26,8 @@ export function getTaskStatusLabel(task: TaskRecord): string {
 			return '等待执行';
 		case 'running':
 			return '执行中';
+		case 'awaiting_input':
+			return '等待补充信息';
 		case 'succeeded':
 			return '已完成';
 		case 'failed':
@@ -85,22 +87,34 @@ export function getTaskMetrics(
 	isDirty: boolean,
 ): TaskMetricValue[] {
 	const matchingRun = run && run.task_id === task.id && !isDirty ? run : null;
-	const completedCount = matchingRun?.node_runs.filter((node) => node.status === 'succeeded').length ?? 0;
-	const activeNodeCount = matchingRun?.node_runs.filter((node) => node.type === 'agent' && node.status !== 'pending').length ?? 0;
+	const completedCount =
+		matchingRun?.node_runs.filter((node) => node.status === 'succeeded').length ?? 0;
+	const activeNodeCount =
+		matchingRun?.node_runs.filter((node) => node.type === 'agent' && node.status !== 'pending')
+			.length ?? 0;
 	const duration = matchingRun
-		? getDurationSeconds(matchingRun.started_at ?? matchingRun.created_at, matchingRun.finished_at)
+		? getDurationSeconds(
+				matchingRun.started_at ?? matchingRun.created_at,
+				matchingRun.finished_at,
+			)
 		: null;
 	return [
 		{ label: '步骤', value: String(task.nodes.length), icon: 'nodes' },
 		{
 			label: '已完成',
-			value: matchingRun ? completedCount + '/' + task.nodes.length : '0/' + task.nodes.length,
+			value: matchingRun
+				? completedCount + '/' + task.nodes.length
+				: '0/' + task.nodes.length,
 			icon: 'progress',
 		},
 		{ label: '总耗时', value: formatDuration(duration), icon: 'duration' },
 		{ label: 'Agent', value: matchingRun ? String(activeNodeCount) : '—', icon: 'agent' },
 		{ label: '知识库', value: String(task.knowledge_base_ids?.length ?? 0), icon: 'knowledge' },
 		{ label: '检索片段', value: '—', icon: 'retrieval' },
-		{ label: '产物', value: matchingRun ? String(matchingRun.artifacts.length) : '—', icon: 'artifact' },
+		{
+			label: '产物',
+			value: matchingRun ? String(matchingRun.artifacts.length) : '—',
+			icon: 'artifact',
+		},
 	];
 }

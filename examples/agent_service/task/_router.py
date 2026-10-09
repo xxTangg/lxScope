@@ -6,7 +6,14 @@ import json
 from collections.abc import AsyncIterator
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import StreamingResponse
 
 from agentscope.app.deps import get_current_user_id
@@ -23,13 +30,13 @@ from ._models import (
     TaskRecord,
     TaskRunRecord,
     TaskRunRequest,
+    TaskInputReply,
     TaskStepKnowledgeGraphRequest,
     TaskToolSchema,
     UpdateTaskRequest,
 )
 from ._knowledge import TaskKnowledgeGateway
 from ._service import TaskService
-
 
 task_router = APIRouter(
     prefix="/tasks",
@@ -74,7 +81,9 @@ def _get_task_knowledge_gateway(request: Request) -> TaskKnowledgeGateway:
     return gateway
 
 
-def _maybe_get_task_knowledge_gateway(request: Request) -> TaskKnowledgeGateway | None:
+def _maybe_get_task_knowledge_gateway(
+    request: Request,
+) -> TaskKnowledgeGateway | None:
     """Keep Task execution backward-compatible when KB is disabled."""
 
     try:
@@ -94,7 +103,9 @@ def _not_found(resource: str, resource_id: str) -> HTTPException:
     )
 
 
-@task_router.get("/", response_model=list[TaskRecord], summary="List reusable tasks")
+@task_router.get(
+    "/", response_model=list[TaskRecord], summary="List reusable tasks"
+)
 async def list_tasks(
     user_id: str = Depends(get_current_user_id),
     task_service: TaskService = Depends(_get_task_service),
@@ -188,7 +199,9 @@ async def list_task_tools(
     )
 
 
-@task_router.get("/runs/{run_id}", response_model=TaskRunRecord, summary="Get a task run")
+@task_router.get(
+    "/runs/{run_id}", response_model=TaskRunRecord, summary="Get a task run"
+)
 async def get_run(
     run_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -316,7 +329,9 @@ async def read_run_artifact(
     disposition = "attachment" if download else "inline"
     # RFC 5987 keeps non-ASCII filenames valid in HTTP response headers.
     fallback_name = artifact.name.encode("ascii", "ignore").decode("ascii")
-    fallback_name = fallback_name.replace('"', "_") or f"artifact-{artifact.id}"
+    fallback_name = (
+        fallback_name.replace('"', "_") or f"artifact-{artifact.id}"
+    )
     content_disposition = (
         f'{disposition}; filename="{fallback_name}"; '
         f"filename*=UTF-8''{quote(artifact.name, safe='')}"
@@ -326,6 +341,7 @@ async def read_run_artifact(
         media_type=artifact.media_type,
         headers={"Content-Disposition": content_disposition},
     )
+
 
 @task_router.get(
     "/runs/{run_id}/events",
@@ -363,6 +379,7 @@ async def stream_run_events(
                 "failed",
                 "canceled",
                 "timed_out",
+                "awaiting_input",
             } and cursor >= len(events):
                 return
             await asyncio.sleep(0.3)
@@ -463,7 +480,9 @@ async def get_task(
     return task
 
 
-@task_router.patch("/{task_id}", response_model=TaskRecord, summary="Update a task")
+@task_router.patch(
+    "/{task_id}", response_model=TaskRecord, summary="Update a task"
+)
 async def update_task(
     task_id: str,
     body: UpdateTaskRequest,
@@ -575,6 +594,36 @@ async def retry_run(
         run_id,
         _maybe_get_task_knowledge_gateway(request),
     )
+    if run is None:
+        raise _not_found("Run", run_id)
+    return run
+
+
+@task_router.post(
+    "/runs/{run_id}/input",
+    response_model=TaskRunRecord,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Answer a parked task step",
+)
+async def answer_run(
+    run_id: str,
+    body: TaskInputReply,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskRunRecord:
+    """Resume the same run; stale or incomplete answers never advance it."""
+    try:
+        run = await task_service.answer_run(
+            user_id,
+            run_id,
+            body,
+            _maybe_get_task_knowledge_gateway(request),
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(error)
+        ) from error
     if run is None:
         raise _not_found("Run", run_id)
     return run
