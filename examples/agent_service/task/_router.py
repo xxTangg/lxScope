@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from urllib.parse import quote
 
@@ -37,6 +38,10 @@ from ._models import (
 )
 from ._knowledge import TaskKnowledgeGateway
 from ._service import TaskService
+from ._template_models import TaskTemplateDefinition
+from ._template_registry import TemplateRegistry, TemplateRegistryError
+
+logger = logging.getLogger(__name__)
 
 task_router = APIRouter(
     prefix="/tasks",
@@ -101,6 +106,67 @@ def _not_found(resource: str, resource_id: str) -> HTTPException:
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"{resource} '{resource_id}' not found.",
     )
+
+
+def _get_template_registry() -> TemplateRegistry:
+    """Create the lightweight, package-relative read-only template registry."""
+
+    return TemplateRegistry()
+
+
+def _template_registry_error(error: TemplateRegistryError) -> HTTPException:
+    """Log a safe diagnostic and return a path-free API error."""
+
+    logger.error(
+        "Task template registry failed: code=%s file=%s template_id=%s "
+        "issues=%s",
+        error.code,
+        error.file_name,
+        error.template_id,
+        error.issues,
+    )
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=error.public_detail(),
+    )
+
+
+@task_router.get(
+    "/templates",
+    response_model=list[TaskTemplateDefinition],
+    summary="List built-in Task templates",
+)
+async def list_task_templates(
+    _user_id: str = Depends(get_current_user_id),
+    registry: TemplateRegistry = Depends(_get_template_registry),
+) -> list[TaskTemplateDefinition]:
+    """Return the authenticated caller's read-only built-in template catalog."""
+
+    try:
+        return registry.list_templates()
+    except TemplateRegistryError as error:
+        raise _template_registry_error(error) from error
+
+
+@task_router.get(
+    "/templates/{template_id}",
+    response_model=TaskTemplateDefinition,
+    summary="Get one built-in Task template",
+)
+async def get_task_template(
+    template_id: str,
+    _user_id: str = Depends(get_current_user_id),
+    registry: TemplateRegistry = Depends(_get_template_registry),
+) -> TaskTemplateDefinition:
+    """Return one authenticated caller's read-only template definition."""
+
+    try:
+        template = registry.get_template(template_id)
+    except TemplateRegistryError as error:
+        raise _template_registry_error(error) from error
+    if template is None:
+        raise _not_found("Task template", template_id)
+    return template
 
 
 @task_router.get(
