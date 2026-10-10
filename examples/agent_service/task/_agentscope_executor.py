@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
 """AgentScope adapters for the typed Task step implementations."""
 
-import asyncio
 import inspect
 import json
 import logging
 import re
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
+
+from agentscope.mcp import MCPClient
+from agentscope.workspace._gateway_client import GatewayMCPClient
 
 from ._clarification import (
     EXECUTION_POLICY,
@@ -38,6 +43,35 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _TaskMCPExecutionScope:
+    """MCP clients owned by one Task request or run."""
+
+    context_key: tuple[str, str]
+    clients: list[Any]
+    owned_clients: list[MCPClient]
+
+
+class _TaskWorkspaceView:
+    """Expose Task-owned MCP clients through the Workspace toolkit seam."""
+
+    def __init__(self, workspace: Any, mcps: list[Any]) -> None:
+        self._workspace = workspace
+        self._mcps = mcps
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._workspace, name)
+
+    async def list_mcps(
+        self,
+        *,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list[Any]:
+        del agent_id, session_id
+        return list(self._mcps)
 
 
 class AgentScopeTaskExecutor:
@@ -86,11 +120,12 @@ class AgentScopeTaskExecutor:
         self._max_clarification_rounds = max_clarification_rounds
         self._max_clarification_questions = max_clarification_questions
         self._task_timezone = ZoneInfo(task_timezone)
-        # A browser/stdin MCP owns an AnyIO stream and cannot be probed or
-        # reconnected concurrently.  The Task page can issue duplicate tool
-        # discovery requests during a React refresh, so serialize lifecycle
-        # operations per logical MCP/session.
-        self._mcp_refresh_locks: dict[tuple[str, ...], asyncio.Lock] = {}
+        # Stateful stdio MCP transports are scoped to the async task that
+        # opens them. Keep one fresh client set for the whole Task run, while
+        # discovery requests get a shorter request-local scope.
+        self._mcp_execution_scope: ContextVar[
+            _TaskMCPExecutionScope | None
+        ] = ContextVar(f"task_mcp_scope_{id(self)}", default=None)
 
     async def execute_node(
         self,
@@ -126,30 +161,43 @@ class AgentScopeTaskExecutor:
     ) -> list[TaskToolSchema]:
         """Return the currently available Toolkit/MCP tools for the session."""
 
-        toolkit = await self._build_toolkit(context)
-        schemas = await toolkit.get_tool_schemas(
-            groups=[group.name for group in toolkit.tool_groups],
-        )
-        result: list[TaskToolSchema] = []
-        for schema in schemas:
-            function = schema.get("function", {})
-            tool = await toolkit.get_tool(function.get("name", ""))
-            if tool is None:
-                continue
-            if tool.is_external_tool or tool.is_state_injected:
-                # Interactive business input is an InputStep. Native planning
-                # and stateful tools require an Agent, not a direct ToolStep.
-                continue
-            result.append(
-                TaskToolSchema(
-                    name=tool.name,
-                    description=tool.description,
-                    input_schema=tool.input_schema,
-                    is_mcp=tool.is_mcp,
-                    is_read_only=tool.is_read_only,
-                ),
+        async with self._mcp_scope_for(context):
+            toolkit = await self._build_toolkit(context)
+            schemas = await toolkit.get_tool_schemas(
+                groups=[group.name for group in toolkit.tool_groups],
             )
-        return result
+            result: list[TaskToolSchema] = []
+            for schema in schemas:
+                function = schema.get("function", {})
+                tool = await toolkit.get_tool(function.get("name", ""))
+                if tool is None:
+                    continue
+                if tool.is_external_tool or tool.is_state_injected:
+                    # Interactive business input is an InputStep. Native
+                    # planning and stateful tools require an Agent, not a
+                    # direct ToolStep.
+                    continue
+                result.append(
+                    TaskToolSchema(
+                        name=tool.name,
+                        description=tool.description,
+                        input_schema=tool.input_schema,
+                        is_mcp=tool.is_mcp,
+                        is_read_only=tool.is_read_only,
+                    ),
+                )
+            return result
+
+    @asynccontextmanager
+    async def run_scope(
+        self,
+        context: ExecutionContext,
+        tool_names: set[str] | None = None,
+    ) -> AsyncGenerator[None, None]:
+        """Keep fresh MCP clients alive for one Task run's async worker."""
+
+        async with self._mcp_scope_for(context, tool_names=tool_names):
+            yield
 
     async def write_artifact(
         self,
@@ -522,6 +570,22 @@ class AgentScopeTaskExecutor:
         previous_output: str,
         context: ExecutionContext,
     ) -> StepExecutionResult:
+        """Call one permitted Toolkit or MCP tool inside a Task scope."""
+
+        async with self._mcp_scope_for(context):
+            return await self._execute_tool_step_in_scope(
+                node=node,
+                previous_output=previous_output,
+                context=context,
+            )
+
+    async def _execute_tool_step_in_scope(
+        self,
+        *,
+        node: TaskNode,
+        previous_output: str,
+        context: ExecutionContext,
+    ) -> StepExecutionResult:
         """Call one permitted AgentScope Toolkit or MCP tool."""
 
         config = node.config
@@ -672,47 +736,143 @@ class AgentScopeTaskExecutor:
             )
         return session
 
-    async def _refresh_mcp_connections(
-        self,
-        workspace: Any,
-        context: ExecutionContext,
-    ) -> None:
-        """Best-effort probe of stateful MCP sessions before Task Toolkit use.
+    @staticmethod
+    def _mcp_scope_key(context: ExecutionContext) -> tuple[str, str]:
+        return context.agent_id or "", context.session_id or ""
 
-        The workspace owns MCP lifecycle. Task must not close or reconnect a
-        cached stateful client here: doing so can move an AnyIO cancel scope
-        across request/reload tasks and wedge the whole Uvicorn process. A
-        stale optional MCP is therefore left unavailable for this Task call.
-        """
-        clients = await workspace.list_mcps(
-            agent_id=context.agent_id,
-            session_id=context.session_id,
+    @asynccontextmanager
+    async def _mcp_scope_for(
+        self,
+        context: ExecutionContext,
+        *,
+        tool_names: set[str] | None = None,
+    ) -> AsyncGenerator[_TaskMCPExecutionScope, None]:
+        """Reuse the run-owned MCP set or open a request-local one."""
+
+        context_key = self._mcp_scope_key(context)
+        active = self._mcp_execution_scope.get()
+        if active is not None and active.context_key == context_key:
+            yield active
+            return
+
+        if not context.agent_id or not context.session_id:
+            raise RuntimeError(
+                "Task MCP tools require an AgentScope agent and session."
+            )
+
+        needs_mcp_clients = tool_names is None or any(
+            name.startswith("mcp__") for name in tool_names
         )
-        for client in clients:
-            if not client.is_stateful:
-                continue
-            lock_key = (
-                context.agent_id or "",
-                context.session_id or "",
-                context.workspace_id or "",
-                client.name,
-            )
-            lock = self._mcp_refresh_locks.setdefault(
-                lock_key,
-                asyncio.Lock(),
-            )
-            async with lock:
+        workspace = None
+        if needs_mcp_clients:
+            session = await self._get_session(context)
+            workspace = await self._get_workspace(context, session)
+            assert workspace is not None
+            if self._mcp_reconciler is not None:
+                await self._mcp_reconciler(
+                    context.user_id,
+                    context.agent_id,
+                    workspace,
+                    context.session_id,
+                )
+
+        clients: list[Any] = []
+        owned_clients: list[MCPClient] = []
+        try:
+            if not needs_mcp_clients:
+                declared_clients = []
+            else:
+                assert workspace is not None
                 try:
-                    await client.list_tools()
-                    continue
-                except Exception as probe_error:
+                    declared_clients = await workspace.list_mcps(
+                        agent_id=context.agent_id,
+                        session_id=context.session_id,
+                    )
+                except Exception as error:
                     logger.warning(
-                        "Task MCP '%s' is stale for agent=%s session=%s; "
-                        "skipping its tools for this call: %s",
-                        client.name,
+                        "Task could not list MCP clients for agent=%s "
+                        "session=%s: %s",
                         context.agent_id,
                         context.session_id,
-                        probe_error,
+                        error,
+                    )
+                    declared_clients = []
+
+            requested_mcp_names = (
+                None
+                if tool_names is None
+                else {
+                    client.name
+                    for client in declared_clients
+                    if any(
+                        name.startswith(f"mcp__{client.name}__")
+                        for name in tool_names
+                    )
+                }
+            )
+            for declared in declared_clients:
+                if (
+                    requested_mcp_names is not None
+                    and declared.name not in requested_mcp_names
+                ):
+                    continue
+                try:
+                    if isinstance(declared, GatewayMCPClient):
+                        # Gateway proxies do not hold a local AnyIO stream;
+                        # the workspace gateway owns their MCP lifecycle.
+                        clients.append(declared)
+                        continue
+
+                    # Never reuse a stateful stdio ClientSession that was
+                    # opened by a different HTTP request. The Task owns this
+                    # fresh client and closes it in the same async scope.
+                    client = MCPClient.model_validate(
+                        declared.model_dump(mode="json")
+                    )
+                    runtime_headers = getattr(
+                        declared,
+                        "_runtime_headers",
+                        {},
+                    )
+                    if runtime_headers:
+                        await client.set_runtime_headers(
+                            dict(runtime_headers)
+                        )
+                    if client.is_stateful:
+                        await client.connect()
+                    clients.append(client)
+                    owned_clients.append(client)
+                except Exception as error:
+                    logger.warning(
+                        "Task could not connect MCP '%s' for agent=%s "
+                        "session=%s: %s",
+                        getattr(declared, "name", "unknown"),
+                        context.agent_id,
+                        context.session_id,
+                        error,
+                    )
+
+            scope = _TaskMCPExecutionScope(
+                context_key=context_key,
+                clients=clients,
+                owned_clients=owned_clients,
+            )
+            token = self._mcp_execution_scope.set(scope)
+            try:
+                yield scope
+            finally:
+                self._mcp_execution_scope.reset(token)
+        finally:
+            for client in reversed(owned_clients):
+                if not client.is_stateful or not client.is_connected:
+                    continue
+                try:
+                    await client.close()
+                except Exception as error:
+                    logger.warning(
+                        "Task could not close MCP '%s': %s",
+                        client.name,
+                        error,
                     )
 
     async def _build_toolkit(self, context: ExecutionContext) -> Any:
@@ -742,23 +902,13 @@ class AgentScopeTaskExecutor:
 
         from agentscope.app._service._toolkit import get_toolkit
 
-        workspace = await self._workspace_manager.get_workspace(
-            context.user_id,
-            context.agent_id,
-            context.session_id,
-            session.config.workspace_id,
-        )
-        if self._mcp_reconciler is not None and context.session_id is not None:
-            await self._mcp_reconciler(
-                context.user_id,
-                context.agent_id,
-                workspace,
-                context.session_id,
-            )
-        await self._refresh_mcp_connections(workspace, context)
+        workspace = await self._get_workspace(context, session)
+        scope = self._mcp_execution_scope.get()
+        if scope is None or scope.context_key != self._mcp_scope_key(context):
+            raise RuntimeError("Task MCP execution scope is unavailable.")
         return await get_toolkit(
             storage=self._storage,
-            workspace=workspace,
+            workspace=_TaskWorkspaceView(workspace, scope.clients),
             workspace_manager=self._workspace_manager,
             scheduler_manager=self._scheduler_manager,
             background_task_manager=self._background_task_manager,

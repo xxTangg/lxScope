@@ -43,6 +43,7 @@ from ._models import (
     TaskRunRecord,
     TaskRunRequest,
     TaskInputReply,
+    ToolStepConfig,
     StepVerdict,
     StepType,
     TaskStatus,
@@ -607,7 +608,50 @@ class TaskService:
                 listener = asyncio.create_task(watch_cancel())
                 await asyncio.wait_for(ready.wait(), timeout=10)
             async with self._run_guard(run_id):
-                await self._advance_sop(run_id, knowledge_gateway)
+                run = await self._find_run(run_id)
+                tool_nodes = (
+                    [
+                        node
+                        for node in run.nodes
+                        if isinstance(node.config, ToolStepConfig)
+                    ]
+                    if run is not None
+                    else []
+                )
+                should_advance = (
+                    run is not None
+                    and run.status not in _TERMINAL_RUN_STATUSES
+                    and not self._is_cancel_requested(run_id)
+                )
+                executor = (
+                    self._select_executor(run.context)
+                    if should_advance and run is not None
+                    else None
+                )
+                run_scope = getattr(executor, "run_scope", None)
+                if (
+                    tool_nodes
+                    and callable(run_scope)
+                    and should_advance
+                    and run is not None
+                ):
+                    context = ExecutionContext(
+                        **run.context.model_dump(),
+                        user_id=run.user_id,
+                        task_id=run.task_id,
+                        run_id=run.id,
+                        task_revision=run.task_revision,
+                        initial_input=run.input,
+                    )
+                    tool_names = {
+                        node.config.tool_name
+                        for node in tool_nodes
+                        if isinstance(node.config, ToolStepConfig)
+                    }
+                    async with run_scope(context, tool_names=tool_names):
+                        await self._advance_sop(run_id, knowledge_gateway)
+                else:
+                    await self._advance_sop(run_id, knowledge_gateway)
         except asyncio.CancelledError:
             return
         except Exception as error:
