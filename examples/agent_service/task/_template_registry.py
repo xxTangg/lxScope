@@ -12,16 +12,39 @@ from pydantic import ValidationError
 from ._template_models import TaskTemplateDefinition
 
 
-TEMPLATE_FILES: tuple[tuple[str, str], ...] = (
-    ("s01_project_init", "s01_project_init.v1.json"),
-    ("s02_project_planning", "s02_project_planning.v1.json"),
-    ("s03_expert_matching", "s03_expert_matching.v1.json"),
-    ("s04_meeting_preparation", "s04_meeting_preparation.v1.json"),
-    ("s05_meeting_minutes", "s05_meeting_minutes.v1.json"),
-    ("s06_opinion_processing", "s06_opinion_processing.v1.json"),
-    ("s07_report_generation", "s07_report_generation.v1.json"),
-    ("s08_archive_transfer", "s08_archive_transfer.v1.json"),
-    ("s09_expense_settlement", "s09_expense_settlement.v1.json"),
+TEMPLATE_VERSION_FILES: tuple[tuple[str, str, str], ...] = (
+    ("s01_project_init", "1.0.0", "s01_project_init.v1.json"),
+    ("s02_project_planning", "1.0.0", "s02_project_planning.v1.json"),
+    ("s03_expert_matching", "1.0.0", "s03_expert_matching.v1.json"),
+    ("s04_meeting_preparation", "1.0.0", "s04_meeting_preparation.v1.json"),
+    ("s05_meeting_minutes", "1.0.0", "s05_meeting_minutes.v1.json"),
+    ("s06_opinion_processing", "1.0.0", "s06_opinion_processing.v1.json"),
+    ("s07_report_generation", "1.0.0", "s07_report_generation.v1.json"),
+    ("s08_archive_transfer", "1.0.0", "s08_archive_transfer.v1.json"),
+    ("s09_expense_settlement", "1.0.0", "s09_expense_settlement.v1.json"),
+)
+
+# Keep the public gallery pinned to one explicitly selected version per
+# scenario.
+# Historical files may be added to TEMPLATE_VERSION_FILES without changing this
+# tuple; callers that instantiate new Tasks only see these current versions.
+CURRENT_TEMPLATE_VERSIONS: tuple[tuple[str, str], ...] = (
+    ("s01_project_init", "1.0.0"),
+    ("s02_project_planning", "1.0.0"),
+    ("s03_expert_matching", "1.0.0"),
+    ("s04_meeting_preparation", "1.0.0"),
+    ("s05_meeting_minutes", "1.0.0"),
+    ("s06_opinion_processing", "1.0.0"),
+    ("s07_report_generation", "1.0.0"),
+    ("s08_archive_transfer", "1.0.0"),
+    ("s09_expense_settlement", "1.0.0"),
+)
+
+# Compatibility view for code and tests that used the original ID/file catalog.
+TEMPLATE_FILES: tuple[tuple[str, str], ...] = tuple(
+    (template_id, file_name)
+    for template_id, template_version, file_name in TEMPLATE_VERSION_FILES
+    if (template_id, template_version) in CURRENT_TEMPLATE_VERSIONS
 )
 
 
@@ -74,59 +97,150 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 class TemplateRegistry:
-    """Read the nine packaged templates independently of process cwd."""
+    """Read the explicitly versioned template catalog independently of cwd."""
 
-    def __init__(self, root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        root: str | Path | None = None,
+        *,
+        version_files: tuple[tuple[str, str, str], ...] | None = None,
+        current_versions: tuple[tuple[str, str], ...] | None = None,
+    ) -> None:
         self._root = (
             Path(root)
             if root is not None
             else Path(__file__).resolve().parent / "templates"
         )
+        self._version_files = (
+            TEMPLATE_VERSION_FILES if version_files is None else version_files
+        )
+        self._current_versions = (
+            CURRENT_TEMPLATE_VERSIONS
+            if current_versions is None
+            else current_versions
+        )
 
     def list_templates(self) -> list[TaskTemplateDefinition]:
-        """Return the catalog in stable S01 through S09 order."""
+        """Return one current template per scenario in catalog order."""
 
-        if not self._root.is_dir():
-            raise TemplateRegistryError("template_directory_missing")
-
-        expected_names = {file_name for _, file_name in TEMPLATE_FILES}
-        actual_names = {
-            path.name for path in self._root.glob("*.json") if path.is_file()
-        }
-        unexpected = sorted(actual_names - expected_names)
-        if unexpected:
-            raise TemplateRegistryError(
-                "unexpected_template_file",
-                file_name=unexpected[0],
-            )
-
+        files_by_version = self._validate_catalog_files()
         templates: list[TaskTemplateDefinition] = []
-        for expected_id, file_name in TEMPLATE_FILES:
+        for template_id, template_version in self._current_versions:
+            file_name = files_by_version[(template_id, template_version)]
             path = self._root / file_name
             if not path.is_file():
                 raise TemplateRegistryError(
                     "template_file_missing",
                     file_name=file_name,
-                    template_id=expected_id,
+                    template_id=template_id,
                 )
-            templates.append(self._load(path, expected_id))
+            templates.append(
+                self._load(
+                    path,
+                    template_id,
+                    template_version,
+                )
+            )
         return templates
 
-    def get_template(
+    def get_current_template(
         self,
         template_id: str,
     ) -> TaskTemplateDefinition | None:
-        """Return one template by its stable ID, or ``None`` if unknown."""
+        """Return the selected current version for one scenario, if present."""
 
         for template in self.list_templates():
             if template.template_id == template_id:
                 return template
         return None
 
+    def get_template(
+        self,
+        template_id: str,
+    ) -> TaskTemplateDefinition | None:
+        """Compatibility alias for :meth:`get_current_template`."""
+
+        return self.get_current_template(template_id)
+
+    def get_template_version(
+        self,
+        template_id: str,
+        template_version: str,
+    ) -> TaskTemplateDefinition | None:
+        """Return one declared immutable definition by exact ID and version."""
+
+        files_by_version = self._validate_catalog_files()
+        file_name = files_by_version.get((template_id, template_version))
+        if file_name is None:
+            return None
+        path = self._root / file_name
+        if not path.is_file():
+            raise TemplateRegistryError(
+                "template_file_missing",
+                file_name=file_name,
+                template_id=template_id,
+            )
+        return self._load(
+            path,
+            template_id,
+            template_version,
+        )
+
+    def _validate_catalog_files(self) -> dict[tuple[str, str], str]:
+        """Validate the manifest and reject every undeclared JSON file."""
+
+        if not self._root.is_dir():
+            raise TemplateRegistryError("template_directory_missing")
+
+        files_by_version: dict[tuple[str, str], str] = {}
+        names_by_file: dict[str, tuple[str, str]] = {}
+        for template_id, template_version, file_name in self._version_files:
+            key = (template_id, template_version)
+            if (
+                key in files_by_version
+                or file_name in names_by_file
+                or Path(file_name).name != file_name
+            ):
+                raise TemplateRegistryError(
+                    "invalid_template_manifest",
+                    file_name=file_name,
+                    template_id=template_id,
+                )
+            files_by_version[key] = file_name
+            names_by_file[file_name] = key
+
+        current_ids: set[str] = set()
+        for template_id, template_version in self._current_versions:
+            if (
+                template_id in current_ids
+                or (template_id, template_version) not in files_by_version
+            ):
+                raise TemplateRegistryError(
+                    "invalid_template_manifest",
+                    template_id=template_id,
+                )
+            current_ids.add(template_id)
+        if not current_ids or current_ids != {
+            template_id for template_id, _, _ in self._version_files
+        }:
+            raise TemplateRegistryError("invalid_template_manifest")
+
+        actual_names = {
+            path.name for path in self._root.glob("*.json") if path.is_file()
+        }
+        unexpected = sorted(actual_names - set(names_by_file))
+        if unexpected:
+            raise TemplateRegistryError(
+                "unexpected_template_file",
+                file_name=unexpected[0],
+            )
+        return files_by_version
+
     def _load(
         self,
         path: Path,
         expected_id: str,
+        expected_version: str,
     ) -> TaskTemplateDefinition:
         try:
             raw = path.read_text(encoding="utf-8")
@@ -151,7 +265,10 @@ class TemplateRegistry:
                 "invalid_json",
                 file_name=path.name,
                 template_id=expected_id,
-                issues=(f"Invalid JSON at line {error.lineno}, column {error.colno}.",),
+                issues=(
+                    f"Invalid JSON at line {error.lineno}, "
+                    f"column {error.colno}.",
+                ),
             ) from error
 
         try:
@@ -175,5 +292,12 @@ class TemplateRegistry:
                 file_name=path.name,
                 template_id=template.template_id,
                 issues=(f"Expected template_id {expected_id}.",),
+            )
+        if template.template_version != expected_version:
+            raise TemplateRegistryError(
+                "template_version_manifest_mismatch",
+                file_name=path.name,
+                template_id=template.template_id,
+                issues=(f"Expected template_version {expected_version}.",),
             )
         return template

@@ -150,7 +150,10 @@ class TaskTemplateValidator:
             return _result(task_id, issues, missing, blocked)
 
         try:
-            template = self._registry.get_template(task.source_template_id)
+            template = self._registry.get_template_version(
+                task.source_template_id,
+                task.source_template_version,
+            )
         except TemplateRegistryError:
             template = None
         if template is None:
@@ -161,14 +164,6 @@ class TaskTemplateValidator:
                 ),
             )
             return _result(task_id, issues, missing, blocked)
-        if template.template_version != task.source_template_version:
-            issues.append(
-                TaskValidationIssue(
-                    path="source_template_version",
-                    message="当前模板文件与任务来源版本不一致，已阻止继续保存或运行。",
-                ),
-            )
-
         compiler = self._compiler
         if compiler is None:
             try:

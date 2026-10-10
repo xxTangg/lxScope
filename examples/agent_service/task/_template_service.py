@@ -77,7 +77,7 @@ class TaskTemplateService:
     ) -> TaskRecord:
         """Validate and create a private copy without invoking the Planner."""
 
-        template = self._registry.get_template(template_id)
+        template = self._registry.get_current_template(template_id)
         if template is None:
             raise TemplateInstantiationError(
                 404,

@@ -196,7 +196,7 @@ async def get_task_template(
     """Return one authenticated caller's read-only template definition."""
 
     try:
-        template = registry.get_template(template_id)
+        template = registry.get_current_template(template_id)
     except TemplateRegistryError as error:
         raise _template_registry_error(error) from error
     if template is None:
