@@ -6,10 +6,12 @@ export function TaskInputStepEditor({
 	config,
 	disabled,
 	onChange,
+	templateConfig,
 }: {
 	config: InputStepConfig;
 	disabled: boolean;
 	onChange: (config: InputStepConfig) => void;
+	templateConfig?: InputStepConfig;
 }) {
 	return (
 		<div className="space-y-3">
@@ -21,6 +23,10 @@ export function TaskInputStepEditor({
 				onChange={(event) => onChange({ ...config, reason: event.target.value })}
 			/>
 			{config.questions.map((question, index) => {
+				const templateQuestion = templateConfig?.questions.find((item) => item.key === question.key);
+				const canDelete = templateConfig
+					? templateQuestion !== undefined && !templateQuestion.required
+					: config.questions.length > 1;
 				const update = (changes: Partial<typeof question>) =>
 					onChange({
 						...config,
@@ -40,7 +46,7 @@ export function TaskInputStepEditor({
 						<Input
 							aria-label={`字段名 ${index + 1}`}
 							value={question.key}
-							disabled={disabled}
+							disabled={disabled || Boolean(templateConfig)}
 							placeholder="字段名，例如 destination"
 							onChange={(event) => update({ key: event.target.value })}
 						/>
@@ -58,7 +64,7 @@ export function TaskInputStepEditor({
 								<input
 									type="checkbox"
 									checked={question.required}
-									disabled={disabled}
+									disabled={disabled || Boolean(templateConfig)}
 									onChange={(event) => update({ required: event.target.checked })}
 								/>
 								必填
@@ -67,7 +73,7 @@ export function TaskInputStepEditor({
 								type="button"
 								variant="ghost"
 								size="sm"
-								disabled={disabled || config.questions.length <= 1}
+								disabled={disabled || !canDelete}
 								onClick={() =>
 									onChange({
 										...config,
@@ -83,7 +89,7 @@ export function TaskInputStepEditor({
 					</div>
 				);
 			})}
-			<Button
+			{!templateConfig && <Button
 				type="button"
 				variant="outline"
 				size="sm"
@@ -104,7 +110,7 @@ export function TaskInputStepEditor({
 				}
 			>
 				添加问题
-			</Button>
+			</Button>}
 		</div>
 	);
 }

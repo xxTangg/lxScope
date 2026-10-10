@@ -13,6 +13,8 @@ import { TaskMetrics } from './task-metrics';
 import { TaskOverview } from './task-overview';
 import { TaskRunPanel } from './task-run-panel';
 import { TaskSidebar } from './task-sidebar';
+import { TaskTemplateCreateDialog } from './task-template-create-dialog';
+import { TaskTemplateGallery } from './task-template-gallery';
 import type {
 	TaskContext,
 	TaskNode,
@@ -21,6 +23,7 @@ import type {
 	TaskRunRecord,
 	TaskToolSchema,
 } from '@/api';
+import type { TaskTemplateDefinition } from '@/api/task';
 import { taskApi } from '@/api';
 import { ApiError } from '@/api/client';
 import { Button } from '@/components/ui/button';
@@ -36,6 +39,9 @@ interface TaskDraft {
 	knowledge_base_ids: string[];
 	generation_status: TaskRecord['generation_status'];
 	generation_error?: string | null;
+	source_template_id?: string | null;
+	source_template_version?: string | null;
+	template_step_bindings?: Record<string, string>;
 }
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'timed_out']);
@@ -51,6 +57,9 @@ function toDraft(task: TaskRecord): TaskDraft {
 			: [],
 		generation_status: task.generation_status,
 		generation_error: task.generation_error,
+		source_template_id: task.source_template_id,
+		source_template_version: task.source_template_version,
+		template_step_bindings: task.template_step_bindings ?? {},
 	};
 }
 
@@ -136,6 +145,9 @@ export function TaskPage() {
 	const [isGenerating, setIsGenerating] = React.useState(false);
 	const [isSyncingGeneration, setIsSyncingGeneration] = React.useState(false);
 	const [newTaskOpen, setNewTaskOpen] = React.useState(false);
+	const [templateGalleryOpen, setTemplateGalleryOpen] = React.useState(false);
+	const [templateToCreate, setTemplateToCreate] = React.useState<TaskTemplateDefinition | null>(null);
+	const [sourceTemplate, setSourceTemplate] = React.useState<TaskTemplateDefinition | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
 	const [sidebarWidth, setSidebarWidth] = React.useState(280);
 	const [resultWidth, setResultWidth] = React.useState(380);
@@ -145,6 +157,23 @@ export function TaskPage() {
 	);
 	const { agents } = useAgents();
 	const { sessions, loading: sessionsLoading } = useSessions(executionAgentId ?? null);
+	React.useEffect(() => {
+		const templateId = draft?.source_template_id;
+		if (!templateId) {
+			setSourceTemplate(null);
+			return undefined;
+		}
+		let disposed = false;
+		setSourceTemplate(null);
+		void taskApi.getTemplate(templateId).then((template) => {
+			if (!disposed && template.template_version === draft?.source_template_version) {
+				setSourceTemplate(template);
+			}
+		}).catch(() => {
+			if (!disposed) setSourceTemplate(null);
+		});
+		return () => { disposed = true; };
+	}, [draft?.id, draft?.source_template_id, draft?.source_template_version]);
 
 	const beginResize = (pane: ResizePane, event: React.PointerEvent<HTMLDivElement>) => {
 		resizeStartRef.current = {
@@ -472,6 +501,31 @@ export function TaskPage() {
 		toast.success('任务已创建，正在生成节点');
 	};
 
+	const handleInstantiateTemplate = async (
+		template: TaskTemplateDefinition,
+		inputs: Record<string, unknown>,
+		sourceContext: TaskContext,
+	) => {
+		setError(null);
+		const created = await taskApi.instantiateTemplate(template.template_id, {
+			template_version: template.template_version,
+			inputs,
+			source_context: sourceContext,
+		});
+		setTasks((previous) => [created, ...previous.filter((task) => task.id !== created.id)]);
+		setSelectedTaskId(created.id);
+		setDraft(toDraft(created));
+		setExecutionAgentId(created.source_context.agent_id ?? null);
+		setExecutionSessionId(created.source_context.session_id ?? null);
+		setCurrentRun(null);
+		setRunEvents([]);
+		setIsDirty(false);
+		setError(null);
+		setTemplateToCreate(null);
+		navigate(`/task/${created.id}`);
+		toast.success(`已从“${template.title}”创建任务`);
+	};
+
 	const saveDraft = async (): Promise<TaskRecord | null> => {
 		if (!draft) return null;
 		setIsSaving(true);
@@ -659,7 +713,7 @@ export function TaskPage() {
 				run={currentRun}
 				width={sidebarWidth}
 				onSelect={selectTask}
-				onCreate={() => setNewTaskOpen(true)}
+				onCreate={() => setTemplateGalleryOpen(true)}
 				onDelete={(task) => void handleDelete(task)}
 				disabled={isSaving || isRunning || isGenerating}
 			/>
@@ -688,6 +742,13 @@ export function TaskPage() {
 								onRerun={handleRerun}
 								onRun={() => void handleRun()}
 							/>
+							{draft.source_template_id && (
+								<div className="mx-5 mb-3 rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-[11px] leading-5 text-blue-900 xl:mx-6">
+									{sourceTemplate
+									? <>来源模板：<strong>{sourceTemplate.title}</strong> v{sourceTemplate.template_version}。可编辑内容和可选步骤受模板约束，步骤顺序由服务端固定。</>
+									: <>此任务带有模板来源 {draft.source_template_id} v{draft.source_template_version ?? '未知'}。模板版本无法加载或不匹配，当前流程编辑将保持锁定。</>}
+								</div>
+							)}
 							{error && (
 								<div className="mx-5 mb-3 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2.5 text-xs text-red-700 xl:mx-6">
 									<AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -710,7 +771,7 @@ export function TaskPage() {
 												<div className="text-xs font-semibold text-slate-800">
 													任务目标
 												</div>
-												<Button
+												{!draft.source_template_id && <Button
 													variant="ghost"
 													size="sm"
 													onClick={() => void handleRegenerate()}
@@ -732,7 +793,7 @@ export function TaskPage() {
 															? '同步节点中…'
 															: '生成中…'
 														: '重新生成步骤'}
-												</Button>
+												</Button>}
 											</div>
 											<Textarea
 												value={draft.goal}
@@ -854,7 +915,10 @@ export function TaskPage() {
 										nodes={draft.nodes}
 										tools={availableTools}
 										onChange={(nodes) => updateDraft({ nodes })}
-										disabled={isSaving || isRunning}
+										disabled={isSaving || isRunning || (Boolean(draft.source_template_id) && !sourceTemplate)}
+										templateMode={Boolean(draft.source_template_id)}
+										template={sourceTemplate}
+										templateStepBindings={draft.template_step_bindings}
 									/>
 								</section>
 							</div>
@@ -871,17 +935,20 @@ export function TaskPage() {
 								<Plus className="size-6" />
 							</div>
 							<div className="text-xl font-semibold text-slate-900">
-								创建你的第一个任务
+								从标准场景开始创建任务
 							</div>
 							<div className="mt-2 max-w-md text-sm leading-6 text-slate-500">
-								把一个目标拆成多个步骤，保存后即可重复执行。
+								选择九个业务模板之一，按模板流程创建；也可以继续使用自由任务和 AI Planner。
 							</div>
 							<Button
 								className="mt-6 bg-blue-600 text-white hover:bg-blue-700"
-								onClick={() => setNewTaskOpen(true)}
+								onClick={() => setTemplateGalleryOpen(true)}
 							>
 								<Plus />
-								新建任务
+								浏览业务模板
+							</Button>
+							<Button className="mt-6" variant="outline" onClick={() => setNewTaskOpen(true)}>
+								自由任务（AI 规划）
 							</Button>
 						</div>
 					)}
@@ -911,6 +978,24 @@ export function TaskPage() {
 				open={newTaskOpen}
 				onOpenChange={setNewTaskOpen}
 				onCreate={handleCreate}
+			/>
+			<TaskTemplateGallery
+				open={templateGalleryOpen}
+				onOpenChange={setTemplateGalleryOpen}
+				onUseTemplate={(template) => {
+					setTemplateGalleryOpen(false);
+					setTemplateToCreate(template);
+				}}
+				onOpenFreeTask={() => {
+					setTemplateGalleryOpen(false);
+					setNewTaskOpen(true);
+				}}
+			/>
+			<TaskTemplateCreateDialog
+				template={templateToCreate}
+				sourceContext={buildExecutionContext()}
+				onOpenChange={(open) => { if (!open) setTemplateToCreate(null); }}
+				onInstantiate={handleInstantiateTemplate}
 			/>
 		</div>
 	);

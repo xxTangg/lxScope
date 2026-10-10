@@ -13,6 +13,7 @@ import * as React from 'react';
 
 import { TaskInputStepEditor } from './task-input-step-editor';
 import type { TaskArtifactFormat, TaskNode, TaskStepType, TaskToolSchema } from '@/api';
+import type { TaskTemplateDefinition, TaskTemplateStep } from '@/api/task';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -22,6 +23,9 @@ interface TaskFlowEditorProps {
 	onChange: (nodes: TaskNode[]) => void;
 	tools?: TaskToolSchema[];
 	disabled?: boolean;
+	templateMode?: boolean;
+	template?: TaskTemplateDefinition | null;
+	templateStepBindings?: Record<string, string>;
 }
 
 const STEP_LABELS: Record<TaskStepType, string> = {
@@ -70,19 +74,78 @@ function stepIcon(type: TaskStepType) {
 	return <Bot className="size-4 text-primary" />;
 }
 
+function templateRuntimePrompt(step: TaskTemplateStep): string {
+	return [
+		step.config.type === 'agent' ? step.config.prompt : '',
+		`输出要求：${step.output_requirement}`,
+		`失败处理说明：${step.failure_handling}`,
+		`敏感信息要求：${step.sensitive_information}`,
+	]
+		.filter(Boolean)
+		.join('\n\n');
+}
+
+function restoreOptionalStep(step: TaskTemplateStep, id: string): TaskNode | null {
+	const prompt = templateRuntimePrompt(step);
+	if (step.config.type === 'agent') {
+		return {
+			id,
+			name: step.title,
+			prompt,
+			type: 'agent',
+			config: { type: 'agent', prompt },
+			order: 0,
+			acceptance_criteria: step.output_requirement,
+		};
+	}
+	if (step.config.type === 'input') {
+		return {
+			id,
+			name: step.title,
+			prompt,
+			type: 'input',
+			config: {
+				type: 'input',
+				reason: step.config.reason,
+				questions: step.config.questions.map((question) => ({ ...question, options: [...question.options] })),
+			},
+			order: 0,
+			acceptance_criteria: step.output_requirement,
+		};
+	}
+	return null;
+}
+
 export function TaskFlowEditor({
 	nodes,
 	onChange,
 	tools = [],
 	disabled = false,
+	templateMode = false,
+	template = null,
+	templateStepBindings = {},
 }: TaskFlowEditorProps) {
 	const [argumentDrafts, setArgumentDrafts] = React.useState<Record<string, string>>({});
+	const bindingByNodeId = React.useMemo(
+		() => new Map(Object.entries(templateStepBindings).map(([stepKey, nodeId]) => [nodeId, stepKey])),
+		[templateStepBindings],
+	);
+	const nextOptionalStep = template?.steps.find(
+		(step) =>
+			!step.required &&
+			!nodes.some((node) => node.id === templateStepBindings[step.step_key]) &&
+			Boolean(restoreOptionalStep(step, templateStepBindings[step.step_key] ?? '')),
+	) ?? null;
+	const normalizeEditedNodes = (items: TaskNode[]) =>
+		templateMode
+			? items.map((node, index) => ({ ...node, order: index }))
+			: normalizeNodes(items);
 
 	const updateNode = (index: number, update: Partial<TaskNode>) => {
 		const next = nodes.map((node, nodeIndex) =>
 			nodeIndex === index ? { ...node, ...update } : node,
 		);
-		onChange(normalizeNodes(next));
+		onChange(normalizeEditedNodes(next));
 	};
 
 	const updateStepType = (index: number, type: TaskStepType) => {
@@ -132,6 +195,7 @@ export function TaskFlowEditor({
 	};
 
 	const moveNode = (index: number, offset: number) => {
+		if (templateMode) return;
 		const target = index + offset;
 		if (target < 0 || target >= nodes.length) return;
 		const next = [...nodes];
@@ -140,11 +204,18 @@ export function TaskFlowEditor({
 	};
 
 	const removeNode = (index: number) => {
+		if (templateMode) {
+			const node = nodes[index];
+			const stepKey = node ? bindingByNodeId.get(node.id) : undefined;
+			const step = template?.steps.find((item) => item.step_key === stepKey);
+			if (!step || step.required) return;
+		}
 		if (nodes.length <= 1) return;
-		onChange(normalizeNodes(nodes.filter((_, nodeIndex) => nodeIndex !== index)));
+		onChange(normalizeEditedNodes(nodes.filter((_, nodeIndex) => nodeIndex !== index)));
 	};
 
 	const addNode = () => {
+		if (nodes.length >= 8) return;
 		onChange(
 			normalizeNodes([
 				...nodes,
@@ -163,6 +234,22 @@ export function TaskFlowEditor({
 		);
 	};
 
+	const addOptionalTemplateStep = () => {
+		if (!template || !nextOptionalStep || nodes.length >= 8) return;
+		const nodeId = templateStepBindings[nextOptionalStep.step_key];
+		if (!nodeId) return;
+		const restored = restoreOptionalStep(nextOptionalStep, nodeId);
+		if (!restored) return;
+		const templateIndex = template.steps.findIndex((step) => step.step_key === nextOptionalStep.step_key);
+		const insertAt = nodes.findIndex((node) => {
+			const key = bindingByNodeId.get(node.id);
+			return template.steps.findIndex((step) => step.step_key === key) > templateIndex;
+		});
+		const next = [...nodes];
+		next.splice(insertAt < 0 ? next.length : insertAt, 0, restored);
+		onChange(normalizeEditedNodes(next));
+	};
+
 	return (
 		<section>
 			<div className="mb-3 flex items-center justify-between">
@@ -171,10 +258,26 @@ export function TaskFlowEditor({
 					<div className="mt-1 text-xs text-muted-foreground">
 						按顺序执行，每一步的输出会自动传给下一步
 					</div>
+					{nodes.length >= 8 && (
+						<div className="mt-1 text-[11px] text-amber-700">
+							已达到 Task 的 8 节点上限，不能再添加步骤。
+						</div>
+					)}
+					{templateMode && (
+						<div className="mt-1 text-[11px] text-slate-500">
+							模板流程顺序固定；只能恢复来源模板声明的可选节点。
+						</div>
+					)}
 				</div>
-				<Button variant="outline" size="sm" onClick={addNode} disabled={disabled}>
+				<Button
+					variant="outline"
+					size="sm"
+					onClick={templateMode ? addOptionalTemplateStep : addNode}
+					disabled={disabled || nodes.length >= 8 || (templateMode && !nextOptionalStep)}
+					title={nodes.length >= 8 ? 'Task 最多包含 8 个节点。' : templateMode ? (nextOptionalStep ? '只能恢复来源模板声明的可选步骤。' : '没有可恢复的可选步骤；模板流程结构固定。') : 'Task 最多包含 8 个节点。'}
+				>
 					<Plus />
-					新增步骤
+					{templateMode ? (nextOptionalStep ? `添加可选：${nextOptionalStep.title}` : '无可添加的可选步骤') : '新增步骤'}
 				</Button>
 			</div>
 
@@ -188,6 +291,14 @@ export function TaskFlowEditor({
 				</div>
 
 				{nodes.map((node, index) => {
+					const templateStepKey = bindingByNodeId.get(node.id);
+					const templateStep = template?.steps.find((step) => step.step_key === templateStepKey);
+					const templateEditable = templateMode && Boolean(templateStep?.editable);
+					const fieldDisabled = disabled || (templateMode && !templateEditable);
+					const configDisabled =
+						disabled ||
+						(templateMode &&
+							(!templateEditable || (templateStep?.kind !== 'agent' && templateStep?.kind !== 'input')));
 					const toolConfig = node.config?.type === 'tool' ? node.config : null;
 					const pythonConfig = node.config?.type === 'python' ? node.config : null;
 					const agentConfig = node.config?.type === 'agent' ? node.config : null;
@@ -214,7 +325,7 @@ export function TaskFlowEditor({
 														event.target.value as TaskStepType,
 													)
 												}
-												disabled={disabled}
+												disabled={disabled || templateMode}
 												className="h-8 rounded-lg border border-input bg-background px-2 text-xs font-medium text-foreground outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
 											>
 												<option value="agent">AgentStep</option>
@@ -227,7 +338,7 @@ export function TaskFlowEditor({
 												onChange={(event) =>
 													updateNode(index, { name: event.target.value })
 												}
-												disabled={disabled}
+												disabled={fieldDisabled}
 												placeholder="步骤名称"
 												className="h-8 border-transparent bg-transparent px-1 text-sm font-semibold shadow-none focus-visible:bg-muted/60"
 											/>
@@ -245,7 +356,7 @@ export function TaskFlowEditor({
 															event.target.checked,
 													})
 												}
-												disabled={disabled}
+												disabled={templateMode || disabled}
 												className="size-3.5 accent-primary"
 											/>
 											<span>允许在此步骤按需生成知识图谱</span>
@@ -262,7 +373,7 @@ export function TaskFlowEditor({
 														},
 													})
 												}
-												disabled={disabled}
+												disabled={configDisabled}
 												placeholder="写入 AgentStep 要完成的 Prompt"
 												className="min-h-24 resize-y bg-card text-sm leading-6"
 											/>
@@ -270,7 +381,8 @@ export function TaskFlowEditor({
 										{inputConfig && (
 											<TaskInputStepEditor
 												config={inputConfig}
-												disabled={disabled}
+												disabled={configDisabled}
+												templateConfig={templateStep?.config.type === 'input' ? templateStep.config : undefined}
 												onChange={(config) => updateNode(index, { config })}
 											/>
 										)}
@@ -280,7 +392,7 @@ export function TaskFlowEditor({
 											</label>
 											<Textarea
 												value={node.acceptance_criteria ?? ''}
-												disabled={disabled}
+												disabled={fieldDisabled || templateMode}
 												rows={2}
 												placeholder="例如：目的地、日期、人数和预算均已确认，结果有明确依据"
 												onChange={(event) =>
@@ -297,7 +409,7 @@ export function TaskFlowEditor({
 													max={10}
 													className="w-20"
 													value={node.max_attempts ?? 3}
-													disabled={disabled}
+													disabled={templateMode || disabled}
 													onChange={(event) =>
 														updateNode(index, {
 															max_attempts: Math.min(
@@ -326,7 +438,7 @@ export function TaskFlowEditor({
 															},
 														})
 													}
-													disabled={disabled}
+													disabled={configDisabled}
 													placeholder="工具名称，例如 weather 或 search"
 													className="bg-card text-sm"
 												/>
@@ -380,7 +492,7 @@ export function TaskFlowEditor({
 															// Keep the draft text until the JSON is complete.
 														}
 													}}
-													disabled={disabled}
+													disabled={configDisabled}
 													placeholder={'参数 JSON，例如 {"city":"北京"}'}
 													className="min-h-24 resize-y bg-card font-mono text-xs leading-5"
 												/>
@@ -399,7 +511,7 @@ export function TaskFlowEditor({
 															},
 														})
 													}
-													disabled={disabled}
+													disabled={configDisabled}
 													placeholder="编写 CodeStep 数据处理代码，可使用 previous_output 变量"
 													className="min-h-32 resize-y bg-card font-mono text-xs leading-5"
 												/>
@@ -421,14 +533,14 @@ export function TaskFlowEditor({
 																},
 															})
 														}
-														disabled={disabled}
+														disabled={configDisabled}
 														className="h-8 w-24 bg-card text-sm"
 													/>
 												</label>
 											</div>
 										)}
 
-										{index === nodes.length - 1 && (
+										{index === nodes.length - 1 && !templateMode && (
 											<div className="space-y-3 rounded-xl border border-dashed border-primary/30 bg-primary/[0.03] p-3">
 												<div className="text-xs font-medium text-foreground">
 													最终文件产物（可选）
@@ -453,7 +565,7 @@ export function TaskFlowEditor({
 																		: null,
 																});
 															}}
-															disabled={disabled}
+															disabled={configDisabled}
 															className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:border-ring focus:ring-3 focus:ring-ring/50 disabled:opacity-50"
 														>
 															<option value="">不生成文件</option>
@@ -482,7 +594,7 @@ export function TaskFlowEditor({
 																		},
 																	})
 																}
-																disabled={disabled}
+																disabled={configDisabled}
 																placeholder="例如：北京出行建议"
 																className="h-8 bg-card text-sm"
 															/>
@@ -501,7 +613,7 @@ export function TaskFlowEditor({
 											variant="ghost"
 											size="icon-xs"
 											onClick={() => moveNode(index, -1)}
-											disabled={disabled || index === 0}
+											disabled={disabled || templateMode || index === 0}
 											aria-label="上移步骤"
 										>
 											<ArrowUp />
@@ -510,7 +622,7 @@ export function TaskFlowEditor({
 											variant="ghost"
 											size="icon-xs"
 											onClick={() => moveNode(index, 1)}
-											disabled={disabled || index === nodes.length - 1}
+											disabled={disabled || templateMode || index === nodes.length - 1}
 											aria-label="下移步骤"
 										>
 											<ArrowDown />
@@ -520,7 +632,7 @@ export function TaskFlowEditor({
 											size="icon-xs"
 											className="text-destructive hover:text-destructive"
 											onClick={() => removeNode(index)}
-											disabled={disabled || nodes.length <= 1}
+											disabled={fieldDisabled || nodes.length <= 1 || (templateMode && Boolean(templateStep?.required))}
 											aria-label="删除步骤"
 										>
 											<Trash2 />

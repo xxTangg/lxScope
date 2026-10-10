@@ -116,6 +116,10 @@ export interface TaskRecord {
 	generation_status: TaskGenerationStatus;
 	generation_error?: string | null;
 	source_context: TaskContext;
+	source_template_id?: string | null;
+	source_template_version?: string | null;
+	template_step_bindings?: Record<string, string>;
+	template_inputs?: Record<string, unknown> | null;
 	last_run_id?: string | null;
 	last_run_status?: RunStatus | null;
 	created_at: string;
@@ -263,8 +267,74 @@ export interface GenerateTaskRequest {
 	context?: TaskContext | null;
 }
 
+export interface TaskTemplateInputProperty {
+	type: 'string' | 'integer' | 'number' | 'boolean' | 'array';
+	description: string;
+	items?: TaskTemplateInputProperty | null;
+	minimum?: number | null;
+	maximum?: number | null;
+	minItems?: number | null;
+}
+
+export interface TaskTemplateInputSchema {
+	type: 'object';
+	required: string[];
+	properties: Record<string, TaskTemplateInputProperty>;
+	additionalProperties?: false;
+}
+
+export interface TaskTemplateStep {
+	step_key: string;
+	title: string;
+	kind: TaskStepType;
+	required: boolean;
+	editable: boolean;
+	capability_key: string | null;
+	config:
+		| AgentStepConfig
+		| { type: 'tool'; arguments: Record<string, unknown> }
+		| InputStepConfig
+		| PythonStepConfig;
+	output_requirement: string;
+	failure_handling: string;
+	sensitive_information: string;
+}
+
+export interface TaskTemplateUnsupportedCapability {
+	capability_key: string;
+	reason: string;
+}
+
+export interface TaskTemplateDefinition {
+	schema_version: 1;
+	template_id: string;
+	template_version: string;
+	title: string;
+	description: string;
+	category: string;
+	required_capabilities: string[];
+	input_schema: TaskTemplateInputSchema;
+	output_requirement: string;
+	steps: TaskTemplateStep[];
+	unsupported_capabilities: TaskTemplateUnsupportedCapability[];
+}
+
+export interface InstantiateTaskTemplateRequest {
+	template_version: string;
+	inputs: Record<string, unknown>;
+	source_context?: TaskContext;
+}
+
 export const taskApi = {
 	list: () => client.get<TaskRecord[]>('/tasks/'),
+
+	listTemplates: () => client.get<TaskTemplateDefinition[]>('/tasks/templates'),
+
+	getTemplate: (templateId: string) =>
+		client.get<TaskTemplateDefinition>(`/tasks/templates/${templateId}`),
+
+	instantiateTemplate: (templateId: string, body: InstantiateTaskTemplateRequest) =>
+		client.post<TaskRecord>(`/tasks/templates/${templateId}/instantiate`, body),
 
 	listKnowledgeBases: () => client.get<TaskKnowledgeBaseOption[]>('/tasks/knowledge-bases'),
 
