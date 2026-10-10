@@ -43,6 +43,9 @@ class TaskValidationFailure(ValueError):
         elif result.blocked_capabilities:
             self.code = "TEMPLATE_CAPABILITY_UNSAFE"
             self.message = "模板包含当前阶段未授权的非只读工具。"
+        elif result.capability_checks:
+            self.code = "TASK_PREFLIGHT_BLOCKED"
+            self.message = "Task 尚未通过运行前能力检查。"
         else:
             self.code = "TASK_VALIDATION_FAILED"
             self.message = "Task 校验未通过，请按字段说明修正后重试。"
@@ -57,6 +60,7 @@ class TaskValidationFailure(ValueError):
             issues=self.result.issues,
             missing_capabilities=self.result.missing_capabilities,
             blocked_capabilities=self.result.blocked_capabilities,
+            capability_checks=self.result.capability_checks,
         ).model_dump(exclude_none=True)
 
 
@@ -222,16 +226,17 @@ class TaskTemplateValidator:
                 issues.extend(_issues_from_text(error.issues, "template_inputs"))
 
         canonical_nodes: dict[str, TaskNode] = {}
-        try:
-            compiled = compiler.compile_nodes(template, tool_schemas or [])
-            canonical_nodes = {
-                step.step_key: node
-                for step, node in zip(template.steps, compiled.nodes)
-            }
-        except TemplateCompileError as error:
-            missing.update(error.missing_capabilities)
-            blocked.update(error.blocked_capabilities)
-            issues.extend(_issues_from_text(error.issues, "nodes"))
+        if tool_schemas is not None:
+            try:
+                compiled = compiler.compile_nodes(template, tool_schemas)
+                canonical_nodes = {
+                    step.step_key: node
+                    for step, node in zip(template.steps, compiled.nodes)
+                }
+            except TemplateCompileError as error:
+                missing.update(error.missing_capabilities)
+                blocked.update(error.blocked_capabilities)
+                issues.extend(_issues_from_text(error.issues, "nodes"))
 
         if tool_schemas is not None:
             for step_key, canonical in canonical_nodes.items():
@@ -355,6 +360,60 @@ class TaskTemplateValidator:
         issues.extend(_validate_variables(nodes))
         return _result(task_id, issues, missing, blocked)
 
+    def template_for_task(self, task: TaskRecord) -> Any | None:
+        """Return the immutable source definition for a saved template copy."""
+
+        if not task.source_template_id or not task.source_template_version:
+            return None
+        try:
+            return self._registry.get_template_version(
+                task.source_template_id,
+                task.source_template_version,
+            )
+        except TemplateRegistryError:
+            return None
+
+    def runtime_nodes(
+        self,
+        task: TaskRecord,
+        nodes: list[TaskNode],
+        tool_schemas: list[TaskToolSchema],
+    ) -> list[TaskNode]:
+        """Restore server-owned capability metadata into a run snapshot."""
+
+        template = self.template_for_task(task)
+        if template is None:
+            return nodes
+        compiler = self._compiler
+        if compiler is None:
+            try:
+                compiler = TaskTemplateCompiler.from_environment()
+            except TemplateCapabilityMappingError:
+                return nodes
+        try:
+            compiled = compiler.compile_nodes(template, tool_schemas)
+        except TemplateCompileError:
+            return nodes
+
+        canonical = {
+            step.step_key: node
+            for step, node in zip(template.steps, compiled.nodes)
+        }
+        node_by_id = {node.id: node for node in nodes}
+        enriched: dict[str, TaskNode] = {}
+        for step_key, node_id in task.template_step_bindings.items():
+            node = node_by_id.get(node_id)
+            expected = canonical.get(step_key)
+            if node is None or expected is None or expected.capability_key is None:
+                continue
+            update: dict[str, Any] = {
+                "capability_key": expected.capability_key,
+            }
+            if node.output_schema is None and expected.output_schema is not None:
+                update["output_schema"] = expected.output_schema
+            enriched[node_id] = node.model_copy(update=update)
+        return [enriched.get(node.id, node) for node in nodes]
+
 
 def _validate_edit_policy(
     node: TaskNode,
@@ -374,6 +433,13 @@ def _validate_edit_policy(
         mode="python",
         exclude={"id", "order"},
     )
+    # Capability identity and its strict Tool result Schema are derived from
+    # the immutable source template at run time. Older saved task copies do
+    # not have these additive fields and remain readable without migration.
+    actual_dump.pop("capability_key", None)
+    canonical_dump.pop("capability_key", None)
+    if node.type.value == "tool" and node.output_schema is None:
+        actual_dump["output_schema"] = canonical_dump.get("output_schema")
     if not editable:
         actual_dump.pop("artifact", None)
         canonical_dump.pop("artifact", None)

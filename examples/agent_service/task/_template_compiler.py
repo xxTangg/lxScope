@@ -29,6 +29,10 @@ from ._output_validation import (
     describe_output_schema,
     validate_output_schema_definition,
 )
+from ._capability_contracts import (
+    capability_contract,
+    validate_contract_tool_schema,
+)
 from ._template_models import (
     TaskTemplateDefinition,
     TemplateAgentConfig,
@@ -259,6 +263,30 @@ class TaskTemplateCompiler:
                 blocked_capabilities=blocked,
             )
 
+        incompatible: list[str] = []
+        for capability_key, tool in bound_tools.items():
+            contract = capability_contract(capability_key)
+            if contract is None:
+                continue
+            if not tool.input_schema:
+                incompatible.append(
+                    f"tools.{tool.name}.input_schema: Tool 未提供可校验的 JSON Schema。"
+                )
+                continue
+            incompatible.extend(
+                f"{capability_key}: {issue}"
+                for issue in validate_contract_tool_schema(
+                    capability_key,
+                    tool.input_schema,
+                )
+            )
+        if incompatible:
+            raise TemplateCompileError(
+                "TEMPLATE_CAPABILITY_INCOMPATIBLE",
+                "当前会话的工具接口与 Task 业务能力契约不兼容。",
+                issues=tuple(incompatible[:16]),
+            )
+
         self._validate_template_variables(template)
         nodes: list[TaskNode] = []
         bindings: dict[str, str] = {}
@@ -320,6 +348,11 @@ class TaskTemplateCompiler:
                     issues=(f"steps.{step.step_key}.kind",),
                 )
 
+            contract = capability_contract(step.capability_key)
+            output_schema = step.output_schema
+            if contract is not None and contract.output_schema is not None:
+                output_schema = contract.output_schema
+
             try:
                 node = TaskNode.model_validate(
                     {
@@ -328,13 +361,14 @@ class TaskTemplateCompiler:
                         "type": StepType(step.kind),
                         "config": config.model_dump(mode="python"),
                         "order": order,
+                        "capability_key": step.capability_key,
                         "acceptance_criteria": step.output_requirement,
                         "artifact": (
                             step.artifact.model_dump(mode="python")
                             if isinstance(step.artifact, TemplateArtifactConfig)
                             else None
                         ),
-                        "output_schema": step.output_schema,
+                        "output_schema": output_schema,
                     }
                 )
             except ValidationError as error:

@@ -104,6 +104,7 @@ export interface TaskNode {
 	type: TaskStepType;
 	config: TaskStepConfig;
 	order: number;
+	capability_key?: string | null;
 	artifact?: TaskArtifactConfig | null;
 	output_schema?: TaskOutputSchema | null;
 	knowledge_graph_enabled?: boolean;
@@ -167,6 +168,47 @@ export interface TaskToolSchema {
 	input_schema: Record<string, unknown>;
 	is_mcp: boolean;
 	is_read_only: boolean;
+}
+
+export type TaskCapabilityStatus =
+	| 'available'
+	| 'missing'
+	| 'incompatible'
+	| 'permission_denied'
+	| 'unsupported'
+	| 'unverified';
+
+export type TaskCapabilityPermissionStatus =
+	| 'allowed'
+	| 'denied'
+	| 'requires_runtime_check'
+	| 'requires_confirmation'
+	| 'not_applicable'
+	| 'unavailable';
+
+export interface TaskCapabilityCheck {
+	step_id?: string | null;
+	step_name: string;
+	capability_key: string;
+	category: string;
+	tool_name?: string | null;
+	tool_available?: boolean | null;
+	interface_compatible?: boolean | null;
+	permission_status: TaskCapabilityPermissionStatus;
+	business_data_verified?: boolean | null;
+	external_side_effect: boolean;
+	status: TaskCapabilityStatus;
+	message: string;
+}
+
+export interface TaskPreflightResponse {
+	task_id?: string | null;
+	valid: boolean;
+	ready?: boolean | null;
+	issues: Array<{ path: string; message: string }>;
+	missing_capabilities: string[];
+	blocked_capabilities: string[];
+	capability_checks: TaskCapabilityCheck[];
 }
 
 export interface TaskRunEvent {
@@ -355,6 +397,9 @@ export const taskApi = {
 
 	instantiateTemplate: (templateId: string, body: InstantiateTaskTemplateRequest) =>
 		client.post<TaskRecord>(`/tasks/templates/${templateId}/instantiate`, body),
+
+	preflight: (taskId: string, body: TaskRunRequest = {}) =>
+		client.post<TaskPreflightResponse>(`/tasks/${taskId}/preflight`, body),
 
 	listKnowledgeBases: () => client.get<TaskKnowledgeBaseOption[]>('/tasks/knowledge-bases'),
 

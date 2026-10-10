@@ -240,6 +240,7 @@ class TaskNode(BaseModel):
     type: StepType = StepType.AGENT
     config: StepConfig
     order: int = Field(default=0, ge=0)
+    capability_key: str | None = Field(default=None, max_length=120)
     artifact: ArtifactConfig | None = None
     output_schema: dict[str, Any] | None = None
     knowledge_graph_enabled: bool = False
@@ -591,6 +592,38 @@ class TaskValidationResponse(BaseModel):
     issues: list[TaskValidationIssue] = Field(default_factory=list)
     missing_capabilities: list[str] = Field(default_factory=list)
     blocked_capabilities: list[str] = Field(default_factory=list)
+    capability_checks: list["TaskCapabilityCheck"] = Field(default_factory=list)
+
+
+class TaskCapabilityCheck(BaseModel):
+    """Read-only dimensions inspected for one required Task capability."""
+
+    step_id: str | None = None
+    step_name: str
+    capability_key: str
+    category: str
+    tool_name: str | None = None
+    tool_available: bool | None = None
+    interface_compatible: bool | None = None
+    permission_status: Literal[
+        "allowed",
+        "denied",
+        "requires_runtime_check",
+        "requires_confirmation",
+        "not_applicable",
+        "unavailable",
+    ] = "unavailable"
+    business_data_verified: bool | None = None
+    external_side_effect: bool = False
+    status: Literal[
+        "available",
+        "missing",
+        "incompatible",
+        "permission_denied",
+        "unsupported",
+        "unverified",
+    ]
+    message: str
 
 
 class TaskValidationErrorDetail(BaseModel):
@@ -601,6 +634,7 @@ class TaskValidationErrorDetail(BaseModel):
     issues: list[TaskValidationIssue] = Field(default_factory=list)
     missing_capabilities: list[str] = Field(default_factory=list)
     blocked_capabilities: list[str] = Field(default_factory=list)
+    capability_checks: list["TaskCapabilityCheck"] = Field(default_factory=list)
 
 
 class GenerateTaskRequest(BaseModel):

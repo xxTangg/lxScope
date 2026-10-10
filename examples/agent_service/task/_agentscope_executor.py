@@ -25,6 +25,10 @@ from ._clarification import (
     reconcile_requirements,
 )
 from ._executor import StepExecutionResult
+from ._capability_contracts import (
+    capability_business_verified,
+    validate_capability_input,
+)
 from ._models import (
     AgentStepConfig,
     AgentStepOutcome,
@@ -187,6 +191,60 @@ class AgentScopeTaskExecutor:
                     ),
                 )
             return result
+
+    async def preflight_tool_permission(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        context: ExecutionContext,
+        arguments_resolved: bool = True,
+    ) -> tuple[str, str]:
+        """Check a Tool permission without invoking the Tool itself."""
+
+        from agentscope.permission import PermissionBehavior, PermissionEngine
+
+        async with self._mcp_scope_for(context):
+            toolkit = await self._build_toolkit(context)
+            tool = await toolkit.get_tool(tool_name)
+            if tool is None:
+                return "unavailable", "当前会话未找到该工具。"
+            session = await self._get_session(context)
+            permission_context = session.state.permission_context
+            rules = [
+                *permission_context.deny_rules.get(tool.name, []),
+                *permission_context.ask_rules.get(tool.name, []),
+            ]
+            if not arguments_resolved and any(
+                rule.rule_content for rule in rules
+            ):
+                return (
+                    "requires_runtime_check",
+                    "工具参数将在运行时产生，当前权限规则需在实际参数确定后复核。",
+                )
+            decision = await PermissionEngine(permission_context).check_permission(
+                tool,
+                arguments if arguments_resolved else {},
+            )
+            if decision.behavior is PermissionBehavior.ALLOW:
+                if not arguments_resolved:
+                    return (
+                        "requires_runtime_check",
+                        "当前只读工具策略允许预检；调用时仍会按实际参数再次校验权限。",
+                    )
+                return "allowed", decision.message or "当前用户具备工具调用权限。"
+            if decision.behavior is PermissionBehavior.ASK:
+                return (
+                    "requires_confirmation",
+                    decision.message or "工具调用需要交互确认，后台 Task 暂不支持。",
+                )
+            return "denied", decision.message or "当前用户无权调用该工具。"
+
+    @staticmethod
+    def business_data_verified(capability_key: str) -> bool | None:
+        """Report only Task capabilities with an accepted business data source."""
+
+        return capability_business_verified(capability_key)
 
     @asynccontextmanager
     async def run_scope(
@@ -601,6 +659,15 @@ class AgentScopeTaskExecutor:
             config.arguments, previous_output, context, typed=True
         )
 
+        contract_issues = validate_capability_input(
+            node.capability_key,
+            arguments,
+        )
+        if contract_issues:
+            raise RuntimeError(
+                "业务能力输入契约校验失败：" + "；".join(contract_issues)
+            )
+
         import jsonschema
         from agentscope.permission import PermissionBehavior, PermissionEngine
 
@@ -930,17 +997,20 @@ def _format_execution_history(history: list[dict[str, Any]]) -> str:
         return ""
     records: list[dict[str, Any]] = []
     for item in history[-8:]:
-        output = str(item.get("output", ""))
-        if len(output) > 6_000:
-            output = f"{output[:6_000]}…"
-        records.append(
-            {
-                "node_id": item.get("node_id"),
-                "name": item.get("name"),
-                "type": item.get("type"),
-                "output": output,
-            },
-        )
+        record = {
+            "node_id": item.get("node_id"),
+            "name": item.get("name"),
+            "type": item.get("type"),
+        }
+        structured_result = item.get("structured_result")
+        if structured_result is not None:
+            record["structured_result"] = structured_result
+        else:
+            output = str(item.get("output", ""))
+            if len(output) > 6_000:
+                output = f"{output[:6_000]}…"
+            record["output"] = output
+        records.append(record)
     return json.dumps(records, ensure_ascii=False, indent=2)
 
 
@@ -1009,11 +1079,11 @@ def _render_task_value(
         return values[key]
 
     match = re.fullmatch(pattern, value)
-    if typed and match and (match.group(1) or "").startswith("answers."):
+    if typed and match:
         rendered = replace(match)
         try:
             return json.loads(rendered)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             return rendered
     return re.sub(pattern, replace, value)
 

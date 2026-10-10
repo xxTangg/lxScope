@@ -17,6 +17,7 @@ from examples.agent_service.task._models import (
     TaskContext,
     TaskNode,
     TaskRunRequest,
+    TaskToolSchema,
     ToolStepConfig,
 )
 from examples.agent_service.task._service import TaskService
@@ -28,6 +29,32 @@ class _MockToolTaskExecutor(TaskExecutor):
 
     def __init__(self) -> None:
         self.calls: list[tuple[StepType, str]] = []
+
+    async def list_tools(self, context: ExecutionContext) -> list[TaskToolSchema]:
+        del context
+        return [
+            TaskToolSchema(
+                name="mock.echo",
+                input_schema={
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                },
+                is_read_only=True,
+            )
+        ]
+
+    async def preflight_tool_permission(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, object],
+        context: ExecutionContext,
+        arguments_resolved: bool,
+    ) -> tuple[str, str]:
+        del tool_name, arguments, context, arguments_resolved
+        return "allowed", "fixture permission result"
 
     async def execute_node(
         self,

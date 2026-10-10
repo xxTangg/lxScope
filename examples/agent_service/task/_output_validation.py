@@ -82,11 +82,28 @@ def validate_structured_result(
     result: Any,
     *,
     agent_output_json: bool = False,
+    tool_output_text: str | None = None,
 ) -> OutputSchemaValidation:
-    """Check a Task adapter's JSON-compatible ``StepExecutionResult.result``."""
+    """Check a Task result object or the JSON text returned by a ToolStep."""
 
     target = "result"
-    if (
+    if tool_output_text is not None:
+        target = "tool_output_json"
+        if len(tool_output_text.encode("utf-8")) > _MAX_RESULT_BYTES:
+            return OutputSchemaValidation(
+                False,
+                ("Tool 输出超过 64 KB 限制。",),
+                target=target,
+            )
+        try:
+            result = json.loads(tool_output_text)
+        except (json.JSONDecodeError, RecursionError):
+            return OutputSchemaValidation(
+                False,
+                ("Tool 输出必须是合法 JSON。",),
+                target=target,
+            )
+    elif (
         agent_output_json
         and isinstance(result, dict)
         and set(result) == {"status", "output", "reason", "questions"}

@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from examples.agent_service.task._capability_contracts import capability_contract
 from examples.agent_service.task._models import (
     TaskRecord,
     TaskRunRecord,
@@ -40,7 +41,7 @@ S03_FILE = "s03_expert_matching.v1.json"
 S03_TOOLS = [
     TaskToolSchema(
         name=name,
-        input_schema={"type": "object"},
+        input_schema=(capability_contract(name).input_schema or {}),
         is_read_only=True,
     )
     for name in (

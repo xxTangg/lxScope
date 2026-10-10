@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from examples.agent_service.task._executor import StepExecutionResult
+from examples.agent_service.task._capability_contracts import capability_contract
 from examples.agent_service.task._artifacts import generate_artifact
 from examples.agent_service.task._artifact_spec import spec_from_markdown
 from examples.agent_service.task._models import (
@@ -90,10 +91,104 @@ class _DiskTaskExecutor:
         del context
         return self.tools
 
+    async def preflight_tool_permission(
+        self,
+        *,
+        tool_name,
+        arguments,
+        context,
+        arguments_resolved,
+    ):
+        del tool_name, arguments, context, arguments_resolved
+        return "allowed", "Task output test fixture permission"
+
+    def business_data_verified(self, capability_key):
+        return capability_key in {
+            "expert.lookup",
+            "expert.conflict_check",
+            "expert.rank",
+        }
+
     async def execute_node(self, *, node, previous_output, context):
         del previous_output, context
         self.executed_nodes.append(node.name)
-        value = {"accepted": self.valid}
+        if node.capability_key == "expert.lookup":
+            value = {
+                "contract_version": "task.expert-capability.v1",
+                "source": {
+                    "system_id": "test-only",
+                    "dataset_id": "test-only",
+                    "data_version": "fixture-1",
+                    "queried_at": "2026-10-10T00:00:00Z",
+                },
+                "query_context": {
+                    "project_profile": {
+                        "project_name": "测试项目",
+                        "project_brief": "测试项目背景",
+                        "professional_fields": ["测试领域"],
+                    },
+                    "candidate_limit": 1,
+                },
+                "candidates": [
+                    {
+                        "expert_id": "fixture-only",
+                        "authorized_fields": {"field": "测试领域"},
+                        "evidence_refs": [],
+                    }
+                ],
+            }
+        elif node.capability_key == "expert.conflict_check":
+            value = {
+                "contract_version": "task.expert-capability.v1",
+                "source": {
+                    "system_id": "test-only",
+                    "dataset_id": "test-only",
+                    "data_version": "fixture-1",
+                    "queried_at": "2026-10-10T00:00:00Z",
+                },
+                "rule_version": "fixture-rules-1",
+                "checked_at": "2026-10-10T00:00:01Z",
+                "candidates": [
+                    {
+                        "expert_id": "fixture-only",
+                        "conflict_status": "clear",
+                        "evidence_refs": [],
+                    }
+                ],
+            }
+        elif node.capability_key == "expert.rank":
+            value = {
+                "contract_version": "task.expert-capability.v1",
+                "source": {
+                    "system_id": "test-only",
+                    "dataset_id": "test-only",
+                    "data_version": "fixture-1",
+                    "queried_at": "2026-10-10T00:00:00Z",
+                },
+                "ranking_algorithm_version": "fixture-ranker-1",
+                "scored_at": "2026-10-10T00:00:02Z",
+                "candidates": [
+                    {
+                        "expert_id": "fixture-only",
+                        "conflict_status": "clear",
+                        "rank": 1,
+                        "score": 1,
+                        "score_components": {"fixture": 1},
+                        "evidence_refs": [],
+                    }
+                ],
+            }
+        elif node.name == "形成项目画像":
+            value = {
+                "project_profile": {
+                    "project_name": "测试项目",
+                    "project_brief": "测试项目背景",
+                    "professional_fields": ["测试领域"],
+                },
+                "candidate_limit": 1,
+            }
+        else:
+            value = {"accepted": self.valid}
         return StepExecutionResult(
             text=json.dumps(value, ensure_ascii=False),
             result=value,
@@ -144,7 +239,11 @@ def _tools(template: TaskTemplateDefinition) -> list[TaskToolSchema]:
         TaskToolSchema(
             name=capability,
             description="Task output test tool",
-            input_schema={"type": "object"},
+            input_schema=(
+                capability_contract(capability).input_schema or {}
+                if capability_contract(capability) is not None
+                else {"type": "object"}
+            ),
             is_read_only=True,
         )
         for capability in template.required_capabilities

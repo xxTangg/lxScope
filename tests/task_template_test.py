@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from examples.agent_service.task._capability_contracts import capability_contract
 from examples.agent_service.task._executor import StepExecutionResult
 from examples.agent_service.task._models import (
     StepVerdict,
@@ -270,18 +271,24 @@ class _PlannerMustNotRun:
 def _expert_template_tools(
     names: list[str] | None = None,
 ) -> list[TaskToolSchema]:
-    capabilities = names or [
+    capability_keys = [
         "expert.lookup",
         "expert.conflict_check",
         "expert.rank",
     ]
+    tool_names = names or capability_keys
     return [
         TaskToolSchema(
             name=name,
-            input_schema={"type": "object"},
+            input_schema=(
+                capability_contract(capability_keys[index]).input_schema
+                or {}
+                if name not in capability_keys
+                else capability_contract(name).input_schema or {}
+            ),
             is_read_only=True,
         )
-        for name in capabilities
+        for index, name in enumerate(tool_names)
     ]
 
 
@@ -576,7 +583,7 @@ def test_s03_keeps_safety_steps_required_and_profile_optional() -> None:
     )
 
 
-def test_template_save_validate_preflight_and_mock_run_round_trip(
+def test_template_preflight_blocks_unverified_business_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
@@ -619,7 +626,13 @@ def test_template_save_validate_preflight_and_mock_run_round_trip(
             json={"input": "测试运行输入"},
         )
         assert preflight.status_code == 200, preflight.text
-        assert preflight.json()["ready"] is True
+        assert preflight.json()["ready"] is False
+        checks = preflight.json()["capability_checks"]
+        assert len(checks) == 3
+        assert all(check["tool_available"] is True for check in checks)
+        assert all(check["interface_compatible"] is True for check in checks)
+        assert all(check["business_data_verified"] is False for check in checks)
+        assert all(check["status"] == "unverified" for check in checks)
         assert executor.executed_nodes == []
 
         foreign_preflight = client.post(
@@ -629,61 +642,15 @@ def test_template_save_validate_preflight_and_mock_run_round_trip(
         )
         assert foreign_preflight.status_code == 404
 
-        queued = client.post(
+        rejected = client.post(
             f"/tasks/{task['id']}/runs",
             headers=headers,
             json={"input": "测试运行输入"},
         )
-        assert queued.status_code == 202, queued.text
-        run_id = queued.json()["id"]
-        first_input = _wait_for_run_state(client, run_id, {"awaiting_input"})
-        assert first_input["pending_input"]["node_id"] == task[
-            "template_step_bindings"
-        ]["collect_matching_requirements"]
-
-        resumed = client.post(
-            f"/tasks/runs/{run_id}/input",
-            headers=headers,
-            json={
-                "request_id": first_input["pending_input"]["id"],
-                "answers": {
-                    "project_name": "测试项目",
-                    "project_brief": "测试项目背景",
-                    "professional_fields": "核安全",
-                },
-            },
-        )
-        assert resumed.status_code == 202, resumed.text
-        review_input = _wait_for_run_state(
-            client,
-            run_id,
-            {"awaiting_input", "failed", "succeeded"},
-        )
-        assert review_input["status"] == "awaiting_input", review_input
-        assert review_input["pending_input"]["node_id"] == task[
-            "template_step_bindings"
-        ]["collect_human_review"]
-
-        resumed = client.post(
-            f"/tasks/runs/{run_id}/input",
-            headers=headers,
-            json={
-                "request_id": review_input["pending_input"]["id"],
-                "answers": {"review_feedback": "测试复核意见"},
-            },
-        )
-        assert resumed.status_code == 202, resumed.text
-        completed = _wait_for_run_state(
-            client,
-            run_id,
-            {"succeeded", "failed", "canceled", "timed_out"},
-        )
-        assert completed["status"] == "succeeded", completed
-        assert "TEST MOCK ONLY" in completed["final_output"]
-        assert planner.calls == 0
-        assert executor.executed_nodes
-
-    assert len(asyncio.run(store.list_runs("template-owner", task["id"]))) == 1
+        assert rejected.status_code == 422, rejected.text
+        assert rejected.json()["detail"]["code"] == "TASK_PREFLIGHT_BLOCKED"
+        assert asyncio.run(store.list_runs("template-owner", task["id"])) == []
+        assert executor.executed_nodes == []
 
 
 def test_optional_template_step_can_be_deleted_but_conflict_check_cannot(
@@ -1106,9 +1073,9 @@ def test_compiler_rejects_expressions_and_invalid_tool_schemas() -> None:
             current_template,
             tools,
         )
-    assert invalid_tool_schema.value.code == "TEMPLATE_NODE_INVALID"
+    assert invalid_tool_schema.value.code == "TEMPLATE_CAPABILITY_INCOMPATIBLE"
     assert any(
-        "工具 schema 无效" in issue
+        "Tool 输入 Schema 无效" in issue
         for issue in invalid_tool_schema.value.issues
     )
 

@@ -2,8 +2,10 @@
 """Application service for reusable linear Tasks."""
 
 import asyncio
+import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from typing import Any
@@ -34,6 +36,7 @@ from ._models import (
     NodeRunStatus,
     RunStatus,
     TaskArtifactRecord,
+    TaskCapabilityCheck,
     TaskContext,
     TaskEventRecord,
     TaskGenerationStatus,
@@ -57,6 +60,14 @@ from ._plan_validation import format_plan_issues, validate_task_plan
 from ._store import TaskStoreProtocol
 from ._knowledge import TaskKnowledgeGateway
 from ._output_validation import validate_structured_result
+from ._capability_contracts import (
+    capability_business_verified,
+    capability_category,
+    capability_contract,
+    capability_external_side_effect,
+    validate_capability_output,
+    validate_contract_tool_schema,
+)
 from ._sop import TaskSOPStep, TaskStepState
 from ._template_validation import (
     TaskTemplateValidator,
@@ -81,6 +92,9 @@ _TERMINAL_RUN_STATUSES = {
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS = 45.0
+_TASK_VARIABLE_PATTERN = re.compile(
+    r"\{\{([\w.-]+)\}\}|\{(previous_output|user_input)\}"
+)
 
 
 def _configured_generation_timeout() -> float:
@@ -94,6 +108,46 @@ def _configured_generation_timeout() -> float:
         return max(1.0, float(value))
     except (TypeError, ValueError):
         return _DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS
+
+
+def _preflight_arguments(
+    value: Any,
+    run_input: str,
+) -> tuple[dict[str, Any], bool]:
+    """Resolve only preflight-known Tool arguments without inventing outputs."""
+
+    resolved = True
+
+    def visit(item: Any) -> Any:
+        nonlocal resolved
+        if isinstance(item, list):
+            return [visit(child) for child in item]
+        if isinstance(item, dict):
+            return {key: visit(child) for key, child in item.items()}
+        if not isinstance(item, str):
+            return item
+        matches = list(_TASK_VARIABLE_PATTERN.finditer(item))
+        if not matches:
+            return item
+
+        def replace(match: re.Match[str]) -> str:
+            nonlocal resolved
+            key = match.group(1) or match.group(2)
+            if key in {"user_input"}:
+                return run_input
+            resolved = False
+            return match.group(0)
+
+        rendered = _TASK_VARIABLE_PATTERN.sub(replace, item)
+        if resolved and len(matches) == 1 and matches[0].span() == (0, len(item)):
+            try:
+                return json.loads(rendered)
+            except (ValueError, TypeError, RecursionError):
+                return rendered
+        return rendered
+
+    arguments = visit(value)
+    return (arguments if isinstance(arguments, dict) else {}, resolved)
 
 
 class TaskService:
@@ -316,6 +370,8 @@ class TaskService:
         self,
         user_id: str,
         context: TaskContext,
+        *,
+        strict: bool = False,
     ) -> list[TaskToolSchema]:
         """List AgentScope tools available to the selected Task context."""
 
@@ -337,6 +393,8 @@ class TaskService:
         try:
             return await list_tools(execution_context)
         except Exception as error:  # noqa: BLE001 — tool discovery is optional
+            if strict:
+                raise
             # Tool discovery runs while the Task editor is loading.  A stale
             # stateful MCP must not make the whole page look unreachable; the
             # planner and editor can safely continue with no optional tools.
@@ -447,18 +505,58 @@ class TaskService:
         task = await self._store.get_task(user_id, task_id)
         if task is None:
             return None
+        return await self._preflight_task_record(user_id, task, body)
+
+    async def _preflight_task_record(
+        self,
+        user_id: str,
+        task: TaskRecord,
+        body: TaskPreflightRequest,
+        *,
+        tool_schemas: list[TaskToolSchema] | None = None,
+        tool_discovery_error: bool = False,
+    ) -> TaskValidationResponse:
+        """Inspect a fixed Task snapshot without creating a Run or calling Tools."""
+
         context = task.source_context.model_copy(
             update=body.context.model_dump(exclude_none=True),
         )
         run_input = body.input.strip() or task.goal.strip()
-        validation = await self.validate_task_definition(
-            user_id,
+        needs_tools = bool(
+            task.source_template_id
+            or any(isinstance(node.config, ToolStepConfig) for node in task.nodes)
+        )
+        if tool_schemas is None:
+            if needs_tools:
+                try:
+                    tool_schemas = await self.list_tools(
+                        user_id,
+                        context,
+                        strict=True,
+                    )
+                except Exception as error:  # noqa: BLE001 — report unavailable
+                    logger.warning(
+                        "Task preflight could not inspect tools for task=%s: %s",
+                        task.id,
+                        error,
+                    )
+                    tool_schemas = []
+                    tool_discovery_error = True
+        validation_tool_schemas = None if tool_discovery_error else tool_schemas
+        validation = self._template_validator.validate(
             task,
             task.nodes,
-            context=context,
+            tool_schemas=validation_tool_schemas,
             run_input=run_input,
         )
         issues = list(validation.issues)
+        if tool_discovery_error:
+            issues.append(
+                TaskValidationIssue(
+                    path="tools",
+                    message="当前会话工具目录无法访问，不能确认 Tool 是否存在。",
+                ),
+            )
         if task.status != TaskStatus.ACTIVE:
             issues.append(
                 TaskValidationIssue(
@@ -473,14 +571,250 @@ class TaskService:
                     message="Task 至少需要一个可运行节点。",
                 ),
             )
+        capability_checks = await self._build_capability_checks(
+            user_id=user_id,
+            task=task,
+            nodes=task.nodes,
+            context=context,
+            run_input=run_input,
+            tool_schemas=tool_schemas or [],
+            tool_discovery_error=tool_discovery_error,
+            missing_capabilities=validation.missing_capabilities,
+        )
+        for check in capability_checks:
+            if check.status != "available":
+                issues.append(
+                    TaskValidationIssue(
+                        path=f"capabilities.{check.capability_key}",
+                        message=check.message,
+                    ),
+                )
         ready = (
             not issues
             and not validation.missing_capabilities
             and not validation.blocked_capabilities
+            and all(check.status == "available" for check in capability_checks)
         )
         return validation.model_copy(
-            update={"issues": issues, "valid": ready, "ready": ready},
+            update={
+                "issues": issues,
+                "valid": ready,
+                "ready": ready,
+                "capability_checks": capability_checks,
+            },
         )
+
+    async def _build_capability_checks(
+        self,
+        *,
+        user_id: str,
+        task: TaskRecord,
+        nodes: list[TaskNode],
+        context: TaskContext,
+        run_input: str,
+        tool_schemas: list[TaskToolSchema],
+        missing_capabilities: list[str],
+        tool_discovery_error: bool = False,
+    ) -> list[TaskCapabilityCheck]:
+        """Report tool, schema, permission, and source verification separately."""
+
+        template = self._template_validator.template_for_task(task)
+        steps_by_node_id = {
+            task.template_step_bindings[step.step_key]: step
+            for step in (template.steps if template is not None else [])
+            if step.step_key in task.template_step_bindings
+        }
+        tools_by_name: dict[str, list[TaskToolSchema]] = {}
+        for tool in tool_schemas:
+            tools_by_name.setdefault(tool.name, []).append(tool)
+        plan_issues = validate_task_plan(
+            {"nodes": nodes},
+            tool_schemas,
+            require_final_agent=False,
+        )
+        run_context = ExecutionContext(
+            **context.model_dump(),
+            user_id=user_id,
+            task_id=task.id,
+            run_id="task-preflight",
+            task_revision=task.revision,
+            initial_input=run_input,
+        )
+        permission_check = getattr(
+            self._agentscope_executor,
+            "preflight_tool_permission",
+            None,
+        )
+        checks: list[TaskCapabilityCheck] = []
+        found_capabilities: set[str] = set()
+
+        for index, node in enumerate(nodes):
+            if not isinstance(node.config, ToolStepConfig):
+                continue
+            template_step = steps_by_node_id.get(node.id)
+            capability_key = (
+                template_step.capability_key
+                if template_step is not None
+                else node.capability_key
+            ) or node.config.tool_name
+            found_capabilities.add(capability_key)
+            contract = capability_contract(capability_key)
+            candidates = tools_by_name.get(node.config.tool_name, [])
+            tool = candidates[0] if len(candidates) == 1 else None
+            tool_available = bool(candidates)
+            interface_compatible: bool | None = None
+            permission_status = "unavailable"
+            permission_message = "当前 Task 执行器未提供权限预检接口。"
+            side_effect = capability_external_side_effect(capability_key)
+
+            if tool_discovery_error:
+                tool_available = None
+                interface_compatible = None
+                message = "当前会话工具目录无法访问，不能确认工具绑定状态。"
+                status = "unverified"
+            elif not candidates:
+                message = f"当前会话缺少工具 {node.config.tool_name}。"
+                status = "missing"
+            elif len(candidates) > 1:
+                message = f"工具名称 {node.config.tool_name} 存在重复注册，无法唯一绑定。"
+                interface_compatible = False
+                status = "incompatible"
+            else:
+                assert tool is not None
+                side_effect = side_effect or not tool.is_read_only
+                if not tool.input_schema:
+                    interface_compatible = False
+                    message = "工具未提供可校验的 JSON Schema。"
+                elif contract is not None:
+                    contract_issues = validate_contract_tool_schema(
+                        capability_key,
+                        tool.input_schema,
+                    )
+                    interface_compatible = not contract_issues
+                    message = "；".join(contract_issues)
+                else:
+                    target = f"nodes[{index}].config.arguments"
+                    node_issues = [
+                        issue
+                        for issue in plan_issues
+                        if issue.path == target
+                        or issue.path.startswith(target + ".")
+                    ]
+                    interface_compatible = not node_issues
+                    message = "；".join(issue.message for issue in node_issues)
+
+                arguments, resolved = _preflight_arguments(
+                    node.config.arguments,
+                    run_input,
+                )
+                if callable(permission_check):
+                    try:
+                        permission_status, permission_message = (
+                            await permission_check(
+                                tool_name=node.config.tool_name,
+                                arguments=arguments,
+                                context=run_context,
+                                arguments_resolved=resolved,
+                            )
+                        )
+                    except Exception as error:  # noqa: BLE001 — fail closed
+                        logger.warning(
+                            "Task permission preflight failed for task=%s node=%s: %s",
+                            task.id,
+                            node.id,
+                            error,
+                        )
+                        permission_status = "unavailable"
+                        permission_message = "当前会话权限无法完成预检。"
+
+                business_verified = self._business_data_verified(capability_key)
+                if side_effect:
+                    status = "unsupported"
+                    message = "该能力包含外部副作用，当前 Task 阶段不支持运行。"
+                elif interface_compatible is False:
+                    status = "incompatible"
+                    message = message or "工具接口与 Task 节点参数不兼容。"
+                elif permission_status in {"denied", "requires_confirmation"}:
+                    status = "permission_denied"
+                    message = permission_message
+                elif permission_status == "unavailable":
+                    status = "unverified"
+                    message = permission_message
+                elif business_verified is False:
+                    status = "unverified"
+                    message = "工具已绑定，但真实业务数据源尚未完成验证。"
+                elif permission_status == "requires_runtime_check":
+                    status = "unverified"
+                    message = permission_message
+                else:
+                    status = "available"
+                    message = permission_message
+
+            business_verified = self._business_data_verified(capability_key)
+            if status == "missing":
+                message = message or "当前会话没有绑定可用工具。"
+            checks.append(
+                TaskCapabilityCheck(
+                    step_id=node.id,
+                    step_name=node.name,
+                    capability_key=capability_key,
+                    category=capability_category(capability_key),
+                    tool_name=node.config.tool_name,
+                    tool_available=tool_available,
+                    interface_compatible=interface_compatible,
+                    permission_status=permission_status,
+                    business_data_verified=business_verified,
+                    external_side_effect=side_effect,
+                    status=status,
+                    message=message,
+                ),
+            )
+
+        required_capabilities = set(missing_capabilities)
+        if template is not None:
+            required_capabilities.update(
+                set(template.required_capabilities) - found_capabilities
+            )
+        for capability_key in sorted(required_capabilities - found_capabilities):
+            business_verified = self._business_data_verified(capability_key)
+            checks.append(
+                TaskCapabilityCheck(
+                    step_name=capability_key,
+                    capability_key=capability_key,
+                    category=capability_category(capability_key),
+                    tool_available=False,
+                    interface_compatible=None,
+                    permission_status="not_applicable",
+                    business_data_verified=business_verified,
+                    external_side_effect=capability_external_side_effect(
+                        capability_key
+                    ),
+                    status="missing",
+                    message=(
+                        "模板声明了此必需能力，但没有对应可绑定的 Tool 节点。"
+                    ),
+                ),
+            )
+        return checks
+
+    def _business_data_verified(self, capability_key: str) -> bool | None:
+        """Ask the server-side executor whether the business source is verified."""
+
+        checker = getattr(self._agentscope_executor, "business_data_verified", None)
+        if not callable(checker):
+            return capability_business_verified(capability_key)
+        try:
+            result = checker(capability_key)
+        except Exception as error:  # noqa: BLE001 — fail closed
+            logger.warning(
+                "Task business capability verification failed for %s: %s",
+                capability_key,
+                error,
+            )
+            return False if capability_business_verified(capability_key) is False else None
+        if result is True or result is False or result is None:
+            return result
+        return False if capability_business_verified(capability_key) is False else None
 
     async def delete_task(self, user_id: str, task_id: str) -> bool:
         """Archive a task while keeping its runs inspectable."""
@@ -499,25 +833,100 @@ class TaskService:
         task = await self._store.get_task(user_id, task_id)
         if task is None or task.status != TaskStatus.ACTIVE or not task.nodes:
             return None
+        preflight_body = TaskPreflightRequest(
+            input=body.input,
+            context=body.context,
+        )
         context = task.source_context.model_copy(
             update=body.context.model_dump(exclude_none=True),
         )
-        run_input = body.input.strip() or task.goal.strip()
-        validation = await self.validate_task_definition(
+        needs_tools = bool(
+            task.source_template_id
+            or any(isinstance(node.config, ToolStepConfig) for node in task.nodes)
+        )
+        tool_discovery_error = False
+        if needs_tools:
+            try:
+                tool_schemas = await self.list_tools(
+                    user_id,
+                    context,
+                    strict=True,
+                )
+            except Exception as error:  # noqa: BLE001 — fail closed
+                logger.warning(
+                    "Task run could not inspect tools for task=%s: %s",
+                    task.id,
+                    error,
+                )
+                tool_schemas = []
+                tool_discovery_error = True
+        else:
+            tool_schemas = []
+        validation = await self._preflight_task_record(
             user_id,
             task,
-            task.nodes,
-            context=context,
-            run_input=run_input,
+            preflight_body,
+            tool_schemas=tool_schemas,
+            tool_discovery_error=tool_discovery_error,
         )
-        if not validation.valid:
+        if not validation.ready:
             raise TaskValidationFailure(validation)
+
+        latest = await self._store.get_task(user_id, task_id)
+        if latest is None or latest.status != TaskStatus.ACTIVE or not latest.nodes:
+            return None
+        if latest.revision != task.revision or latest.nodes != task.nodes:
+            task = latest
+            context = task.source_context.model_copy(
+                update=body.context.model_dump(exclude_none=True),
+            )
+            needs_tools = bool(
+                task.source_template_id
+                or any(
+                    isinstance(node.config, ToolStepConfig)
+                    for node in task.nodes
+                )
+            )
+            tool_discovery_error = False
+            if needs_tools:
+                try:
+                    tool_schemas = await self.list_tools(
+                        user_id,
+                        context,
+                        strict=True,
+                    )
+                except Exception as error:  # noqa: BLE001 — fail closed
+                    logger.warning(
+                        "Task run could not inspect updated tools for task=%s: %s",
+                        task.id,
+                        error,
+                    )
+                    tool_schemas = []
+                    tool_discovery_error = True
+            else:
+                tool_schemas = []
+            validation = await self._preflight_task_record(
+                user_id,
+                task,
+                preflight_body,
+                tool_schemas=tool_schemas,
+                tool_discovery_error=tool_discovery_error,
+            )
+            if not validation.ready:
+                raise TaskValidationFailure(validation)
+
+        run_input = body.input.strip() or task.goal.strip()
+        run_nodes = self._template_validator.runtime_nodes(
+            task,
+            task.nodes,
+            tool_schemas,
+        )
         run = TaskRunRecord(
             task_id=task.id,
             user_id=user_id,
             task_revision=task.revision,
             engine="sop",
-            nodes=task.nodes,
+            nodes=run_nodes,
             node_runs=[
                 NodeRunRecord(
                     node_id=node.id,
@@ -525,8 +934,13 @@ class TaskService:
                     prompt=node.prompt,
                     type=node.type,
                     order=node.order,
+                    metadata=(
+                        {"capability_key": node.capability_key}
+                        if node.capability_key
+                        else {}
+                    ),
                 )
-                for node in task.nodes
+                for node in run_nodes
             ],
             knowledge_base_ids=task.knowledge_base_ids,
             input=run_input,
@@ -1081,17 +1495,38 @@ class TaskService:
 
     @staticmethod
     def _execution_history(run: TaskRunRecord) -> list[dict[str, object]]:
-        return [
-            {
+        definitions = {node.id: node for node in run.nodes}
+        history: list[dict[str, object]] = []
+        for node in run.node_runs:
+            if node.status is not NodeRunStatus.SUCCEEDED:
+                continue
+            item: dict[str, object] = {
                 "node_id": node.node_id,
                 "name": node.name,
                 "type": node.type.value,
                 "output": _history_text(node.output),
                 "metadata": node.metadata,
             }
-            for node in run.node_runs
-            if node.status is NodeRunStatus.SUCCEEDED
-        ]
+            definition = definitions.get(node.node_id)
+            if (
+                definition is not None
+                and node.type is StepType.TOOL
+                and capability_contract(definition.capability_key) is not None
+            ):
+                try:
+                    structured_result = json.loads(node.output)
+                    encoded = json.dumps(
+                        structured_result,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+                    encoded = ""
+                if encoded and len(encoded.encode("utf-8")) <= 64_000:
+                    item["structured_result"] = json.loads(encoded)
+            history.append(item)
+        return history
 
     def _build_sop_engine(
         self, run: TaskRunRecord, gateway: TaskKnowledgeGateway | None
@@ -1151,12 +1586,28 @@ class TaskService:
             node: TaskNode, output: str, state: TaskStepState
         ) -> StepVerdict:
             if node.output_schema is not None:
-                validation = validate_structured_result(
-                    node.output_schema,
-                    state.result,
-                    agent_output_json=node.type is StepType.AGENT,
+                if node.type is StepType.TOOL and node.capability_key:
+                    validation = validate_capability_output(
+                        node.capability_key,
+                        node.output_schema,
+                        state.result,
+                        output,
+                    )
+                else:
+                    validation = validate_structured_result(
+                        node.output_schema,
+                        state.result,
+                        agent_output_json=node.type is StepType.AGENT,
+                        tool_output_text=(
+                            output if node.type is StepType.TOOL else None
+                        ),
+                    )
+                validation_key = (
+                    "capability_output_validation"
+                    if node.type is StepType.TOOL and node.capability_key
+                    else "output_schema_validation"
                 )
-                state.metadata["output_schema_validation"] = {
+                state.metadata[validation_key] = {
                     "status": "passed" if validation.passed else "failed",
                     "target": validation.target,
                     "issues": list(validation.issues),
@@ -1269,6 +1720,16 @@ class TaskService:
                         "result": record.result,
                         "metadata": {
                             **record.metadata,
+                            **(
+                                {"capability_key": definition.capability_key}
+                                if definition.capability_key
+                                else {}
+                            ),
+                            **(
+                                {"tool_name": definition.config.tool_name}
+                                if isinstance(definition.config, ToolStepConfig)
+                                else {}
+                            ),
                             "attempts": len(record.verifications),
                             "verifications": [
                                 v.model_dump(mode="json")

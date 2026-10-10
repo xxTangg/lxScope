@@ -23,7 +23,7 @@ import type {
 	TaskRunRecord,
 	TaskToolSchema,
 } from '@/api';
-import type { TaskTemplateDefinition } from '@/api/task';
+import type { TaskPreflightResponse, TaskTemplateDefinition } from '@/api/task';
 import { taskApi } from '@/api';
 import { ApiError } from '@/api/client';
 import { Button } from '@/components/ui/button';
@@ -45,6 +45,22 @@ interface TaskDraft {
 }
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'timed_out']);
+const CAPABILITY_STATUS_LABELS: Record<string, string> = {
+	available: '可用',
+	missing: '缺少工具',
+	incompatible: '接口不兼容',
+	permission_denied: '权限不足',
+	unsupported: '当前不支持',
+	unverified: '尚未验证',
+};
+const PERMISSION_STATUS_LABELS: Record<string, string> = {
+	allowed: '已通过',
+	denied: '拒绝',
+	requires_runtime_check: '运行时复核',
+	requires_confirmation: '需要交互确认',
+	not_applicable: '不适用',
+	unavailable: '无法检查',
+};
 
 function toDraft(task: TaskRecord): TaskDraft {
 	return {
@@ -122,6 +138,46 @@ function getResultWidthLimit(): number {
 	return Math.min(MAX_RESULT_WIDTH, Math.max(360, Math.floor(viewportWidth * 0.38)));
 }
 
+function CapabilityPreflightPanel({ result }: { result: TaskPreflightResponse }) {
+	if (!result.capability_checks.length && !result.issues.length) return null;
+	return (
+		<div className="mx-5 mb-3 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-3 text-xs text-amber-950 xl:mx-6">
+			<div className="flex items-center justify-between gap-3">
+				<strong>运行前能力检查</strong>
+				<span className="font-semibold">{result.ready ? '通过' : '未通过'}</span>
+			</div>
+			<p className="mt-1 text-[11px] leading-5 text-amber-900">
+				工具可绑定不代表真实业务数据源已经接通；实际 Tool 调用仍会再次检查权限。
+			</p>
+			{result.capability_checks.length > 0 && (
+				<div className="mt-2 space-y-2">
+					{result.capability_checks.map((check) => (
+						<div key={`${check.capability_key}:${check.step_id ?? 'missing'}`} className="rounded-lg border border-amber-200/80 bg-white/80 px-2.5 py-2">
+							<div className="flex flex-wrap items-center justify-between gap-1.5">
+								<span className="font-semibold">{check.step_name} · {check.category}</span>
+								<span className={check.status === 'available' ? 'text-emerald-700' : 'text-red-700'}>
+									{CAPABILITY_STATUS_LABELS[check.status] ?? check.status}
+								</span>
+							</div>
+							<div className="mt-1 text-[11px] leading-5 text-slate-600">
+								能力：{check.capability_key}；工具：{check.tool_available == null ? '不适用' : check.tool_available ? '存在' : '缺少'}；接口：{check.interface_compatible == null ? '未检查' : check.interface_compatible ? '兼容' : '不兼容'}；权限：{PERMISSION_STATUS_LABELS[check.permission_status] ?? check.permission_status}；真实数据源：{check.business_data_verified == null ? '不适用' : check.business_data_verified ? '已验证' : '未验证'}
+							</div>
+							<p className="mt-1 text-[11px] leading-5">{check.message}</p>
+						</div>
+					))}
+				</div>
+			)}
+			{result.issues.length > 0 && (
+				<ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-5">
+					{result.issues.slice(0, 8).map((issue, index) => (
+						<li key={`${issue.path}:${index}`}>{issue.path}：{issue.message}</li>
+					))}
+				</ul>
+			)}
+		</div>
+	);
+}
+
 export function TaskPage() {
 	const navigate = useNavigate();
 	const { taskId } = useParams<{ taskId?: string }>();
@@ -149,6 +205,7 @@ export function TaskPage() {
 	const [templateToCreate, setTemplateToCreate] = React.useState<TaskTemplateDefinition | null>(null);
 	const [sourceTemplate, setSourceTemplate] = React.useState<TaskTemplateDefinition | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
+	const [capabilityPreflight, setCapabilityPreflight] = React.useState<TaskPreflightResponse | null>(null);
 	const [sidebarWidth, setSidebarWidth] = React.useState(280);
 	const [resultWidth, setResultWidth] = React.useState(380);
 	const [resizingPane, setResizingPane] = React.useState<ResizePane | null>(null);
@@ -572,10 +629,21 @@ export function TaskPage() {
 			: (tasks.find((task) => task.id === draft.id) ?? null);
 		if (!saved) return;
 		setError(null);
+		setCapabilityPreflight(null);
 		setRunEvents([]);
 		setIsRunning(true);
 		try {
 			const context = buildExecutionContext();
+			const preflight = await taskApi.preflight(saved.id, {
+				input: runInput.trim(),
+				context,
+			});
+			setCapabilityPreflight(preflight);
+			if (!preflight.ready) {
+				setIsRunning(false);
+				setError('运行前能力检查未通过；请查看能力状态和修正建议。');
+				return;
+			}
 			const run = await taskApi.run(saved.id, {
 				input: runInput.trim(),
 				context,
@@ -689,6 +757,7 @@ export function TaskPage() {
 
 	const updateDraft = (update: Partial<TaskDraft>) => {
 		setDraft((previous) => (previous ? { ...previous, ...update } : previous));
+		setCapabilityPreflight(null);
 		setIsDirty(true);
 	};
 
@@ -754,6 +823,9 @@ export function TaskPage() {
 									<AlertCircle className="mt-0.5 size-4 shrink-0" />
 									<span>{error}</span>
 								</div>
+							)}
+							{capabilityPreflight && (
+								<CapabilityPreflightPanel result={capabilityPreflight} />
 							)}
 							<div className="min-h-0 flex-1 overflow-hidden border-t border-slate-100">
 								<section className="h-full min-w-0 overflow-y-auto px-4 py-4 xl:px-5">
