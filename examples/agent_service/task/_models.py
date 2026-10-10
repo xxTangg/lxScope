@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from ._output_validation import validate_output_schema_definition
+
 
 def _utc_now() -> datetime:
     """Return an aware UTC timestamp for task records."""
@@ -239,6 +241,7 @@ class TaskNode(BaseModel):
     config: StepConfig
     order: int = Field(default=0, ge=0)
     artifact: ArtifactConfig | None = None
+    output_schema: dict[str, Any] | None = None
     knowledge_graph_enabled: bool = False
     knowledge_base_mode: Literal["inherit", "override", "disabled"] = "inherit"
     knowledge_base_ids: list[str] = Field(default_factory=list, max_length=16)
@@ -292,6 +295,8 @@ class TaskNode(BaseModel):
 
         if self.type.value != self.config.type:
             raise ValueError("Task node type does not match its config type.")
+        if self.output_schema is not None:
+            validate_output_schema_definition(self.output_schema)
         if isinstance(self.config, AgentStepConfig):
             object.__setattr__(self, "prompt", self.config.prompt)
         return self

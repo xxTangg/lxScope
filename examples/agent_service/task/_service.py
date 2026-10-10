@@ -56,6 +56,7 @@ from ._planner import PreviewTaskPlanner, TaskPlanner
 from ._plan_validation import format_plan_issues, validate_task_plan
 from ._store import TaskStoreProtocol
 from ._knowledge import TaskKnowledgeGateway
+from ._output_validation import validate_structured_result
 from ._sop import TaskSOPStep, TaskStepState
 from ._template_validation import (
     TaskTemplateValidator,
@@ -1149,6 +1150,24 @@ class TaskService:
         async def verify(
             node: TaskNode, output: str, state: TaskStepState
         ) -> StepVerdict:
+            if node.output_schema is not None:
+                validation = validate_structured_result(
+                    node.output_schema,
+                    state.result,
+                    agent_output_json=node.type is StepType.AGENT,
+                )
+                state.metadata["output_schema_validation"] = {
+                    "status": "passed" if validation.passed else "failed",
+                    "target": validation.target,
+                    "issues": list(validation.issues),
+                }
+                if not validation.passed:
+                    detail = "；".join(validation.issues)
+                    return StepVerdict(
+                        passed=False,
+                        message=f"结构化结果校验失败：{detail}",
+                    )
+
             executor = self._select_executor(self._step_context(run, node))
             method = getattr(executor, "verify_node", None)
             if not node.acceptance_criteria.strip() and (
@@ -1531,6 +1550,10 @@ def _artifact_node(nodes: list[TaskNode]) -> TaskNode | None:
     configured = [node for node in nodes if node.artifact is not None]
     if not configured:
         return None
-    if len(configured) != 1 or configured[0].id != nodes[-1].id:
+    if (
+        len(configured) != 1
+        or configured[0].id != nodes[-1].id
+        or configured[0].type is StepType.INPUT
+    ):
         raise RuntimeError("文件产物只能配置在最后一个 Task 节点。")
     return configured[0]

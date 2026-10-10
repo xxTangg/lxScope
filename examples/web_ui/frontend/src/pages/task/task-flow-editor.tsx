@@ -80,6 +80,7 @@ function templateRuntimePrompt(step: TaskTemplateStep): string {
 		`输出要求：${step.output_requirement}`,
 		`失败处理说明：${step.failure_handling}`,
 		`敏感信息要求：${step.sensitive_information}`,
+		step.output_schema ? '结构化输出必须符合模板声明的字段和类型；服务端会独立验证。' : '',
 	]
 		.filter(Boolean)
 		.join('\n\n');
@@ -96,6 +97,8 @@ function restoreOptionalStep(step: TaskTemplateStep, id: string): TaskNode | nul
 			config: { type: 'agent', prompt },
 			order: 0,
 			acceptance_criteria: step.output_requirement,
+			artifact: step.artifact ?? null,
+			output_schema: step.output_schema ?? null,
 		};
 	}
 	if (step.config.type === 'input') {
@@ -107,7 +110,10 @@ function restoreOptionalStep(step: TaskTemplateStep, id: string): TaskNode | nul
 			config: {
 				type: 'input',
 				reason: step.config.reason,
-				questions: step.config.questions.map((question) => ({ ...question, options: [...question.options] })),
+				questions: step.config.questions.map((question) => ({
+					...question,
+					options: [...question.options],
+				})),
 			},
 			order: 0,
 			acceptance_criteria: step.output_requirement,
@@ -127,15 +133,19 @@ export function TaskFlowEditor({
 }: TaskFlowEditorProps) {
 	const [argumentDrafts, setArgumentDrafts] = React.useState<Record<string, string>>({});
 	const bindingByNodeId = React.useMemo(
-		() => new Map(Object.entries(templateStepBindings).map(([stepKey, nodeId]) => [nodeId, stepKey])),
+		() =>
+			new Map(
+				Object.entries(templateStepBindings).map(([stepKey, nodeId]) => [nodeId, stepKey]),
+			),
 		[templateStepBindings],
 	);
-	const nextOptionalStep = template?.steps.find(
-		(step) =>
-			!step.required &&
-			!nodes.some((node) => node.id === templateStepBindings[step.step_key]) &&
-			Boolean(restoreOptionalStep(step, templateStepBindings[step.step_key] ?? '')),
-	) ?? null;
+	const nextOptionalStep =
+		template?.steps.find(
+			(step) =>
+				!step.required &&
+				!nodes.some((node) => node.id === templateStepBindings[step.step_key]) &&
+				Boolean(restoreOptionalStep(step, templateStepBindings[step.step_key] ?? '')),
+		) ?? null;
 	const normalizeEditedNodes = (items: TaskNode[]) =>
 		templateMode
 			? items.map((node, index) => ({ ...node, order: index }))
@@ -240,7 +250,9 @@ export function TaskFlowEditor({
 		if (!nodeId) return;
 		const restored = restoreOptionalStep(nextOptionalStep, nodeId);
 		if (!restored) return;
-		const templateIndex = template.steps.findIndex((step) => step.step_key === nextOptionalStep.step_key);
+		const templateIndex = template.steps.findIndex(
+			(step) => step.step_key === nextOptionalStep.step_key,
+		);
 		const insertAt = nodes.findIndex((node) => {
 			const key = bindingByNodeId.get(node.id);
 			return template.steps.findIndex((step) => step.step_key === key) > templateIndex;
@@ -264,7 +276,10 @@ export function TaskFlowEditor({
 						</div>
 					)}
 					{templateMode && (
-						<div id="task-template-flow-edit-limitations" className="mt-1 max-w-3xl text-[11px] leading-5 text-slate-500">
+						<div
+							id="task-template-flow-edit-limitations"
+							className="mt-1 max-w-3xl text-[11px] leading-5 text-slate-500"
+						>
 							模板流程顺序固定，服务端会拒绝重排。只能编辑模板授权的名称、提示词和输入问题；必需节点不能删除，新增仅限恢复模板声明的可选步骤，其他执行约束由模板固定。
 						</div>
 					)}
@@ -274,10 +289,22 @@ export function TaskFlowEditor({
 					size="sm"
 					onClick={templateMode ? addOptionalTemplateStep : addNode}
 					disabled={disabled || nodes.length >= 8 || (templateMode && !nextOptionalStep)}
-					title={nodes.length >= 8 ? 'Task 最多包含 8 个节点。' : templateMode ? (nextOptionalStep ? '只能恢复来源模板声明的可选步骤。' : '没有可恢复的可选步骤；模板流程结构固定。') : 'Task 最多包含 8 个节点。'}
+					title={
+						nodes.length >= 8
+							? 'Task 最多包含 8 个节点。'
+							: templateMode
+								? nextOptionalStep
+									? '只能恢复来源模板声明的可选步骤。'
+									: '没有可恢复的可选步骤；模板流程结构固定。'
+								: 'Task 最多包含 8 个节点。'
+					}
 				>
 					<Plus />
-					{templateMode ? (nextOptionalStep ? `添加可选：${nextOptionalStep.title}` : '无可添加的可选步骤') : '新增步骤'}
+					{templateMode
+						? nextOptionalStep
+							? `添加可选：${nextOptionalStep.title}`
+							: '无可添加的可选步骤'
+						: '新增步骤'}
 				</Button>
 			</div>
 
@@ -292,13 +319,17 @@ export function TaskFlowEditor({
 
 				{nodes.map((node, index) => {
 					const templateStepKey = bindingByNodeId.get(node.id);
-					const templateStep = template?.steps.find((step) => step.step_key === templateStepKey);
+					const templateStep = template?.steps.find(
+						(step) => step.step_key === templateStepKey,
+					);
 					const templateEditable = templateMode && Boolean(templateStep?.editable);
 					const fieldDisabled = disabled || (templateMode && !templateEditable);
 					const configDisabled =
 						disabled ||
 						(templateMode &&
-							(!templateEditable || (templateStep?.kind !== 'agent' && templateStep?.kind !== 'input')));
+							(!templateEditable ||
+								(templateStep?.kind !== 'agent' &&
+									templateStep?.kind !== 'input')));
 					const toolConfig = node.config?.type === 'tool' ? node.config : null;
 					const pythonConfig = node.config?.type === 'python' ? node.config : null;
 					const agentConfig = node.config?.type === 'agent' ? node.config : null;
@@ -348,8 +379,12 @@ export function TaskFlowEditor({
 										</div>
 										{templateMode && templateStep && (
 											<div className="text-[11px] text-slate-500">
-												{templateStep.required ? '模板必需节点：不能删除。 ' : '模板可选节点。 '}
-												{templateStep.editable ? '可编辑模板授权的内容。' : '节点内容和执行配置由模板固定。'}
+												{templateStep.required
+													? '模板必需节点：不能删除。 '
+													: '模板可选节点。 '}
+												{templateStep.editable
+													? '可编辑模板授权的内容。'
+													: '节点内容和执行配置由模板固定。'}
 											</div>
 										)}
 										<label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -388,7 +423,11 @@ export function TaskFlowEditor({
 											<TaskInputStepEditor
 												config={inputConfig}
 												disabled={configDisabled}
-												templateConfig={templateStep?.config.type === 'input' ? templateStep.config : undefined}
+												templateConfig={
+													templateStep?.config.type === 'input'
+														? templateStep.config
+														: undefined
+												}
 												onChange={(config) => updateNode(index, { config })}
 											/>
 										)}
@@ -546,11 +585,17 @@ export function TaskFlowEditor({
 											</div>
 										)}
 
-										{index === nodes.length - 1 && !templateMode && (
+										{index === nodes.length - 1 && node.type !== 'input' && (
 											<div className="space-y-3 rounded-xl border border-dashed border-primary/30 bg-primary/[0.03] p-3">
 												<div className="text-xs font-medium text-foreground">
 													最终文件产物（可选）
 												</div>
+												{templateMode && (
+													<p className="text-[11px] leading-5 text-muted-foreground">
+														此设置只作用于当前模板副本；文件会在任务运行完成后写入当前
+														Workspace。
+													</p>
+												)}
 												<div className="grid gap-3 sm:grid-cols-2">
 													<label className="space-y-1.5 text-xs text-muted-foreground">
 														<span>文件格式</span>
@@ -571,7 +616,7 @@ export function TaskFlowEditor({
 																		: null,
 																});
 															}}
-															disabled={configDisabled}
+															disabled={disabled}
 															className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:border-ring focus:ring-3 focus:ring-ring/50 disabled:opacity-50"
 														>
 															<option value="">不生成文件</option>
@@ -600,7 +645,7 @@ export function TaskFlowEditor({
 																		},
 																	})
 																}
-																disabled={configDisabled}
+																disabled={disabled}
 																placeholder="例如：北京出行建议"
 																className="h-8 bg-card text-sm"
 															/>
@@ -620,9 +665,21 @@ export function TaskFlowEditor({
 											size="icon-xs"
 											onClick={() => moveNode(index, -1)}
 											disabled={disabled || templateMode || index === 0}
-											aria-label={templateMode ? '上移步骤（模板顺序固定）' : '上移步骤'}
-											aria-describedby={templateMode ? 'task-template-flow-edit-limitations' : undefined}
-											title={templateMode ? '模板流程顺序固定，服务端会拒绝重排。' : '上移步骤'}
+											aria-label={
+												templateMode
+													? '上移步骤（模板顺序固定）'
+													: '上移步骤'
+											}
+											aria-describedby={
+												templateMode
+													? 'task-template-flow-edit-limitations'
+													: undefined
+											}
+											title={
+												templateMode
+													? '模板流程顺序固定，服务端会拒绝重排。'
+													: '上移步骤'
+											}
 										>
 											<ArrowUp />
 										</Button>
@@ -630,10 +687,26 @@ export function TaskFlowEditor({
 											variant="ghost"
 											size="icon-xs"
 											onClick={() => moveNode(index, 1)}
-											disabled={disabled || templateMode || index === nodes.length - 1}
-											aria-label={templateMode ? '下移步骤（模板顺序固定）' : '下移步骤'}
-											aria-describedby={templateMode ? 'task-template-flow-edit-limitations' : undefined}
-											title={templateMode ? '模板流程顺序固定，服务端会拒绝重排。' : '下移步骤'}
+											disabled={
+												disabled ||
+												templateMode ||
+												index === nodes.length - 1
+											}
+											aria-label={
+												templateMode
+													? '下移步骤（模板顺序固定）'
+													: '下移步骤'
+											}
+											aria-describedby={
+												templateMode
+													? 'task-template-flow-edit-limitations'
+													: undefined
+											}
+											title={
+												templateMode
+													? '模板流程顺序固定，服务端会拒绝重排。'
+													: '下移步骤'
+											}
 										>
 											<ArrowDown />
 										</Button>
@@ -642,9 +715,21 @@ export function TaskFlowEditor({
 											size="icon-xs"
 											className="text-destructive hover:text-destructive"
 											onClick={() => removeNode(index)}
-											disabled={fieldDisabled || nodes.length <= 1 || (templateMode && Boolean(templateStep?.required))}
-											aria-label={templateMode && templateStep?.required ? '删除步骤（模板必需节点）' : '删除步骤'}
-											title={templateMode && templateStep?.required ? '模板必需节点不能删除。' : '删除可选步骤'}
+											disabled={
+												fieldDisabled ||
+												nodes.length <= 1 ||
+												(templateMode && Boolean(templateStep?.required))
+											}
+											aria-label={
+												templateMode && templateStep?.required
+													? '删除步骤（模板必需节点）'
+													: '删除步骤'
+											}
+											title={
+												templateMode && templateStep?.required
+													? '模板必需节点不能删除。'
+													: '删除可选步骤'
+											}
 										>
 											<Trash2 />
 										</Button>

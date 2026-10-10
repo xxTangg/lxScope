@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from ._models import TaskContext
+from ._output_validation import validate_output_schema_definition
 
 
 _CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{1,119}$")
@@ -34,6 +35,26 @@ class TemplateInputQuestion(_TemplateModel):
     label: str = Field(min_length=1, max_length=500)
     required: StrictBool = True
     options: list[str] = Field(default_factory=list, max_length=8)
+
+
+class TemplateArtifactConfig(_TemplateModel):
+    """A safe artifact choice with no user-controlled directory component."""
+
+    format: Literal["markdown", "docx", "xlsx"]
+    filename: str | None = Field(
+        default=None,
+        max_length=120,
+        pattern=r"^[^/\\<>:\"|?*\x00-\x1f]+$",
+    )
+
+    @model_validator(mode="after")
+    def validate_filename(self) -> "TemplateArtifactConfig":
+        if self.filename is not None and (
+            self.filename != self.filename.strip()
+            or self.filename in {".", ".."}
+        ):
+            raise ValueError("Artifact filename must be one safe path component.")
+        return self
 
 
 class TemplateAgentConfig(_TemplateModel):
@@ -99,6 +120,8 @@ class TemplateStep(_TemplateModel):
     output_requirement: str = Field(min_length=1, max_length=2_000)
     failure_handling: str = Field(min_length=1, max_length=2_000)
     sensitive_information: str = Field(min_length=1, max_length=2_000)
+    artifact: TemplateArtifactConfig | None = None
+    output_schema: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_kind_and_capability(self) -> "TemplateStep":
@@ -113,6 +136,12 @@ class TemplateStep(_TemplateModel):
             raise ValueError(
                 "Only Tool steps may declare a capability_key binding."
             )
+        if self.output_schema is not None:
+            validate_output_schema_definition(self.output_schema)
+            if self.kind != "agent":
+                raise ValueError(
+                    "Template output schemas are supported on Agent steps only."
+                )
         return self
 
 
@@ -223,6 +252,13 @@ class TaskTemplateDefinition(_TemplateModel):
         step_keys = [step.step_key for step in self.steps]
         if len(step_keys) != len(set(step_keys)):
             raise ValueError("Template step_key values must be unique.")
+        for index, step in enumerate(self.steps):
+            if step.artifact is not None and (
+                index != len(self.steps) - 1 or step.kind == "input"
+            ):
+                raise ValueError(
+                    "Artifact configuration is allowed only on a final output step."
+                )
         if not any(step.required for step in self.steps):
             raise ValueError("A template must contain at least one required step.")
 

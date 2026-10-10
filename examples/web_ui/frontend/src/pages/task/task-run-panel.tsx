@@ -360,6 +360,18 @@ function NodeResultCard({
 	const definition = run.nodes.find((item) => item.id === nodeRun.node_id);
 	const output = nodeRun.display_summary || nodeRun.output || nodeRun.error;
 	const nodeArtifacts = run.artifacts.filter((artifact) => artifact.node_id === nodeRun.node_id);
+	const validation = nodeRun.metadata?.output_schema_validation;
+	const validationRecord =
+		validation && typeof validation === 'object'
+			? (validation as { status?: unknown; issues?: unknown })
+			: null;
+	const validationStatus =
+		validationRecord?.status === 'passed' || validationRecord?.status === 'failed'
+			? validationRecord.status
+			: null;
+	const validationIssues = Array.isArray(validationRecord?.issues)
+		? validationRecord.issues.filter((item): item is string => typeof item === 'string')
+		: [];
 	return (
 		<div className="rounded-xl border border-slate-200 bg-white p-3">
 			<div className="flex items-center gap-2">
@@ -386,6 +398,19 @@ function NodeResultCard({
 					{formatDuration(getNodeDuration(nodeRun))}
 				</span>
 			</div>
+			{validationStatus && (
+				<div
+					className={
+						'mt-2 rounded-lg p-2 text-[11px] leading-5 ' +
+						(validationStatus === 'passed'
+							? 'bg-emerald-50 text-emerald-700'
+							: 'bg-red-50 text-red-700')
+					}
+				>
+					<div>结构化结果校验：{validationStatus === 'passed' ? '通过' : '失败'}</div>
+					{validationIssues.length > 0 && <div>{validationIssues.join('；')}</div>}
+				</div>
+			)}
 			{output && (
 				<div className="mt-3 whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-[11px] leading-5 text-slate-600">
 					{output}

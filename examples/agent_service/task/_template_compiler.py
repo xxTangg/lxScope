@@ -24,9 +24,15 @@ from ._models import (
     ToolStepConfig,
 )
 from ._plan_validation import validate_task_plan
+from ._output_validation import (
+    OutputSchemaDefinitionError,
+    describe_output_schema,
+    validate_output_schema_definition,
+)
 from ._template_models import (
     TaskTemplateDefinition,
     TemplateAgentConfig,
+    TemplateArtifactConfig,
     TemplateInputConfig,
     TemplatePythonConfig,
     TemplateToolConfig,
@@ -257,6 +263,22 @@ class TaskTemplateCompiler:
         nodes: list[TaskNode] = []
         bindings: dict[str, str] = {}
         for order, step in enumerate(template.steps):
+            runtime_prompt = _runtime_prompt(step)
+            if len(runtime_prompt) > 20_000:
+                raise TemplateCompileError(
+                    "TEMPLATE_NODE_INVALID",
+                    "模板节点提示词与结构化输出约束合计超过 Task 长度限制。",
+                    issues=(f"steps.{step.step_key}.output_schema: 提示词过长。",),
+                )
+            if step.output_schema is not None:
+                try:
+                    validate_output_schema_definition(step.output_schema)
+                except OutputSchemaDefinitionError as error:
+                    raise TemplateCompileError(
+                        "TEMPLATE_NODE_INVALID",
+                        "模板结构化输出 Schema 无效。",
+                        issues=(f"steps.{step.step_key}.output_schema: {error}",),
+                    ) from error
             config: (
                 AgentStepConfig
                 | ToolStepConfig
@@ -264,7 +286,6 @@ class TaskTemplateCompiler:
                 | InputStepConfig
             )
             if isinstance(step.config, TemplateAgentConfig):
-                runtime_prompt = _runtime_prompt(step)
                 config = AgentStepConfig(prompt=runtime_prompt)
             elif isinstance(step.config, TemplateToolConfig):
                 if step.capability_key is None:  # guarded by the schema model
@@ -299,16 +320,34 @@ class TaskTemplateCompiler:
                     issues=(f"steps.{step.step_key}.kind",),
                 )
 
-            node = TaskNode.model_validate(
-                {
-                    "name": step.title,
-                    "prompt": _runtime_prompt(step),
-                    "type": StepType(step.kind),
-                    "config": config.model_dump(mode="python"),
-                    "order": order,
-                    "acceptance_criteria": step.output_requirement,
-                }
-            )
+            try:
+                node = TaskNode.model_validate(
+                    {
+                        "name": step.title,
+                        "prompt": runtime_prompt,
+                        "type": StepType(step.kind),
+                        "config": config.model_dump(mode="python"),
+                        "order": order,
+                        "acceptance_criteria": step.output_requirement,
+                        "artifact": (
+                            step.artifact.model_dump(mode="python")
+                            if isinstance(step.artifact, TemplateArtifactConfig)
+                            else None
+                        ),
+                        "output_schema": step.output_schema,
+                    }
+                )
+            except ValidationError as error:
+                issues = tuple(
+                    " ".join(str(part) for part in issue["loc"])
+                    + f" [{issue['type']}]"
+                    for issue in error.errors(include_url=False)[:16]
+                )
+                raise TemplateCompileError(
+                    "TEMPLATE_NODE_INVALID",
+                    "模板节点无法转换为 Task 节点。",
+                    issues=issues,
+                ) from error
             nodes.append(node)
             bindings[step.step_key] = node.id
 
@@ -400,18 +439,23 @@ def _input_issue(error: Any) -> str:
 def _runtime_prompt(step: Any) -> str:
     """Carry template guidance into the Task node's existing text field."""
 
-    return "\n\n".join(
+    sections = [
         (
-            (
-                step.config.prompt
-                if isinstance(step.config, TemplateAgentConfig)
-                else ""
-            ),
-            f"输出要求：{step.output_requirement}",
-            f"失败处理说明：{step.failure_handling}",
-            f"敏感信息要求：{step.sensitive_information}",
+            step.config.prompt
+            if isinstance(step.config, TemplateAgentConfig)
+            else ""
+        ),
+        f"输出要求：{step.output_requirement}",
+        f"失败处理说明：{step.failure_handling}",
+        f"敏感信息要求：{step.sensitive_information}",
+    ]
+    if step.output_schema is not None:
+        sections.append(
+            "结构化输出必须符合以下 JSON 字段和类型要求，只返回 JSON，不要代码围栏。"
+            "服务端会独立校验，不能自称校验通过。\n"
+            + describe_output_schema(step.output_schema),
         )
-    ).strip()
+    return "\n\n".join(sections).strip()
 
 
 def _strings(value: Any):

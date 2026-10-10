@@ -11,6 +11,12 @@ const STEP_KIND_LABELS: Record<TaskTemplateDefinition['steps'][number]['kind'], 
 	input: '用户输入',
 };
 
+const ARTIFACT_FORMAT_LABELS = {
+	markdown: 'Markdown',
+	docx: 'DOCX',
+	xlsx: 'XLSX',
+} as const;
+
 export function TaskTemplatePreview({
 	template,
 	onUse,
@@ -29,10 +35,12 @@ export function TaskTemplatePreview({
 						{template.steps.length} 个逻辑节点
 					</Badge>
 					<Badge
-					variant="outline"
-					className={unsupported.length
-						? 'border-amber-200 bg-amber-50 text-amber-800'
-						: 'border-slate-200 bg-slate-50 text-slate-600'}
+						variant="outline"
+						className={
+							unsupported.length
+								? 'border-amber-200 bg-amber-50 text-amber-800'
+								: 'border-slate-200 bg-slate-50 text-slate-600'
+						}
 					>
 						{unsupported.length ? '含未支持能力' : '待校验会话工具'}
 					</Badge>
@@ -49,7 +57,11 @@ export function TaskTemplatePreview({
 				</div>
 				<div className="flex flex-wrap gap-1.5">
 					{template.required_capabilities.map((capability) => (
-						<Badge key={capability} variant="outline" className="bg-white font-mono text-[10px]">
+						<Badge
+							key={capability}
+							variant="outline"
+							className="bg-white font-mono text-[10px]"
+						>
 							{capability}
 						</Badge>
 					))}
@@ -67,8 +79,13 @@ export function TaskTemplatePreview({
 					</div>
 					<ul className="space-y-2">
 						{unsupported.map((item) => (
-							<li key={item.capability_key} className="text-[11px] leading-5 text-amber-900">
-								<span className="font-mono font-semibold">{item.capability_key}</span>
+							<li
+								key={item.capability_key}
+								className="text-[11px] leading-5 text-amber-900"
+							>
+								<span className="font-mono font-semibold">
+									{item.capability_key}
+								</span>
 								<span className="ml-2">{item.reason}</span>
 							</li>
 						))}
@@ -80,34 +97,72 @@ export function TaskTemplatePreview({
 				<div className="mb-2 text-xs font-semibold text-slate-800">流程预览</div>
 				<ol className="space-y-2">
 					{template.steps.map((step, index) => (
-						<li key={step.step_key} className="rounded-xl border border-slate-200 bg-white p-3">
+						<li
+							key={step.step_key}
+							className="rounded-xl border border-slate-200 bg-white p-3"
+						>
 							<div className="flex items-start gap-3">
 								<div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-semibold text-slate-600">
 									{index + 1}
 								</div>
 								<div className="min-w-0 flex-1">
 									<div className="flex flex-wrap items-center gap-1.5">
-										<span className="text-xs font-semibold text-slate-800">{step.title}</span>
+										<span className="text-xs font-semibold text-slate-800">
+											{step.title}
+										</span>
 										<Badge
 											variant="outline"
-											className={step.required
-												? 'border-blue-200 bg-blue-50 text-blue-700'
-												: 'border-slate-200 bg-slate-50 text-slate-600'}
+											className={
+												step.required
+													? 'border-blue-200 bg-blue-50 text-blue-700'
+													: 'border-slate-200 bg-slate-50 text-slate-600'
+											}
 										>
-										{step.required ? <LockKeyhole className="mr-1 size-3" /> : <Check className="mr-1 size-3" />}
-										{step.required ? '必需' : '可选'}
-									</Badge>
-									<Badge variant="outline" className="text-[10px]">{STEP_KIND_LABELS[step.kind]}</Badge>
-									{step.editable ? (
-										<Badge variant="outline" className="text-[10px]">可编辑内容</Badge>
-									) : (
-										<Badge variant="outline" className="text-[10px]">模板锁定</Badge>
-									)}
-									{step.capability_key && (
-										<Badge variant="outline" className="font-mono text-[10px]">{step.capability_key}</Badge>
-									)}
-								</div>
-									<p className="mt-1 text-[11px] leading-5 text-slate-500">{step.output_requirement}</p>
+											{step.required ? (
+												<LockKeyhole className="mr-1 size-3" />
+											) : (
+												<Check className="mr-1 size-3" />
+											)}
+											{step.required ? '必需' : '可选'}
+										</Badge>
+										<Badge variant="outline" className="text-[10px]">
+											{STEP_KIND_LABELS[step.kind]}
+										</Badge>
+										{step.editable ? (
+											<Badge variant="outline" className="text-[10px]">
+												可编辑内容
+											</Badge>
+										) : (
+											<Badge variant="outline" className="text-[10px]">
+												模板锁定
+											</Badge>
+										)}
+										{step.capability_key && (
+											<Badge
+												variant="outline"
+												className="font-mono text-[10px]"
+											>
+												{step.capability_key}
+											</Badge>
+										)}
+										{step.artifact && (
+											<Badge variant="outline" className="text-[10px]">
+												文件输出：
+												{ARTIFACT_FORMAT_LABELS[step.artifact.format]}
+												{step.artifact.filename
+													? ` · ${step.artifact.filename}`
+													: ''}
+											</Badge>
+										)}
+										{step.output_schema && (
+											<Badge variant="outline" className="text-[10px]">
+												结构化输出校验
+											</Badge>
+										)}
+									</div>
+									<p className="mt-1 text-[11px] leading-5 text-slate-500">
+										{step.output_requirement}
+									</p>
 								</div>
 							</div>
 						</li>
@@ -117,13 +172,13 @@ export function TaskTemplatePreview({
 
 			<div className="rounded-xl border border-slate-200 bg-white p-3">
 				<div className="text-xs font-semibold text-slate-800">最终输出</div>
-				<p className="mt-1 text-[11px] leading-5 text-slate-600">{template.output_requirement}</p>
+				<p className="mt-1 text-[11px] leading-5 text-slate-600">
+					{template.output_requirement}
+				</p>
 			</div>
 
 			<div className="sticky bottom-0 -mx-1 flex justify-end border-t border-slate-100 bg-white/95 px-1 py-3 backdrop-blur">
-				<Button onClick={() => onUse(template)}>
-					使用此模板
-				</Button>
+				<Button onClick={() => onUse(template)}>使用此模板</Button>
 			</div>
 		</div>
 	);

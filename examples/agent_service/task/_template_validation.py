@@ -7,6 +7,8 @@ import json
 import re
 from typing import Any
 
+from pydantic import ValidationError
+
 from ._models import (
     TaskNode,
     TaskRecord,
@@ -23,6 +25,7 @@ from ._template_compiler import (
     TemplateCompileError,
 )
 from ._template_registry import TemplateRegistry, TemplateRegistryError
+from ._template_models import TemplateArtifactConfig
 
 
 _VARIABLE_PATTERN = re.compile(r"\{\{([^{}]+)\}\}")
@@ -109,6 +112,16 @@ class TaskTemplateValidator:
                     require_final_agent=False,
                 )
             )
+            for index, node in enumerate(nodes):
+                if node.artifact is not None and (
+                    index != len(nodes) - 1 or node.type.value == "input"
+                ):
+                    issues.append(
+                        TaskValidationIssue(
+                            path=f"nodes[{index}].artifact",
+                            message="文件产物只能配置在最终输出节点。",
+                        ),
+                    )
         elif task is not None and task.source_template_id:
             issues.append(
                 TaskValidationIssue(
@@ -164,6 +177,23 @@ class TaskTemplateValidator:
                 ),
             )
             return _result(task_id, issues, missing, blocked)
+        for index, node in enumerate(nodes):
+            if node.artifact is None:
+                continue
+            try:
+                TemplateArtifactConfig.model_validate(
+                    {
+                        "format": node.artifact.format.value,
+                        "filename": node.artifact.filename,
+                    },
+                )
+            except ValidationError:
+                issues.append(
+                    TaskValidationIssue(
+                        path=f"nodes[{index}].artifact",
+                        message="模板文件产物仅接受支持的格式和单一安全文件名。",
+                    ),
+                )
         compiler = self._compiler
         if compiler is None:
             try:
@@ -345,6 +375,8 @@ def _validate_edit_policy(
         exclude={"id", "order"},
     )
     if not editable:
+        actual_dump.pop("artifact", None)
+        canonical_dump.pop("artifact", None)
         if actual_dump != canonical_dump:
             issues.append(
                 TaskValidationIssue(
@@ -357,7 +389,7 @@ def _validate_edit_policy(
     for field in (
         "type",
         "acceptance_criteria",
-        "artifact",
+        "output_schema",
         "knowledge_graph_enabled",
         "knowledge_base_mode",
         "knowledge_base_ids",

@@ -67,6 +67,23 @@ export interface TaskArtifactConfig {
 	filename?: string | null;
 }
 
+export interface TaskOutputSchema {
+	type: 'object' | 'array' | 'string' | 'integer' | 'number' | 'boolean' | 'null';
+	title?: string;
+	description?: string;
+	properties?: Record<string, TaskOutputSchema>;
+	required?: string[];
+	additionalProperties?: boolean;
+	items?: TaskOutputSchema;
+	minimum?: number;
+	maximum?: number;
+	minLength?: number;
+	maxLength?: number;
+	minItems?: number;
+	maxItems?: number;
+	enum?: Array<string | number | boolean | null>;
+}
+
 export interface TaskArtifactRecord {
 	id: string;
 	run_id: string;
@@ -88,6 +105,7 @@ export interface TaskNode {
 	config: TaskStepConfig;
 	order: number;
 	artifact?: TaskArtifactConfig | null;
+	output_schema?: TaskOutputSchema | null;
 	knowledge_graph_enabled?: boolean;
 	knowledge_base_mode?: 'inherit' | 'override' | 'disabled';
 	knowledge_base_ids?: string[];
@@ -298,6 +316,8 @@ export interface TaskTemplateStep {
 	output_requirement: string;
 	failure_handling: string;
 	sensitive_information: string;
+	artifact?: TaskArtifactConfig | null;
+	output_schema?: TaskOutputSchema | null;
 }
 
 export interface TaskTemplateUnsupportedCapability {
