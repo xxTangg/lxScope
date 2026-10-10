@@ -40,6 +40,14 @@ class TaskGenerationStatus(StrEnum):
     FAILED = "failed"
 
 
+class TaskWorkflowMode(StrEnum):
+    """Origin and editing mode of a Task workflow."""
+
+    TEMPLATE_INSTANCE = "template_instance"
+    CUSTOM_FLOW = "custom_flow"
+    FREE_AI_PLANNER = "free_ai_planner"
+
+
 class RunStatus(StrEnum):
     """Lifecycle of one task execution."""
 
@@ -410,6 +418,8 @@ class TaskRecord(BaseModel):
     generation_status: TaskGenerationStatus = TaskGenerationStatus.IDLE
     generation_error: str | None = None
     source_context: TaskContext = Field(default_factory=TaskContext)
+    # Optional for compatibility with Task records persisted before P6-C-1.
+    workflow_mode: TaskWorkflowMode | None = None
     source_template_id: str | None = Field(default=None, max_length=80)
     source_template_version: str | None = Field(
         default=None,
@@ -417,6 +427,8 @@ class TaskRecord(BaseModel):
     )
     template_step_bindings: dict[str, str] = Field(default_factory=dict)
     template_inputs: dict[str, Any] | None = None
+    source_task_id: str | None = Field(default=None, max_length=80)
+    source_task_revision: int | None = Field(default=None, ge=1)
     last_run_id: str | None = None
     last_run_status: RunStatus | None = None
     created_at: datetime = Field(default_factory=_utc_now)
@@ -473,6 +485,15 @@ class TaskRunRecord(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     engine: Literal["legacy", "sop"] = "legacy"
+    # Optional provenance fields keep previously stored TaskRuns readable.
+    workflow_mode: TaskWorkflowMode | None = None
+    source_template_id: str | None = Field(default=None, max_length=80)
+    source_template_version: str | None = Field(
+        default=None,
+        pattern=r"^\d+\.\d+\.\d+$",
+    )
+    source_task_id: str | None = Field(default=None, max_length=80)
+    source_task_revision: int | None = Field(default=None, ge=1)
     sop_state: dict[str, Any] | None = None
     pending_input: TaskInputRequest | None = None
 

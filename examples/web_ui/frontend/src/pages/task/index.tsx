@@ -1,4 +1,4 @@
-import { AlertCircle, Loader2, Plus, RefreshCw } from 'lucide-react';
+import { AlertCircle, Copy, Loader2, Plus, RefreshCw } from 'lucide-react';
 import './task-page.css';
 import * as React from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -42,6 +42,9 @@ interface TaskDraft {
 	source_template_id?: string | null;
 	source_template_version?: string | null;
 	template_step_bindings?: Record<string, string>;
+	workflow_mode?: TaskRecord['workflow_mode'];
+	source_task_id?: string | null;
+	source_task_revision?: number | null;
 }
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'timed_out']);
@@ -76,6 +79,9 @@ function toDraft(task: TaskRecord): TaskDraft {
 		source_template_id: task.source_template_id,
 		source_template_version: task.source_template_version,
 		template_step_bindings: task.template_step_bindings ?? {},
+		workflow_mode: task.workflow_mode,
+		source_task_id: task.source_task_id,
+		source_task_revision: task.source_task_revision,
 	};
 }
 
@@ -152,15 +158,46 @@ function CapabilityPreflightPanel({ result }: { result: TaskPreflightResponse })
 			{result.capability_checks.length > 0 && (
 				<div className="mt-2 space-y-2">
 					{result.capability_checks.map((check) => (
-						<div key={`${check.capability_key}:${check.step_id ?? 'missing'}`} className="rounded-lg border border-amber-200/80 bg-white/80 px-2.5 py-2">
+						<div
+							key={`${check.capability_key}:${check.step_id ?? 'missing'}`}
+							className="rounded-lg border border-amber-200/80 bg-white/80 px-2.5 py-2"
+						>
 							<div className="flex flex-wrap items-center justify-between gap-1.5">
-								<span className="font-semibold">{check.step_name} · {check.category}</span>
-								<span className={check.status === 'available' ? 'text-emerald-700' : 'text-red-700'}>
+								<span className="font-semibold">
+									{check.step_name} · {check.category}
+								</span>
+								<span
+									className={
+										check.status === 'available'
+											? 'text-emerald-700'
+											: 'text-red-700'
+									}
+								>
 									{CAPABILITY_STATUS_LABELS[check.status] ?? check.status}
 								</span>
 							</div>
 							<div className="mt-1 text-[11px] leading-5 text-slate-600">
-								能力：{check.capability_key}；工具：{check.tool_available == null ? '不适用' : check.tool_available ? '存在' : '缺少'}；接口：{check.interface_compatible == null ? '未检查' : check.interface_compatible ? '兼容' : '不兼容'}；权限：{PERMISSION_STATUS_LABELS[check.permission_status] ?? check.permission_status}；真实数据源：{check.business_data_verified == null ? '不适用' : check.business_data_verified ? '已验证' : '未验证'}
+								能力：{check.capability_key}；工具：
+								{check.tool_available == null
+									? '不适用'
+									: check.tool_available
+										? '存在'
+										: '缺少'}
+								；接口：
+								{check.interface_compatible == null
+									? '未检查'
+									: check.interface_compatible
+										? '兼容'
+										: '不兼容'}
+								；权限：
+								{PERMISSION_STATUS_LABELS[check.permission_status] ??
+									check.permission_status}
+								；真实数据源：
+								{check.business_data_verified == null
+									? '不适用'
+									: check.business_data_verified
+										? '已验证'
+										: '未验证'}
 							</div>
 							<p className="mt-1 text-[11px] leading-5">{check.message}</p>
 						</div>
@@ -170,7 +207,9 @@ function CapabilityPreflightPanel({ result }: { result: TaskPreflightResponse })
 			{result.issues.length > 0 && (
 				<ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-5">
 					{result.issues.slice(0, 8).map((issue, index) => (
-						<li key={`${issue.path}:${index}`}>{issue.path}：{issue.message}</li>
+						<li key={`${issue.path}:${index}`}>
+							{issue.path}：{issue.message}
+						</li>
 					))}
 				</ul>
 			)}
@@ -202,10 +241,13 @@ export function TaskPage() {
 	const [isSyncingGeneration, setIsSyncingGeneration] = React.useState(false);
 	const [newTaskOpen, setNewTaskOpen] = React.useState(false);
 	const [templateGalleryOpen, setTemplateGalleryOpen] = React.useState(false);
-	const [templateToCreate, setTemplateToCreate] = React.useState<TaskTemplateDefinition | null>(null);
+	const [templateToCreate, setTemplateToCreate] = React.useState<TaskTemplateDefinition | null>(
+		null,
+	);
 	const [sourceTemplate, setSourceTemplate] = React.useState<TaskTemplateDefinition | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
-	const [capabilityPreflight, setCapabilityPreflight] = React.useState<TaskPreflightResponse | null>(null);
+	const [capabilityPreflight, setCapabilityPreflight] =
+		React.useState<TaskPreflightResponse | null>(null);
 	const [sidebarWidth, setSidebarWidth] = React.useState(280);
 	const [resultWidth, setResultWidth] = React.useState(380);
 	const [resizingPane, setResizingPane] = React.useState<ResizePane | null>(null);
@@ -222,14 +264,19 @@ export function TaskPage() {
 		}
 		let disposed = false;
 		setSourceTemplate(null);
-		void taskApi.getTemplate(templateId).then((template) => {
-			if (!disposed && template.template_version === draft?.source_template_version) {
-				setSourceTemplate(template);
-			}
-		}).catch(() => {
-			if (!disposed) setSourceTemplate(null);
-		});
-		return () => { disposed = true; };
+		void taskApi
+			.getTemplate(templateId)
+			.then((template) => {
+				if (!disposed && template.template_version === draft?.source_template_version) {
+					setSourceTemplate(template);
+				}
+			})
+			.catch(() => {
+				if (!disposed) setSourceTemplate(null);
+			});
+		return () => {
+			disposed = true;
+		};
 	}, [draft?.id, draft?.source_template_id, draft?.source_template_version]);
 
 	const beginResize = (pane: ResizePane, event: React.PointerEvent<HTMLDivElement>) => {
@@ -375,22 +422,39 @@ export function TaskPage() {
 
 	const currentRunId = currentRun?.id ?? null;
 	const currentRunIdRef = React.useRef(currentRunId);
-	React.useEffect(() => { currentRunIdRef.current = currentRunId; }, [currentRunId]);
+	React.useEffect(() => {
+		currentRunIdRef.current = currentRunId;
+	}, [currentRunId]);
 	const shouldStreamCurrentRun = Boolean(currentRunId);
 
 	React.useEffect(() => {
 		if (!currentRunId || currentRun?.status !== 'awaiting_input') return;
 		let disposed = false;
 		const timer = window.setInterval(() => {
-			void taskApi.getRun(currentRunId).then((latest) => {
-				if (disposed) return;
-				setCurrentRun(latest);
-				setIsRunning(!TERMINAL_RUN_STATUSES.has(latest.status));
-				setTasks((previous) => previous.map((task) => task.id === latest.task_id
-					? { ...task, last_run_id: latest.id, last_run_status: latest.status } : task));
-			}).catch(() => undefined);
+			void taskApi
+				.getRun(currentRunId)
+				.then((latest) => {
+					if (disposed) return;
+					setCurrentRun(latest);
+					setIsRunning(!TERMINAL_RUN_STATUSES.has(latest.status));
+					setTasks((previous) =>
+						previous.map((task) =>
+							task.id === latest.task_id
+								? {
+										...task,
+										last_run_id: latest.id,
+										last_run_status: latest.status,
+									}
+								: task,
+						),
+					);
+				})
+				.catch(() => undefined);
 		}, 5_000);
-		return () => { disposed = true; window.clearInterval(timer); };
+		return () => {
+			disposed = true;
+			window.clearInterval(timer);
+		};
 	}, [currentRunId, currentRun?.status]);
 
 	React.useEffect(() => {
@@ -581,6 +645,31 @@ export function TaskPage() {
 		setTemplateToCreate(null);
 		navigate(`/task/${created.id}`);
 		toast.success(`已从“${template.title}”创建任务`);
+	};
+
+	const handleCreateCustomFlowCopy = async () => {
+		if (!draft || isSaving || isRunning || isGenerating) return;
+		const source = isDirty
+			? await saveDraft()
+			: (tasks.find((task) => task.id === draft.id) ?? null);
+		if (!source) return;
+		setError(null);
+		try {
+			const created = await taskApi.createCustomFlowCopy(source.id);
+			setTasks((previous) => [created, ...previous]);
+			setSelectedTaskId(created.id);
+			setDraft(toDraft(created));
+			setExecutionAgentId(created.source_context.agent_id ?? null);
+			setExecutionSessionId(created.source_context.session_id ?? null);
+			setCurrentRun(null);
+			setRunEvents([]);
+			setCapabilityPreflight(null);
+			setIsDirty(false);
+			navigate(`/task/${created.id}`);
+			toast.success('已创建独立自定义流程副本');
+		} catch (requestError) {
+			setError(errorMessage(requestError));
+		}
 	};
 
 	const saveDraft = async (): Promise<TaskRecord | null> => {
@@ -811,13 +900,75 @@ export function TaskPage() {
 								onRerun={handleRerun}
 								onRun={() => void handleRun()}
 							/>
-							{draft.source_template_id && (
-								<div className="mx-5 mb-3 rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-[11px] leading-5 text-blue-900 xl:mx-6">
-									{sourceTemplate
-									? <>来源模板：<strong>{sourceTemplate.title}</strong> v{sourceTemplate.template_version}。可编辑内容和可选步骤受模板约束，步骤顺序由服务端固定。</>
-									: <>此任务带有模板来源 {draft.source_template_id} v{draft.source_template_version ?? '未知'}。模板版本无法加载或不匹配，当前流程编辑将保持锁定。</>}
+							<div className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-[11px] leading-5 text-blue-900 xl:mx-6">
+								<div className="min-w-0">
+									<div className="font-semibold">
+										流程类型：{' '}
+										{draft.workflow_mode === 'custom_flow'
+											? '自定义流程'
+											: draft.source_template_id
+												? '标准模板任务'
+												: '自由 AI Planner 任务'}
+									</div>
+									{draft.source_template_id ? (
+										sourceTemplate ? (
+											<div>
+												来源模板：<strong>{sourceTemplate.title}</strong> v
+												{sourceTemplate.template_version}。
+												{draft.workflow_mode === 'custom_flow' ? (
+													<>
+														{' '}
+														来源 Task：{draft.source_task_id ?? '未知'}
+														（修订{' '}
+														{draft.source_task_revision ?? '未知'}
+														）。来源场景的必需 Tool 能力与执行前
+														Preflight
+														仍然生效；此自定义流程不代表审批通过。
+													</>
+												) : (
+													<>
+														{' '}
+														标准模板的节点结构、必需步骤与顺序受服务端约束。
+													</>
+												)}
+											</div>
+										) : (
+											<div>
+												来源模板 {draft.source_template_id} v
+												{draft.source_template_version ?? '未知'}{' '}
+												无法加载或版本不匹配，流程编辑保持锁定。
+											</div>
+										)
+									) : (
+										<div>
+											由自由任务 AI Planner
+											生成节点；后续可按现有编辑能力调整。
+										</div>
+									)}
 								</div>
-							)}
+								{draft.source_template_id &&
+									draft.workflow_mode !== 'custom_flow' && (
+										<Button
+											variant="outline"
+											size="sm"
+											onClick={() => void handleCreateCustomFlowCopy()}
+											disabled={
+												!sourceTemplate ||
+												isSaving ||
+												isRunning ||
+												isGenerating
+											}
+											title={
+												!sourceTemplate
+													? '来源模板加载完成后才能创建自定义流程副本。'
+													: '复制当前 Task 并进入高级流程编辑。'
+											}
+										>
+											<Copy />
+											另存为自定义流程
+										</Button>
+									)}
+							</div>
 							{error && (
 								<div className="mx-5 mb-3 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2.5 text-xs text-red-700 xl:mx-6">
 									<AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -843,29 +994,31 @@ export function TaskPage() {
 												<div className="text-xs font-semibold text-slate-800">
 													任务目标
 												</div>
-												{!draft.source_template_id && <Button
-													variant="ghost"
-													size="sm"
-													onClick={() => void handleRegenerate()}
-													disabled={
-														isSaving ||
-														isRunning ||
-														isGenerating ||
-														!draft.goal.trim()
-													}
-													className="h-7 px-2 text-[10px] text-blue-700"
-												>
-													{isGenerating ? (
-														<Loader2 className="animate-spin" />
-													) : (
-														<RefreshCw />
-													)}
-													{isGenerating
-														? isSyncingGeneration
-															? '同步节点中…'
-															: '生成中…'
-														: '重新生成步骤'}
-												</Button>}
+												{!draft.source_template_id && (
+													<Button
+														variant="ghost"
+														size="sm"
+														onClick={() => void handleRegenerate()}
+														disabled={
+															isSaving ||
+															isRunning ||
+															isGenerating ||
+															!draft.goal.trim()
+														}
+														className="h-7 px-2 text-[10px] text-blue-700"
+													>
+														{isGenerating ? (
+															<Loader2 className="animate-spin" />
+														) : (
+															<RefreshCw />
+														)}
+														{isGenerating
+															? isSyncingGeneration
+																? '同步节点中…'
+																: '生成中…'
+															: '重新生成步骤'}
+													</Button>
+												)}
 											</div>
 											<Textarea
 												value={draft.goal}
@@ -987,8 +1140,16 @@ export function TaskPage() {
 										nodes={draft.nodes}
 										tools={availableTools}
 										onChange={(nodes) => updateDraft({ nodes })}
-										disabled={isSaving || isRunning || (Boolean(draft.source_template_id) && !sourceTemplate)}
-										templateMode={Boolean(draft.source_template_id)}
+										disabled={
+											isSaving ||
+											isRunning ||
+											(Boolean(draft.source_template_id) && !sourceTemplate)
+										}
+										templateMode={
+											Boolean(draft.source_template_id) &&
+											draft.workflow_mode !== 'custom_flow'
+										}
+										customFlowMode={draft.workflow_mode === 'custom_flow'}
 										template={sourceTemplate}
 										templateStepBindings={draft.template_step_bindings}
 									/>
@@ -1010,7 +1171,8 @@ export function TaskPage() {
 								从标准场景开始创建任务
 							</div>
 							<div className="mt-2 max-w-md text-sm leading-6 text-slate-500">
-								选择九个业务模板之一，按模板流程创建；也可以继续使用自由任务和 AI Planner。
+								选择九个业务模板之一，按模板流程创建；也可以继续使用自由任务和 AI
+								Planner。
 							</div>
 							<Button
 								className="mt-6 bg-blue-600 text-white hover:bg-blue-700"
@@ -1019,7 +1181,11 @@ export function TaskPage() {
 								<Plus />
 								浏览业务模板
 							</Button>
-							<Button className="mt-6" variant="outline" onClick={() => setNewTaskOpen(true)}>
+							<Button
+								className="mt-6"
+								variant="outline"
+								onClick={() => setNewTaskOpen(true)}
+							>
 								自由任务（AI 规划）
 							</Button>
 						</div>
@@ -1066,7 +1232,9 @@ export function TaskPage() {
 			<TaskTemplateCreateDialog
 				template={templateToCreate}
 				sourceContext={buildExecutionContext()}
-				onOpenChange={(open) => { if (!open) setTemplateToCreate(null); }}
+				onOpenChange={(open) => {
+					if (!open) setTemplateToCreate(null);
+				}}
 				onInstantiate={handleInstantiateTemplate}
 			/>
 		</div>

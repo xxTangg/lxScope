@@ -18,6 +18,7 @@ export type NodeRunStatus =
 	| 'failed'
 	| 'canceled';
 export type TaskStepType = 'agent' | 'tool' | 'python' | 'input';
+export type TaskWorkflowMode = 'template_instance' | 'custom_flow' | 'free_ai_planner';
 export type TaskArtifactFormat = 'markdown' | 'docx' | 'xlsx';
 
 export interface AgentStepConfig {
@@ -139,6 +140,9 @@ export interface TaskRecord {
 	source_template_version?: string | null;
 	template_step_bindings?: Record<string, string>;
 	template_inputs?: Record<string, unknown> | null;
+	workflow_mode?: TaskWorkflowMode | null;
+	source_task_id?: string | null;
+	source_task_revision?: number | null;
 	last_run_id?: string | null;
 	last_run_status?: RunStatus | null;
 	created_at: string;
@@ -240,6 +244,11 @@ export interface TaskRunRecord {
 	started_at?: string | null;
 	finished_at?: string | null;
 	engine?: 'legacy' | 'sop';
+	workflow_mode?: TaskWorkflowMode | null;
+	source_template_id?: string | null;
+	source_template_version?: string | null;
+	source_task_id?: string | null;
+	source_task_revision?: number | null;
 	pending_input?: TaskInputRequest | null;
 }
 
@@ -397,6 +406,9 @@ export const taskApi = {
 
 	instantiateTemplate: (templateId: string, body: InstantiateTaskTemplateRequest) =>
 		client.post<TaskRecord>(`/tasks/templates/${templateId}/instantiate`, body),
+
+	createCustomFlowCopy: (taskId: string) =>
+		client.post<TaskRecord>(`/tasks/${taskId}/custom-flow-copy`, {}),
 
 	preflight: (taskId: string, body: TaskRunRequest = {}) =>
 		client.post<TaskPreflightResponse>(`/tasks/${taskId}/preflight`, body),

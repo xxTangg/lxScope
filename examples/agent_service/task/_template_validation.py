@@ -13,6 +13,7 @@ from ._models import (
     TaskNode,
     TaskRecord,
     TaskToolSchema,
+    TaskWorkflowMode,
     TaskValidationErrorDetail,
     TaskValidationIssue,
     TaskValidationResponse,
@@ -25,11 +26,12 @@ from ._template_compiler import (
     TemplateCompileError,
 )
 from ._template_registry import TemplateRegistry, TemplateRegistryError
-from ._template_models import TemplateArtifactConfig
+from ._template_models import TaskTemplateDefinition, TemplateArtifactConfig
 
 
 _VARIABLE_PATTERN = re.compile(r"\{\{([^{}]+)\}\}")
 _ANSWER_PATTERN = re.compile(r"^answers\.([\w.-]+)$")
+_NODE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 
 
 class TaskValidationFailure(ValueError):
@@ -148,11 +150,32 @@ class TaskTemplateValidator:
         has_template_id = bool(task.source_template_id)
         has_template_version = bool(task.source_template_version)
         if not has_template_id and not has_template_version:
+            if task.workflow_mode == TaskWorkflowMode.CUSTOM_FLOW:
+                issues.append(
+                    TaskValidationIssue(
+                        path="source_template_id",
+                        message="自定义流程必须保留可追溯的来源模板。",
+                    ),
+                )
+            if task.workflow_mode == TaskWorkflowMode.TEMPLATE_INSTANCE:
+                issues.append(
+                    TaskValidationIssue(
+                        path="source_template_id",
+                        message="标准模板任务缺少来源模板 ID 和版本。",
+                    ),
+                )
             if task.template_step_bindings or task.template_inputs is not None:
                 issues.append(
                     TaskValidationIssue(
                         path="source_template_id",
                         message="普通 Task 不得包含模板来源绑定数据。",
+                    ),
+                )
+            if task.source_task_id is not None or task.source_task_revision is not None:
+                issues.append(
+                    TaskValidationIssue(
+                        path="source_task_id",
+                        message="自由 Task 不得携带自定义流程来源记录。",
                     ),
                 )
             return _result(task_id, issues, missing, blocked)
@@ -165,6 +188,13 @@ class TaskTemplateValidator:
                 ),
             )
             return _result(task_id, issues, missing, blocked)
+        if task.workflow_mode == TaskWorkflowMode.FREE_AI_PLANNER:
+            issues.append(
+                TaskValidationIssue(
+                    path="workflow_mode",
+                    message="自由 AI Planner Task 不能同时声明标准模板来源。",
+                ),
+            )
 
         try:
             template = self._registry.get_template_version(
@@ -225,14 +255,40 @@ class TaskTemplateValidator:
             except TemplateCompileError as error:
                 issues.extend(_issues_from_text(error.issues, "template_inputs"))
 
-        canonical_nodes: dict[str, TaskNode] = {}
+        if task.workflow_mode == TaskWorkflowMode.CUSTOM_FLOW:
+            issues.extend(_validate_custom_flow(task, nodes, template))
+            if tool_schemas is not None and nodes:
+                issues.extend(
+                    TaskValidationIssue(
+                        path=issue.path,
+                        message=issue.message,
+                    )
+                    for issue in validate_task_plan(
+                        {"nodes": nodes},
+                        tool_schemas=tool_schemas,
+                        require_final_agent=False,
+                    )
+                )
+            issues.extend(_validate_variables(nodes))
+            return _result(task_id, issues, missing, blocked)
+
+        try:
+            compiled = compiler.compile_nodes(
+                template,
+                [],
+                require_tool_bindings=False,
+            )
+            canonical_nodes = {
+                step.step_key: node
+                for step, node in zip(template.steps, compiled.nodes)
+            }
+        except TemplateCompileError as error:
+            canonical_nodes = {}
+            issues.extend(_issues_from_text(error.issues, "nodes"))
+
         if tool_schemas is not None:
             try:
-                compiled = compiler.compile_nodes(template, tool_schemas)
-                canonical_nodes = {
-                    step.step_key: node
-                    for step, node in zip(template.steps, compiled.nodes)
-                }
+                compiler.compile_nodes(template, tool_schemas)
             except TemplateCompileError as error:
                 missing.update(error.missing_capabilities)
                 blocked.update(error.blocked_capabilities)
@@ -413,6 +469,197 @@ class TaskTemplateValidator:
                 update["output_schema"] = expected.output_schema
             enriched[node_id] = node.model_copy(update=update)
         return [enriched.get(node.id, node) for node in nodes]
+
+
+def _validate_custom_flow(
+    task: TaskRecord,
+    nodes: list[TaskNode],
+    template: TaskTemplateDefinition,
+) -> list[TaskValidationIssue]:
+    """Allow free editing while retaining source capability guardrails."""
+
+    issues: list[TaskValidationIssue] = []
+    if not task.source_task_id or task.source_task_revision is None:
+        issues.append(
+            TaskValidationIssue(
+                path="source_task_id",
+                message="自定义流程缺少原 Task 及版本追溯信息。",
+            ),
+        )
+
+    bindings = task.template_step_bindings
+    expected_keys = {step.step_key for step in template.steps}
+    if set(bindings) != expected_keys:
+        issues.append(
+            TaskValidationIssue(
+                path="template_step_bindings",
+                message="自定义流程的来源步骤绑定不完整或包含未知步骤。",
+            ),
+        )
+    binding_ids = list(bindings.values())
+    if any(not value.strip() for value in binding_ids) or len(
+        binding_ids
+    ) != len(set(binding_ids)):
+        issues.append(
+            TaskValidationIssue(
+                path="template_step_bindings",
+                message="自定义流程的来源节点绑定 ID 无效或重复。",
+            ),
+        )
+
+    by_id = {node.id: node for node in nodes}
+    bound_ids = set(binding_ids)
+    step_by_key = {step.step_key: step for step in template.steps}
+    required_capabilities = set(template.required_capabilities)
+    unsupported_capabilities = {
+        item.capability_key for item in template.unsupported_capabilities
+    }
+    reserved_capabilities = required_capabilities | unsupported_capabilities
+    protected_positions: list[tuple[int, int]] = []
+    input_questions: set[str] = set()
+
+    if nodes and nodes[-1].type.value == "input":
+        issues.append(
+            TaskValidationIssue(
+                path=f"nodes.{nodes[-1].id}",
+                message="自定义流程最终节点必须能够输出结果，不能以 InputStep 结束。",
+            ),
+        )
+
+    for index, node in enumerate(nodes):
+        if not _NODE_ID_PATTERN.fullmatch(node.id):
+            issues.append(
+                TaskValidationIssue(
+                    path=f"nodes[{index}].id",
+                    message="节点 ID 不能为空，且长度和字符必须符合 Task 标识格式。",
+                ),
+            )
+        if node.type.value != "input":
+            continue
+        for question in node.config.questions:
+            if question.key in input_questions:
+                issues.append(
+                    TaskValidationIssue(
+                        path=f"nodes[{index}].config.questions.{question.key}",
+                        message="InputStep 问题键在同一流程中必须唯一。",
+                    ),
+                )
+            input_questions.add(question.key)
+
+    for template_index, step in enumerate(template.steps):
+        node_id = bindings.get(step.step_key)
+        if node_id is None:
+            continue
+        node = by_id.get(node_id)
+        is_required_capability_tool = (
+            step.kind == "tool"
+            and step.capability_key in required_capabilities
+        )
+        if is_required_capability_tool:
+            if node is None:
+                issues.append(
+                    TaskValidationIssue(
+                        path=f"nodes.{node_id}",
+                        message=(
+                            f"来源场景必需能力“{step.capability_key}”的 Tool 节点"
+                            "不能删除。"
+                        ),
+                    ),
+                )
+                continue
+            if node.type.value != "tool":
+                issues.append(
+                    TaskValidationIssue(
+                        path=f"nodes.{node.id}.type",
+                        message=(
+                            f"来源场景必需能力“{step.capability_key}”必须保留为 Tool 节点。"
+                        ),
+                    ),
+                )
+                continue
+            if node.capability_key not in {None, step.capability_key}:
+                issues.append(
+                    TaskValidationIssue(
+                        path=f"nodes.{node.id}.capability_key",
+                        message="来源 Tool 节点不能改写服务端能力绑定。",
+                    ),
+                )
+            protected_positions.append((template_index, nodes.index(node)))
+            continue
+
+        if node is not None and node.type.value == "tool":
+            if node.capability_key is not None:
+                issues.append(
+                    TaskValidationIssue(
+                        path=f"nodes.{node.id}.capability_key",
+                        message="非 Tool 来源步骤不能声明模板能力绑定。",
+                    ),
+                )
+            if node.config.tool_name in reserved_capabilities:
+                issues.append(
+                    TaskValidationIssue(
+                        path=f"nodes.{node.id}.config.tool_name",
+                        message=(
+                            "自定义节点不能冒用来源模板要求或标记为未支持的能力。"
+                        ),
+                    ),
+                )
+
+    if any(
+        protected_positions[index][1]
+        >= protected_positions[index + 1][1]
+        for index in range(len(protected_positions) - 1)
+    ):
+        issues.append(
+            TaskValidationIssue(
+                path="nodes.order",
+                message=(
+                    "来源场景必需能力 Tool 节点必须保持相对顺序，"
+                    "以保留业务校验链。"
+                ),
+            ),
+        )
+
+    for index, node in enumerate(nodes):
+        if node.id in bound_ids or node.type.value != "tool":
+            continue
+        if node.capability_key is not None:
+            issues.append(
+                TaskValidationIssue(
+                    path=f"nodes[{index}].capability_key",
+                    message="新增 Tool 节点不能伪造来源模板能力绑定。",
+                ),
+            )
+        if node.config.tool_name in reserved_capabilities:
+            issues.append(
+                TaskValidationIssue(
+                    path=f"nodes[{index}].config.tool_name",
+                    message=(
+                        "新增 Tool 节点不能冒用来源模板要求或标记为未支持的能力。"
+                    ),
+                ),
+            )
+
+    # Template binding keys are server-owned metadata. A template-bound
+    # non-Tool step may change type, but it cannot acquire a capability claim.
+    for step_key, node_id in bindings.items():
+        step = step_by_key.get(step_key)
+        node = by_id.get(node_id)
+        if (
+            step is not None
+            and step.kind != "tool"
+            and node is not None
+            and node.type.value == "tool"
+            and node.capability_key is not None
+        ):
+            issues.append(
+                TaskValidationIssue(
+                    path=f"nodes.{node.id}.capability_key",
+                    message="转换后的节点不能继承或声明来源模板 Tool 能力。",
+                ),
+            )
+
+    return issues
 
 
 def _validate_edit_policy(

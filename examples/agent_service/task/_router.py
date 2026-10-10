@@ -40,7 +40,7 @@ from ._models import (
     UpdateTaskRequest,
 )
 from ._knowledge import TaskKnowledgeGateway
-from ._service import TaskService
+from ._service import TaskService, TaskWorkflowConflictError
 from ._template_compiler import (
     TaskTemplateCompiler,
     TemplateCapabilityMappingError,
@@ -341,9 +341,39 @@ async def generate_task(
             task_id,
             body.context,
         )
+    except TaskWorkflowConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
     except RuntimeError as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+    if task is None:
+        raise _not_found("Task", task_id)
+    return task
+
+
+@task_router.post(
+    "/{task_id}/custom-flow-copy",
+    response_model=TaskRecord,
+    status_code=status.HTTP_201_CREATED,
+    summary="Copy a template Task as a private custom flow",
+)
+async def create_custom_flow_copy(
+    task_id: str,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskRecord:
+    """Create a user-owned custom copy without invoking the Planner."""
+
+    try:
+        task = await task_service.create_custom_flow_copy(user_id, task_id)
+    except TaskWorkflowConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
     if task is None:

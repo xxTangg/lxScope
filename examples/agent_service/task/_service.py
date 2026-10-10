@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from uuid import uuid4
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from typing import Any
@@ -42,6 +43,7 @@ from ._models import (
     TaskGenerationStatus,
     TaskNode,
     TaskRecord,
+    TaskWorkflowMode,
     TaskToolSchema,
     TaskRunRecord,
     TaskRunRequest,
@@ -95,6 +97,10 @@ _DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS = 45.0
 _TASK_VARIABLE_PATTERN = re.compile(
     r"\{\{([\w.-]+)\}\}|\{(previous_output|user_input)\}"
 )
+
+
+class TaskWorkflowConflictError(RuntimeError):
+    """A workflow operation is not valid for the Task's editing mode."""
 
 
 def _configured_generation_timeout() -> float:
@@ -224,6 +230,11 @@ class TaskService:
                 else TaskGenerationStatus.IDLE
             ),
             source_context=body.source_context,
+            workflow_mode=(
+                TaskWorkflowMode.TEMPLATE_INSTANCE
+                if source_template_id
+                else TaskWorkflowMode.FREE_AI_PLANNER
+            ),
             source_template_id=source_template_id,
             source_template_version=source_template_version,
             template_step_bindings=template_step_bindings or {},
@@ -242,6 +253,17 @@ class TaskService:
         current = await self._store.get_task(user_id, task_id)
         if current is None or current.status == TaskStatus.ARCHIVED:
             return None
+        if (
+            current.workflow_mode
+            in {
+                TaskWorkflowMode.TEMPLATE_INSTANCE,
+                TaskWorkflowMode.CUSTOM_FLOW,
+            }
+            or current.source_template_id is not None
+        ):
+            raise TaskWorkflowConflictError(
+                "模板来源任务使用固定流程，不支持 AI Planner 重新生成。",
+            )
         merged_context = (
             context if context is not None else current.source_context
         )
@@ -412,6 +434,82 @@ class TaskService:
 
         return await self._store.get_task(user_id, task_id)
 
+    async def create_custom_flow_copy(
+        self,
+        user_id: str,
+        task_id: str,
+    ) -> TaskRecord | None:
+        """Create a private, editable copy of a standard template Task."""
+
+        source = await self._store.get_task(user_id, task_id)
+        if source is None or source.status == TaskStatus.ARCHIVED:
+            return None
+        if (
+            source.workflow_mode == TaskWorkflowMode.CUSTOM_FLOW
+            or not source.source_template_id
+            or not source.source_template_version
+        ):
+            raise TaskWorkflowConflictError(
+                "只能从带有有效来源模板的标准模板任务创建自定义流程。",
+            )
+
+        validation = await self.validate_task_definition(
+            user_id,
+            source,
+            source.nodes,
+            context=source.source_context,
+        )
+        if not validation.valid:
+            raise TaskWorkflowConflictError(
+                "来源模板任务当前无效，不能复制为自定义流程。",
+            )
+
+        copied_ids: dict[str, str] = {}
+
+        def copied_id(source_node_id: str) -> str:
+            if source_node_id not in copied_ids:
+                copied_ids[source_node_id] = uuid4().hex
+            return copied_ids[source_node_id]
+
+        copied_nodes = [
+            node.model_copy(
+                deep=True,
+                update={"id": copied_id(node.id), "order": index},
+            )
+            for index, node in enumerate(source.nodes)
+        ]
+        copied_bindings = {
+            step_key: copied_id(source_node_id)
+            for step_key, source_node_id in source.template_step_bindings.items()
+        }
+        title_suffix = "（自定义）"
+        copied_title = source.title[: 160 - len(title_suffix)] + title_suffix
+        copied = source.model_copy(
+            deep=True,
+            update={
+                "id": uuid4().hex,
+                "title": copied_title,
+                "nodes": copied_nodes,
+                "workflow_mode": TaskWorkflowMode.CUSTOM_FLOW,
+                "source_task_id": source.id,
+                "source_task_revision": source.revision,
+                "template_step_bindings": copied_bindings,
+                "revision": 1,
+                "status": TaskStatus.ACTIVE if copied_nodes else TaskStatus.DRAFT,
+                "generation_status": (
+                    TaskGenerationStatus.SUCCEEDED
+                    if copied_nodes
+                    else TaskGenerationStatus.IDLE
+                ),
+                "generation_error": None,
+                "last_run_id": None,
+                "last_run_status": None,
+                "created_at": _utc_now(),
+                "updated_at": _utc_now(),
+            },
+        )
+        return await self._store.save_task(copied)
+
     async def update_task(
         self,
         user_id: str,
@@ -476,21 +574,12 @@ class TaskService:
         context: TaskContext | None = None,
         run_input: str | None = None,
     ) -> TaskValidationResponse:
-        """Validate proposed nodes, discovering tools only for template copies."""
+        """Validate structure and template rules; runtime readiness is preflight-only."""
 
-        tool_schemas: list[TaskToolSchema] | None = None
-        if task is not None and (
-            task.source_template_id is not None
-            or task.source_template_version is not None
-        ):
-            tool_schemas = await self.list_tools(
-                user_id,
-                context or task.source_context,
-            )
+        del user_id, context
         return self._template_validator.validate(
             task,
             nodes,
-            tool_schemas=tool_schemas,
             run_input=run_input,
         )
 
@@ -926,6 +1015,11 @@ class TaskService:
             user_id=user_id,
             task_revision=task.revision,
             engine="sop",
+            workflow_mode=task.workflow_mode,
+            source_template_id=task.source_template_id,
+            source_template_version=task.source_template_version,
+            source_task_id=task.source_task_id,
+            source_task_revision=task.source_task_revision,
             nodes=run_nodes,
             node_runs=[
                 NodeRunRecord(

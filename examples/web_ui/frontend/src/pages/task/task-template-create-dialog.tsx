@@ -1,7 +1,6 @@
 import { AlertCircle, Loader2, Play, X } from 'lucide-react';
 import * as React from 'react';
 
-import { ApiError } from '@/api/client';
 import type { TaskContext, TaskTemplateDefinition, TaskTemplateInputProperty } from '@/api/task';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -71,16 +70,6 @@ function defaultDraft(template: TaskTemplateDefinition): TemplateInputDraft {
 	);
 }
 
-function nextStepForCapabilityFailure(code: string | undefined): string | null {
-	if (code === 'TEMPLATE_CAPABILITY_MISSING') {
-		return '请切换到已配置相应只读 Tool 的 Agent 会话，或请管理员检查服务端 capability_tool_map 后重试。';
-	}
-	if (code === 'TEMPLATE_CAPABILITY_UNSAFE') {
-		return '当前会话匹配到的 Tool 未通过只读安全校验。请管理员接入只读 Tool 后重试。';
-	}
-	return null;
-}
-
 export function TaskTemplateCreateDialog({
 	template,
 	sourceContext,
@@ -94,7 +83,6 @@ export function TaskTemplateCreateDialog({
 }) {
 	const [draft, setDraft] = React.useState<TemplateInputDraft>({});
 	const [error, setError] = React.useState('');
-	const [nextStep, setNextStep] = React.useState<string | null>(null);
 	const [isSubmitting, setIsSubmitting] = React.useState(false);
 	const open = Boolean(template);
 
@@ -102,7 +90,6 @@ export function TaskTemplateCreateDialog({
 		if (!template) return;
 		setDraft(defaultDraft(template));
 		setError('');
-		setNextStep(null);
 		setIsSubmitting(false);
 	}, [template]);
 
@@ -110,7 +97,6 @@ export function TaskTemplateCreateDialog({
 		event.preventDefault();
 		if (!template) return;
 		setError('');
-		setNextStep(null);
 		let inputs: Record<string, unknown>;
 		try {
 			inputs = parseInputs(template, draft);
@@ -124,8 +110,6 @@ export function TaskTemplateCreateDialog({
 			onOpenChange(false);
 		} catch (requestError) {
 			setError(requestError instanceof Error ? requestError.message : '模板实例化失败。');
-			const code = requestError instanceof ApiError ? requestError.code : undefined;
-			setNextStep(nextStepForCapabilityFailure(code));
 		} finally {
 			setIsSubmitting(false);
 		}
@@ -139,7 +123,7 @@ export function TaskTemplateCreateDialog({
 						<DialogHeader>
 							<DialogTitle>使用模板：{template.title}</DialogTitle>
 							<DialogDescription>
-								填写本场景需要的输入。服务端会校验模板版本和当前会话 Tool，并直接创建标准流程，不调用 AI Planner。
+								填写本场景需要的输入即可创建固定流程，不调用 AI Planner。Tool/MCP 能力只在实际运行前检查。
 							</DialogDescription>
 						</DialogHeader>
 
@@ -152,7 +136,9 @@ export function TaskTemplateCreateDialog({
 											<Badge key={capability} variant="outline" className="bg-white font-mono text-[9px]">{capability}</Badge>
 										))}
 									</div>
-									<div className="text-[10px] leading-5 text-slate-500">这些是模板声明的能力依赖。实例化结果由服务端根据当前会话中的真实 Tool 校验。</div>
+								<div className="text-[10px] leading-5 text-slate-500">
+									这些能力会随模板 Task 保存；服务端仅在实际运行前检查 Tool/MCP 是否可用。
+								</div>
 								</div>
 							)}
 
@@ -212,11 +198,6 @@ export function TaskTemplateCreateDialog({
 									<AlertCircle />
 									<AlertDescription>
 										<div>{error}</div>
-										{nextStep && (
-											<div className="mt-2 space-y-2">
-												<p>{nextStep}</p>
-											</div>
-										)}
 									</AlertDescription>
 								</Alert>
 							)}

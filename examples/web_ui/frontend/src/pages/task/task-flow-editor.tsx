@@ -24,6 +24,7 @@ interface TaskFlowEditorProps {
 	tools?: TaskToolSchema[];
 	disabled?: boolean;
 	templateMode?: boolean;
+	customFlowMode?: boolean;
 	template?: TaskTemplateDefinition | null;
 	templateStepBindings?: Record<string, string>;
 }
@@ -60,11 +61,12 @@ function normalizeNode(node: TaskNode, index: number): TaskNode {
 }
 
 function normalizeNodes(nodes: TaskNode[]): TaskNode[] {
-	const normalized = nodes.map(normalizeNode);
-	return normalized.map((node, index) => ({
-		...node,
-		artifact: index === normalized.length - 1 ? (node.artifact ?? null) : null,
-	}));
+	return nodes.map(normalizeNode);
+}
+
+function createNodeId(): string {
+	const randomId = globalThis.crypto?.randomUUID?.();
+	return `node-${randomId ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`;
 }
 
 function stepIcon(type: TaskStepType) {
@@ -128,10 +130,12 @@ export function TaskFlowEditor({
 	tools = [],
 	disabled = false,
 	templateMode = false,
+	customFlowMode = false,
 	template = null,
 	templateStepBindings = {},
 }: TaskFlowEditorProps) {
 	const [argumentDrafts, setArgumentDrafts] = React.useState<Record<string, string>>({});
+	const [editorNotice, setEditorNotice] = React.useState<string | null>(null);
 	const bindingByNodeId = React.useMemo(
 		() =>
 			new Map(
@@ -150,6 +154,16 @@ export function TaskFlowEditor({
 		templateMode
 			? items.map((node, index) => ({ ...node, order: index }))
 			: normalizeNodes(items);
+	const isProtectedCapabilityNode = (node: TaskNode | undefined) => {
+		if (!customFlowMode || !node || !template) return false;
+		const stepKey = bindingByNodeId.get(node.id);
+		const step = template.steps.find((item) => item.step_key === stepKey);
+		return Boolean(
+			step?.kind === 'tool' &&
+			step.capability_key &&
+			template.required_capabilities.includes(step.capability_key),
+		);
+	};
 
 	const updateNode = (index: number, update: Partial<TaskNode>) => {
 		const next = nodes.map((node, nodeIndex) =>
@@ -161,6 +175,15 @@ export function TaskFlowEditor({
 	const updateStepType = (index: number, type: TaskStepType) => {
 		const node = nodes[index];
 		if (!node) return;
+		if (type === 'tool' && node.type !== 'tool' && tools.length === 0) {
+			setEditorNotice('当前会话没有可选 Tool；请先连接可用工具，再切换为 ToolStep。');
+			return;
+		}
+		if (type === 'input' && node.artifact) {
+			setEditorNotice('请先将此节点的文件产物设为“不生成文件”，再切换为用户输入节点。');
+			return;
+		}
+		setEditorNotice(null);
 		const config =
 			type === 'agent'
 				? {
@@ -173,7 +196,10 @@ export function TaskFlowEditor({
 				: type === 'tool'
 					? {
 							type: 'tool' as const,
-							tool_name: node.config?.type === 'tool' ? node.config.tool_name : '',
+							tool_name:
+								node.config?.type === 'tool'
+									? node.config.tool_name
+									: (tools[0]?.name ?? ''),
 							arguments: node.config?.type === 'tool' ? node.config.arguments : {},
 						}
 					: type === 'input'
@@ -182,7 +208,7 @@ export function TaskFlowEditor({
 								reason: '请补充本步骤需要的信息。',
 								questions: [
 									{
-										key: 'details',
+										key: `details-${node.id.slice(-8)}`,
 										label: '请提供所需信息',
 										required: true,
 										options: [],
@@ -191,7 +217,10 @@ export function TaskFlowEditor({
 							}
 						: {
 								type: 'python' as const,
-								code: node.config?.type === 'python' ? node.config.code : '',
+								code:
+									node.config?.type === 'python'
+										? node.config.code
+										: 'print(previous_output)',
 								timeout_seconds:
 									node.config?.type === 'python'
 										? node.config.timeout_seconds
@@ -201,6 +230,9 @@ export function TaskFlowEditor({
 			type,
 			prompt: type === 'agent' ? config.prompt : '',
 			config,
+			capability_key: null,
+			output_schema: node.output_schema,
+			artifact: type === 'input' ? null : node.artifact,
 		});
 	};
 
@@ -209,11 +241,31 @@ export function TaskFlowEditor({
 		const target = index + offset;
 		if (target < 0 || target >= nodes.length) return;
 		const next = [...nodes];
+		if (
+			customFlowMode &&
+			isProtectedCapabilityNode(nodes[index]) &&
+			isProtectedCapabilityNode(nodes[target])
+		) {
+			setEditorNotice('来源场景必需能力 Tool 节点必须保持相对顺序，不能相互交换。');
+			return;
+		}
+		if (
+			(nodes[index].artifact && target !== nodes.length - 1) ||
+			(nodes[target].artifact && index !== nodes.length - 1)
+		) {
+			setEditorNotice('最终节点配置了文件产物；请先移除文件产物，再调整这两个节点的顺序。');
+			return;
+		}
+		setEditorNotice(null);
 		[next[index], next[target]] = [next[target], next[index]];
 		onChange(normalizeNodes(next));
 	};
 
 	const removeNode = (index: number) => {
+		if (customFlowMode && isProtectedCapabilityNode(nodes[index])) {
+			setEditorNotice('来源场景必需能力 Tool 节点不能删除。');
+			return;
+		}
 		if (templateMode) {
 			const node = nodes[index];
 			const stepKey = node ? bindingByNodeId.get(node.id) : undefined;
@@ -226,11 +278,16 @@ export function TaskFlowEditor({
 
 	const addNode = () => {
 		if (nodes.length >= 8) return;
+		if (nodes[nodes.length - 1]?.artifact) {
+			setEditorNotice('最终节点配置了文件产物；请先移除文件产物，再添加后续节点。');
+			return;
+		}
+		setEditorNotice(null);
 		onChange(
 			normalizeNodes([
 				...nodes,
 				{
-					id: 'node-' + Date.now(),
+					id: createNodeId(),
 					name: 'Agent 节点 ' + (nodes.length + 1),
 					prompt: '请基于上一节点的输出继续完成任务。',
 					type: 'agent',
@@ -283,6 +340,21 @@ export function TaskFlowEditor({
 							模板流程顺序固定，服务端会拒绝重排。只能编辑模板授权的名称、提示词和输入问题；必需节点不能删除，新增仅限恢复模板声明的可选步骤，其他执行约束由模板固定。
 						</div>
 					)}
+					{customFlowMode && (
+						<div className="mt-1 max-w-3xl text-[11px] leading-5 text-amber-700">
+							自定义副本允许增删、改型和调整普通节点；来源场景必需能力 Tool
+							节点及其相对顺序仍受保护，运行前继续执行实际工具、参数、权限和副作用
+							Preflight。
+						</div>
+					)}
+					{editorNotice && (
+						<div
+							role="status"
+							className="mt-1 max-w-3xl text-[11px] leading-5 text-amber-700"
+						>
+							{editorNotice}
+						</div>
+					)}
 				</div>
 				<Button
 					variant="outline"
@@ -322,6 +394,23 @@ export function TaskFlowEditor({
 					const templateStep = template?.steps.find(
 						(step) => step.step_key === templateStepKey,
 					);
+					const protectedCapabilityNode = isProtectedCapabilityNode(node);
+					const moveUpBlockedByCapability =
+						customFlowMode &&
+						index > 0 &&
+						protectedCapabilityNode &&
+						isProtectedCapabilityNode(nodes[index - 1]);
+					const moveDownBlockedByCapability =
+						customFlowMode &&
+						index < nodes.length - 1 &&
+						protectedCapabilityNode &&
+						isProtectedCapabilityNode(nodes[index + 1]);
+					const moveUpBlockedByArtifact =
+						Boolean(node.artifact && index === nodes.length - 1) ||
+						Boolean(nodes[index - 1]?.artifact && index > 0);
+					const moveDownBlockedByArtifact =
+						Boolean(node.artifact && index === nodes.length - 1) ||
+						Boolean(nodes[index + 1]?.artifact && index < nodes.length - 1);
 					const templateEditable = templateMode && Boolean(templateStep?.editable);
 					const fieldDisabled = disabled || (templateMode && !templateEditable);
 					const configDisabled =
@@ -356,11 +445,29 @@ export function TaskFlowEditor({
 														event.target.value as TaskStepType,
 													)
 												}
-												disabled={disabled || templateMode}
+												disabled={
+													disabled ||
+													templateMode ||
+													protectedCapabilityNode
+												}
+												title={
+													protectedCapabilityNode
+														? '来源场景必需能力 Tool 节点不能切换类型。'
+														: undefined
+												}
 												className="h-8 rounded-lg border border-input bg-background px-2 text-xs font-medium text-foreground outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
 											>
 												<option value="agent">AgentStep</option>
-												<option value="tool">ToolStep</option>
+												<option
+													value="tool"
+													disabled={
+														tools.length === 0 && node.type !== 'tool'
+													}
+												>
+													{tools.length === 0 && node.type !== 'tool'
+														? 'ToolStep（当前无可用工具）'
+														: 'ToolStep'}
+												</option>
 												<option value="python">CodeStep</option>
 												<option value="input">用户输入</option>
 											</select>
@@ -424,6 +531,7 @@ export function TaskFlowEditor({
 												config={inputConfig}
 												disabled={configDisabled}
 												templateConfig={
+													templateMode &&
 													templateStep?.config.type === 'input'
 														? templateStep.config
 														: undefined
@@ -472,28 +580,80 @@ export function TaskFlowEditor({
 
 										{toolConfig && (
 											<div className="space-y-3">
-												<Input
-													list={'task-tool-options-' + node.id}
-													value={toolConfig.tool_name}
-													onChange={(event) =>
-														updateNode(index, {
-															config: {
-																...toolConfig,
-																tool_name: event.target.value,
-															},
-														})
-													}
-													disabled={configDisabled}
-													placeholder="工具名称，例如 weather 或 search"
-													className="bg-card text-sm"
-												/>
-												<datalist id={'task-tool-options-' + node.id}>
-													{tools.map((tool) => (
-														<option key={tool.name} value={tool.name}>
-															{tool.description}
+												{customFlowMode ? (
+													<select
+														value={toolConfig.tool_name}
+														onChange={(event) =>
+															updateNode(index, {
+																config: {
+																	...toolConfig,
+																	tool_name: event.target.value,
+																},
+															})
+														}
+														disabled={configDisabled}
+														className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground"
+													>
+														<option value="">
+															选择当前会话的可用工具
 														</option>
-													))}
-												</datalist>
+														{toolConfig.tool_name &&
+															!tools.some(
+																(tool) =>
+																	tool.name ===
+																	toolConfig.tool_name,
+															) && (
+																<option
+																	value={toolConfig.tool_name}
+																>
+																	{toolConfig.tool_name}
+																	（当前未验证）
+																</option>
+															)}
+														{tools.map((tool) => (
+															<option
+																key={tool.name}
+																value={tool.name}
+															>
+																{tool.name}
+																{tool.description
+																	? ` — ${tool.description}`
+																	: ''}
+															</option>
+														))}
+													</select>
+												) : (
+													<>
+														<Input
+															list={'task-tool-options-' + node.id}
+															value={toolConfig.tool_name}
+															onChange={(event) =>
+																updateNode(index, {
+																	config: {
+																		...toolConfig,
+																		tool_name:
+																			event.target.value,
+																	},
+																})
+															}
+															disabled={configDisabled}
+															placeholder="工具名称，例如 weather 或 search"
+															className="bg-card text-sm"
+														/>
+														<datalist
+															id={'task-tool-options-' + node.id}
+														>
+															{tools.map((tool) => (
+																<option
+																	key={tool.name}
+																	value={tool.name}
+																>
+																	{tool.description}
+																</option>
+															))}
+														</datalist>
+													</>
+												)}
 												{toolConfig.tool_name &&
 													tools.find(
 														(tool) =>
@@ -664,7 +824,13 @@ export function TaskFlowEditor({
 											variant="ghost"
 											size="icon-xs"
 											onClick={() => moveNode(index, -1)}
-											disabled={disabled || templateMode || index === 0}
+											disabled={
+												disabled ||
+												templateMode ||
+												index === 0 ||
+												moveUpBlockedByCapability ||
+												moveUpBlockedByArtifact
+											}
 											aria-label={
 												templateMode
 													? '上移步骤（模板顺序固定）'
@@ -678,7 +844,11 @@ export function TaskFlowEditor({
 											title={
 												templateMode
 													? '模板流程顺序固定，服务端会拒绝重排。'
-													: '上移步骤'
+													: moveUpBlockedByCapability
+														? '来源场景必需能力 Tool 节点必须保持相对顺序。'
+														: moveUpBlockedByArtifact
+															? '先移除最终节点产物配置，再调整顺序。'
+															: '上移步骤'
 											}
 										>
 											<ArrowUp />
@@ -690,7 +860,9 @@ export function TaskFlowEditor({
 											disabled={
 												disabled ||
 												templateMode ||
-												index === nodes.length - 1
+												index === nodes.length - 1 ||
+												moveDownBlockedByCapability ||
+												moveDownBlockedByArtifact
 											}
 											aria-label={
 												templateMode
@@ -705,7 +877,11 @@ export function TaskFlowEditor({
 											title={
 												templateMode
 													? '模板流程顺序固定，服务端会拒绝重排。'
-													: '下移步骤'
+													: moveDownBlockedByCapability
+														? '来源场景必需能力 Tool 节点必须保持相对顺序。'
+														: moveDownBlockedByArtifact
+															? '先移除最终节点产物配置，再调整顺序。'
+															: '下移步骤'
 											}
 										>
 											<ArrowDown />
@@ -718,7 +894,8 @@ export function TaskFlowEditor({
 											disabled={
 												fieldDisabled ||
 												nodes.length <= 1 ||
-												(templateMode && Boolean(templateStep?.required))
+												(templateMode && Boolean(templateStep?.required)) ||
+												protectedCapabilityNode
 											}
 											aria-label={
 												templateMode && templateStep?.required
@@ -728,7 +905,9 @@ export function TaskFlowEditor({
 											title={
 												templateMode && templateStep?.required
 													? '模板必需节点不能删除。'
-													: '删除可选步骤'
+													: protectedCapabilityNode
+														? '来源场景必需能力 Tool 节点不能删除。'
+														: '删除步骤'
 											}
 										>
 											<Trash2 />

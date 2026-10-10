@@ -82,12 +82,14 @@ class CompiledTemplateNodes:
 
 
 class TaskTemplateCompiler:
-    """Bind logical capabilities to the caller's actual Task tool catalog.
+    """Compile logical capabilities to existing Task Tool nodes.
 
     ``LXSCOPE_TASK_CAPABILITY_TOOL_MAP`` may contain a JSON object mapping
     template capability keys to actual Task tool names. Without an alias, a
-    capability binds only when the current authenticated session exposes a
-    tool whose name exactly matches the server-owned capability key.
+    strict compilation binds only when the current authenticated session
+    exposes a tool whose name exactly matches the server-owned capability key.
+    Gallery creation can use relaxed compilation and defer availability checks
+    until the existing run preflight.
     """
 
     def __init__(
@@ -193,19 +195,25 @@ class TaskTemplateCompiler:
         self,
         template: TaskTemplateDefinition,
         tool_schemas: list[TaskToolSchema],
+        *,
+        require_tool_bindings: bool = True,
     ) -> CompiledTemplateNodes:
-        """Resolve capabilities and compile each step as a TaskNode."""
+        """Compile TaskNodes, optionally deferring live Tool checks to preflight."""
 
         tool_steps = {
             step.capability_key: step
             for step in template.steps
             if step.kind == "tool"
         }
-        missing: set[str] = {
-            capability
-            for capability in template.required_capabilities
-            if capability not in tool_steps
-        }
+        missing: set[str] = (
+            {
+                capability
+                for capability in template.required_capabilities
+                if capability not in tool_steps
+            }
+            if require_tool_bindings
+            else set()
+        )
 
         tools_by_name: dict[str, list[TaskToolSchema]] = defaultdict(list)
         for schema in tool_schemas:
@@ -229,15 +237,22 @@ class TaskTemplateCompiler:
                 tools_by_name[tool.name].append(tool)
 
         bound_tools: dict[str, TaskToolSchema] = {}
+        tool_names = {
+            capability_key: self._aliases.get(capability_key, capability_key)
+            for capability_key in tool_steps
+        }
         for capability_key in tool_steps:
-            tool_name = self._aliases.get(capability_key, capability_key)
+            tool_name = tool_names[capability_key]
+            if not require_tool_bindings:
+                continue
             candidates = tools_by_name.get(tool_name, [])
             if len(candidates) != 1:
                 missing.add(capability_key)
                 continue
             bound_tools[capability_key] = candidates[0]
+            tool_names[capability_key] = candidates[0].name
 
-        if missing:
+        if missing and require_tool_bindings:
             raise TemplateCompileError(
                 "TEMPLATE_CAPABILITY_MISSING",
                 "当前会话缺少可执行模板所需的 Task 工具或能力。",
@@ -256,7 +271,7 @@ class TaskTemplateCompiler:
                 key=lambda item: item.casefold(),
             )
         )
-        if blocked:
+        if blocked and require_tool_bindings:
             raise TemplateCompileError(
                 "TEMPLATE_CAPABILITY_UNSAFE",
                 "模板包含非只读工具；当前 Task 阶段未提供副作用授权和幂等保护。",
@@ -280,7 +295,7 @@ class TaskTemplateCompiler:
                     tool.input_schema,
                 )
             )
-        if incompatible:
+        if incompatible and require_tool_bindings:
             raise TemplateCompileError(
                 "TEMPLATE_CAPABILITY_INCOMPATIBLE",
                 "当前会话的工具接口与 Task 业务能力契约不兼容。",
@@ -323,7 +338,7 @@ class TaskTemplateCompiler:
                         issues=(f"steps.{step.step_key}.capability_key",),
                     )
                 config = ToolStepConfig(
-                    tool_name=bound_tools[step.capability_key].name,
+                    tool_name=tool_names[step.capability_key],
                     arguments=dict(step.config.arguments),
                 )
             elif isinstance(step.config, TemplateInputConfig):
@@ -387,7 +402,7 @@ class TaskTemplateCompiler:
 
         plan_issues = validate_task_plan(
             {"nodes": nodes},
-            tool_schemas,
+            tool_schemas if require_tool_bindings else None,
             require_final_agent=False,
         )
         if plan_issues:

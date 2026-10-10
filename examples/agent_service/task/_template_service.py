@@ -56,7 +56,7 @@ class TemplateInstantiationError(ValueError):
 
 
 class TaskTemplateService:
-    """Orchestrate validation, capability binding, and TaskService creation."""
+    """Validate templates and create editable Task copies without running them."""
 
     def __init__(
         self,
@@ -100,12 +100,12 @@ class TaskTemplateService:
         except TemplateCompileError as error:
             raise _as_instantiation_error(error) from error
 
-        tool_schemas = await self._task_service.list_tools(
-            user_id,
-            request.source_context,
-        )
         try:
-            compiled = self._compiler.compile_nodes(template, tool_schemas)
+            compiled = self._compiler.compile_nodes(
+                template,
+                [],
+                require_tool_bindings=False,
+            )
         except TemplateCompileError as error:
             raise _as_instantiation_error(error) from error
 

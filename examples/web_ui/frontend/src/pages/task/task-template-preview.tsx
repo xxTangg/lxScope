@@ -26,29 +26,30 @@ export function TaskTemplatePreview({
 }) {
 	const unsupported = template.unsupported_capabilities ?? [];
 	return (
-		<div className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
-			<div>
-				<div className="flex flex-wrap items-center gap-2">
-					<h2 className="text-lg font-semibold text-slate-900">{template.title}</h2>
-					<Badge variant="outline">v{template.template_version}</Badge>
-					<Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">
-						{template.steps.length} 个逻辑节点
-					</Badge>
-					<Badge
-						variant="outline"
-						className={
-							unsupported.length
-								? 'border-amber-200 bg-amber-50 text-amber-800'
-								: 'border-slate-200 bg-slate-50 text-slate-600'
-						}
-					>
-						{unsupported.length ? '含未支持能力' : '待校验会话工具'}
-					</Badge>
+		<div className="flex h-full min-h-0 flex-col">
+			<div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+				<div>
+					<div className="flex flex-wrap items-center gap-2">
+						<h2 className="text-lg font-semibold text-slate-900">{template.title}</h2>
+						<Badge variant="outline">v{template.template_version}</Badge>
+						<Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">
+							{template.steps.length} 个逻辑节点
+						</Badge>
+						<Badge
+							variant="outline"
+							className={
+								unsupported.length
+									? 'border-amber-200 bg-amber-50 text-amber-800'
+									: 'border-slate-200 bg-slate-50 text-slate-600'
+							}
+						>
+							{unsupported.length ? '含未支持能力' : '待校验会话工具'}
+						</Badge>
+					</div>
+					<p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-600">
+						{template.description}
+					</p>
 				</div>
-				<p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-600">
-					{template.description}
-				</p>
-			</div>
 
 			<section className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
 				<div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-800">
@@ -67,7 +68,7 @@ export function TaskTemplatePreview({
 					))}
 				</div>
 				<p className="mt-2 text-[11px] leading-5 text-slate-500">
-					目录 API 不提供当前会话的能力就绪结果；选择使用后由服务端绑定真实 Tool 并校验。
+					模板 Task 可先创建和编辑；服务端会在实际运行前检查当前会话的 Tool/MCP。
 				</p>
 			</section>
 
@@ -78,17 +79,17 @@ export function TaskTemplatePreview({
 						当前不支持的能力
 					</div>
 					<ul className="space-y-2">
-						{unsupported.map((item) => (
-							<li
-								key={item.capability_key}
-								className="text-[11px] leading-5 text-amber-900"
-							>
-								<span className="font-mono font-semibold">
-									{item.capability_key}
-								</span>
-								<span className="ml-2">{item.reason}</span>
-							</li>
-						))}
+					{unsupported.map((item) => (
+						<li
+							key={item.capability_key}
+							className="text-[11px] leading-5 text-amber-900"
+						>
+							<span className="font-mono font-semibold">
+								{item.capability_key}
+							</span>
+							<span className="ml-2">{item.reason}</span>
+						</li>
+					))}
 					</ul>
 				</section>
 			)}
@@ -176,9 +177,12 @@ export function TaskTemplatePreview({
 					{template.output_requirement}
 				</p>
 			</div>
+			</div>
 
-			<div className="sticky bottom-0 -mx-1 flex justify-end border-t border-slate-100 bg-white/95 px-1 py-3 backdrop-blur">
-				<Button onClick={() => onUse(template)}>使用此模板</Button>
+			<div className="flex shrink-0 justify-end border-t border-slate-100 bg-white px-1 py-3">
+				<Button type="button" className="min-w-32" onClick={() => onUse(template)}>
+					使用此模板
+				</Button>
 			</div>
 		</div>
 	);

@@ -536,11 +536,7 @@ def test_template_instantiation_copies_without_planner(
         }
         assert "测试项目" in first["goal"]
         assert planner.calls == 0
-        assert executor.contexts
-        assert all(
-            context.user_id == "template-owner"
-            for context in executor.contexts
-        )
+        assert executor.contexts == []
 
         forbidden = client.get(
             f"/tasks/{first['id']}",
@@ -907,11 +903,11 @@ def test_template_preflight_requires_tool_schema_for_bound_capabilities(
     )
 
 
-def test_instantiation_rejects_missing_tools_before_persistence(
+def test_instantiation_and_edit_work_without_tools_but_preflight_blocks_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
-    store, task_service, planner, _ = _expert_template_service([])
+    store, task_service, planner, executor = _expert_template_service([])
 
     with _template_client(task_service=task_service) as client:
         response = client.post(
@@ -919,20 +915,41 @@ def test_instantiation_rejects_missing_tools_before_persistence(
             headers={"X-User-ID": "template-owner"},
             json=_expert_template_request(),
         )
+        assert response.status_code == 201, response.text
+        task = response.json()
+        assert len(task["nodes"]) == 8
+        assert executor.contexts == []
 
-    assert response.status_code == 422
-    detail = response.json()["detail"]
-    assert detail["code"] == "TEMPLATE_CAPABILITY_MISSING"
-    assert detail["missing_capabilities"] == [
+        editable_agent = next(
+            node for node in task["nodes"] if node["type"] == "agent"
+        )
+        editable_agent["prompt"] += "\n仅使用可追溯的业务证据。"
+        updated = client.patch(
+            f"/tasks/{task['id']}",
+            headers={"X-User-ID": "template-owner"},
+            json={"nodes": task["nodes"]},
+        )
+        assert updated.status_code == 200, updated.text
+        assert executor.contexts == []
+
+        preflight = client.post(
+            f"/tasks/{task['id']}/preflight",
+            headers={"X-User-ID": "template-owner"},
+            json={"input": "测试输入"},
+        )
+
+    assert preflight.status_code == 200
+    assert preflight.json()["ready"] is False
+    assert preflight.json()["missing_capabilities"] == [
         "expert.conflict_check",
         "expert.lookup",
         "expert.rank",
     ]
-    assert asyncio.run(store.list_tasks("template-owner")) == []
+    assert len(asyncio.run(store.list_tasks("template-owner"))) == 1
     assert planner.calls == 0
 
 
-def test_instantiation_blocks_non_read_only_tools(
+def test_instantiation_does_not_check_tools_but_preflight_blocks_side_effects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
@@ -946,13 +963,24 @@ def test_instantiation_blocks_non_read_only_tools(
             headers={"X-User-ID": "template-owner"},
             json=_expert_template_request(),
         )
+        assert response.status_code == 201, response.text
+        task = response.json()
+        preflight = client.post(
+            f"/tasks/{task['id']}/preflight",
+            headers={"X-User-ID": "template-owner"},
+            json={"input": "测试输入"},
+        )
 
-    assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "TEMPLATE_CAPABILITY_UNSAFE"
-    assert response.json()["detail"]["blocked_capabilities"] == [
-        "expert.lookup"
-    ]
-    assert asyncio.run(store.list_tasks("template-owner")) == []
+    assert preflight.status_code == 200
+    assert preflight.json()["ready"] is False
+    check = next(
+        item
+        for item in preflight.json()["capability_checks"]
+        if item["capability_key"] == "expert.lookup"
+    )
+    assert check["external_side_effect"] is True
+    assert check["status"] == "unsupported"
+    assert len(asyncio.run(store.list_tasks("template-owner"))) == 1
     assert planner.calls == 0
 
 
