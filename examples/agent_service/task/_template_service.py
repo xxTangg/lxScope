@@ -44,7 +44,11 @@ class TemplateInstantiationError(ValueError):
 
         return TemplateInstantiationErrorDetail(
             code=self.code,
-            message=self.message,
+            message=(
+                f"当前会话缺少模板能力：{'、'.join(self.missing_capabilities)}。"
+                if self.missing_capabilities
+                else self.message
+            ),
             missing_capabilities=list(self.missing_capabilities),
             blocked_capabilities=list(self.blocked_capabilities),
             issues=list(self.issues),

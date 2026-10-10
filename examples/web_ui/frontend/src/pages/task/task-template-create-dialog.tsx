@@ -1,8 +1,8 @@
 import { AlertCircle, Loader2, Play, X } from 'lucide-react';
 import * as React from 'react';
 
-import type { TaskContext, TaskTemplateDefinition, TaskTemplateInputProperty } from '@/api/task';
 import { ApiError } from '@/api/client';
+import type { TaskContext, TaskTemplateDefinition, TaskTemplateInputProperty } from '@/api/task';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -144,15 +144,17 @@ export function TaskTemplateCreateDialog({
 						</DialogHeader>
 
 						<form onSubmit={handleSubmit} className="space-y-4">
-							<div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-								<div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate-700">
-									<span>模板依赖</span>
-									{template.required_capabilities.map((capability) => (
-										<Badge key={capability} variant="outline" className="bg-white font-mono text-[9px]">{capability}</Badge>
-									))}
+							{!error && (
+								<div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+									<div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate-700">
+										<span>模板依赖</span>
+										{template.required_capabilities.map((capability) => (
+											<Badge key={capability} variant="outline" className="bg-white font-mono text-[9px]">{capability}</Badge>
+										))}
+									</div>
+									<div className="text-[10px] leading-5 text-slate-500">这些是模板声明的能力依赖。实例化结果由服务端根据当前会话中的真实 Tool 校验。</div>
 								</div>
-								<div className="text-[10px] leading-5 text-slate-500">这些是模板声明的能力依赖。实例化结果由服务端根据当前会话中的真实 Tool 校验。</div>
-							</div>
+							)}
 
 							<div className="space-y-3">
 								{Object.entries(template.input_schema.properties).map(([key, property]) => {
@@ -213,7 +215,6 @@ export function TaskTemplateCreateDialog({
 										{nextStep && (
 											<div className="mt-2 space-y-2">
 												<p>{nextStep}</p>
-												<p className="text-[11px]">Task API 当前只向前端客户端提供错误码和消息，未暴露 422 中的逐项 missing_capabilities；上方列出的是模板全部能力依赖，不代表每一项都缺失。</p>
 											</div>
 										)}
 									</AlertDescription>

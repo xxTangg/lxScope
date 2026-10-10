@@ -264,8 +264,8 @@ export function TaskFlowEditor({
 						</div>
 					)}
 					{templateMode && (
-						<div className="mt-1 text-[11px] text-slate-500">
-							模板流程顺序固定；只能恢复来源模板声明的可选节点。
+						<div id="task-template-flow-edit-limitations" className="mt-1 max-w-3xl text-[11px] leading-5 text-slate-500">
+							模板流程顺序固定，服务端会拒绝重排。只能编辑模板授权的名称、提示词和输入问题；必需节点不能删除，新增仅限恢复模板声明的可选步骤，其他执行约束由模板固定。
 						</div>
 					)}
 				</div>
@@ -346,6 +346,12 @@ export function TaskFlowEditor({
 										<div className="text-[11px] text-muted-foreground">
 											{STEP_LABELS[node.type]}
 										</div>
+										{templateMode && templateStep && (
+											<div className="text-[11px] text-slate-500">
+												{templateStep.required ? '模板必需节点：不能删除。 ' : '模板可选节点。 '}
+												{templateStep.editable ? '可编辑模板授权的内容。' : '节点内容和执行配置由模板固定。'}
+											</div>
+										)}
 										<label className="flex items-center gap-2 text-xs text-muted-foreground">
 											<input
 												type="checkbox"
@@ -614,7 +620,9 @@ export function TaskFlowEditor({
 											size="icon-xs"
 											onClick={() => moveNode(index, -1)}
 											disabled={disabled || templateMode || index === 0}
-											aria-label="上移步骤"
+											aria-label={templateMode ? '上移步骤（模板顺序固定）' : '上移步骤'}
+											aria-describedby={templateMode ? 'task-template-flow-edit-limitations' : undefined}
+											title={templateMode ? '模板流程顺序固定，服务端会拒绝重排。' : '上移步骤'}
 										>
 											<ArrowUp />
 										</Button>
@@ -623,7 +631,9 @@ export function TaskFlowEditor({
 											size="icon-xs"
 											onClick={() => moveNode(index, 1)}
 											disabled={disabled || templateMode || index === nodes.length - 1}
-											aria-label="下移步骤"
+											aria-label={templateMode ? '下移步骤（模板顺序固定）' : '下移步骤'}
+											aria-describedby={templateMode ? 'task-template-flow-edit-limitations' : undefined}
+											title={templateMode ? '模板流程顺序固定，服务端会拒绝重排。' : '下移步骤'}
 										>
 											<ArrowDown />
 										</Button>
@@ -633,7 +643,8 @@ export function TaskFlowEditor({
 											className="text-destructive hover:text-destructive"
 											onClick={() => removeNode(index)}
 											disabled={fieldDisabled || nodes.length <= 1 || (templateMode && Boolean(templateStep?.required))}
-											aria-label="删除步骤"
+											aria-label={templateMode && templateStep?.required ? '删除步骤（模板必需节点）' : '删除步骤'}
+											title={templateMode && templateStep?.required ? '模板必需节点不能删除。' : '删除可选步骤'}
 										>
 											<Trash2 />
 										</Button>
