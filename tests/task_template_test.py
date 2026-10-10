@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from examples.agent_service.task._models import TaskRecord, TaskToolSchema
+from examples.agent_service.task._executor import StepExecutionResult
+from examples.agent_service.task._models import (
+    StepVerdict,
+    TaskRecord,
+    TaskToolSchema,
+)
 from examples.agent_service.task._router import (
     _get_template_registry,
     task_router,
@@ -29,6 +35,9 @@ from examples.agent_service.task._template_models import (
 from examples.agent_service.task._template_registry import (
     TemplateRegistry,
     TemplateRegistryError,
+)
+from examples.agent_service.task._template_validation import (
+    TaskTemplateValidator,
 )
 
 
@@ -213,10 +222,38 @@ class _TemplateToolExecutor:
     def __init__(self, tools: list[TaskToolSchema]) -> None:
         self.tools = tools
         self.contexts: list[Any] = []
+        self.executed_nodes: list[str] = []
 
     async def list_tools(self, context: Any) -> list[TaskToolSchema]:
         self.contexts.append(context)
         return self.tools
+
+    async def execute_node(
+        self,
+        *,
+        node: Any,
+        previous_output: str,
+        context: Any,
+    ) -> StepExecutionResult:
+        del context
+        self.executed_nodes.append(node.name)
+        return StepExecutionResult(
+            text=(
+                f"TEST MOCK ONLY — {node.name}; "
+                f"previous={previous_output[:80]}"
+            ),
+            result={"simulation": True},
+        )
+
+    async def verify_node(
+        self,
+        *,
+        node: Any,
+        output: str,
+        context: Any,
+    ) -> StepVerdict:
+        del node, output, context
+        return StepVerdict(passed=True, message="test mock accepted")
 
 
 class _PlannerMustNotRun:
@@ -276,6 +313,24 @@ def _expert_template_request() -> dict[str, Any]:
             "session_id": "session-template-test",
         },
     }
+
+
+def _wait_for_run_state(
+    client: TestClient,
+    run_id: str,
+    states: set[str],
+) -> dict[str, Any]:
+    for _ in range(300):
+        response = client.get(
+            f"/tasks/runs/{run_id}",
+            headers={"X-User-ID": "template-owner"},
+        )
+        assert response.status_code == 200, response.text
+        run = response.json()
+        if run["status"] in states:
+            return run
+        time.sleep(0.01)
+    pytest.fail(f"Task run {run_id} did not reach {sorted(states)}")
 
 
 def test_registry_loads_catalog_in_stable_order_independent_of_cwd(
@@ -502,6 +557,389 @@ def test_template_instantiation_copies_without_planner(
     assert template_after.model_dump(mode="json") == stored_template
 
 
+def test_s03_keeps_safety_steps_required_and_profile_optional() -> None:
+    template = TemplateRegistry().get_template("s03_expert_matching")
+    assert template is not None
+    by_key = {step.step_key: step for step in template.steps}
+
+    assert len(template.steps) == 8
+    assert by_key["extract_project_profile"].required is False
+    assert by_key["check_expert_conflicts"].required is True
+    assert by_key["collect_human_review"].required is True
+    assert all(
+        by_key[key].editable is False
+        for key in (
+            "lookup_expert_candidates",
+            "check_expert_conflicts",
+            "rank_expert_candidates",
+        )
+    )
+
+
+def test_template_save_validate_preflight_and_mock_run_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    store, task_service, planner, executor = _expert_template_service(
+        _expert_template_tools()
+    )
+    headers = {"X-User-ID": "template-owner"}
+
+    with _template_client(task_service=task_service) as client:
+        created = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers=headers,
+            json=_expert_template_request(),
+        )
+        assert created.status_code == 201, created.text
+        task = created.json()
+        assert task["template_inputs"]["project_name"] == "测试项目"
+
+        profile_id = task["template_step_bindings"]["extract_project_profile"]
+        profile = next(node for node in task["nodes"] if node["id"] == profile_id)
+        profile["config"]["prompt"] = "测试用：仅提取明确提供的项目信息。"
+        saved = client.patch(
+            f"/tasks/{task['id']}",
+            headers=headers,
+            json={"nodes": task["nodes"]},
+        )
+        assert saved.status_code == 200, saved.text
+
+        validated = client.post(
+            "/tasks/validate",
+            headers=headers,
+            json={"task_id": task["id"]},
+        )
+        assert validated.status_code == 200, validated.text
+        assert validated.json()["valid"] is True
+
+        preflight = client.post(
+            f"/tasks/{task['id']}/preflight",
+            headers=headers,
+            json={"input": "测试运行输入"},
+        )
+        assert preflight.status_code == 200, preflight.text
+        assert preflight.json()["ready"] is True
+        assert executor.executed_nodes == []
+
+        foreign_preflight = client.post(
+            f"/tasks/{task['id']}/preflight",
+            headers={"X-User-ID": "other-user"},
+            json={},
+        )
+        assert foreign_preflight.status_code == 404
+
+        queued = client.post(
+            f"/tasks/{task['id']}/runs",
+            headers=headers,
+            json={"input": "测试运行输入"},
+        )
+        assert queued.status_code == 202, queued.text
+        run_id = queued.json()["id"]
+        first_input = _wait_for_run_state(client, run_id, {"awaiting_input"})
+        assert first_input["pending_input"]["node_id"] == task[
+            "template_step_bindings"
+        ]["collect_matching_requirements"]
+
+        resumed = client.post(
+            f"/tasks/runs/{run_id}/input",
+            headers=headers,
+            json={
+                "request_id": first_input["pending_input"]["id"],
+                "answers": {
+                    "project_name": "测试项目",
+                    "project_brief": "测试项目背景",
+                    "professional_fields": "核安全",
+                },
+            },
+        )
+        assert resumed.status_code == 202, resumed.text
+        review_input = _wait_for_run_state(
+            client,
+            run_id,
+            {"awaiting_input", "failed", "succeeded"},
+        )
+        assert review_input["status"] == "awaiting_input", review_input
+        assert review_input["pending_input"]["node_id"] == task[
+            "template_step_bindings"
+        ]["collect_human_review"]
+
+        resumed = client.post(
+            f"/tasks/runs/{run_id}/input",
+            headers=headers,
+            json={
+                "request_id": review_input["pending_input"]["id"],
+                "answers": {"review_feedback": "测试复核意见"},
+            },
+        )
+        assert resumed.status_code == 202, resumed.text
+        completed = _wait_for_run_state(
+            client,
+            run_id,
+            {"succeeded", "failed", "canceled", "timed_out"},
+        )
+        assert completed["status"] == "succeeded", completed
+        assert "TEST MOCK ONLY" in completed["final_output"]
+        assert planner.calls == 0
+        assert executor.executed_nodes
+
+    assert len(asyncio.run(store.list_runs("template-owner", task["id"]))) == 1
+
+
+def test_optional_template_step_can_be_deleted_but_conflict_check_cannot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    store, task_service, _, _ = _expert_template_service(
+        _expert_template_tools()
+    )
+    headers = {"X-User-ID": "template-owner"}
+
+    with _template_client(task_service=task_service) as client:
+        created = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers=headers,
+            json=_expert_template_request(),
+        )
+        assert created.status_code == 201, created.text
+        task = created.json()
+        optional_id = task["template_step_bindings"]["extract_project_profile"]
+        without_optional = [
+            node for node in task["nodes"] if node["id"] != optional_id
+        ]
+        for index, node in enumerate(without_optional):
+            node["order"] = index
+        saved_optional = client.patch(
+            f"/tasks/{task['id']}",
+            headers=headers,
+            json={"nodes": without_optional},
+        )
+        assert saved_optional.status_code == 200, saved_optional.text
+        assert len(saved_optional.json()["nodes"]) == 7
+
+        conflict_id = task["template_step_bindings"]["check_expert_conflicts"]
+        edited_locked = [
+            dict(node) for node in saved_optional.json()["nodes"]
+        ]
+        conflict_node = next(
+            node for node in edited_locked if node["id"] == conflict_id
+        )
+        conflict_node["config"] = {
+            **conflict_node["config"],
+            "tool_name": "expert.rank",
+        }
+        changed_tool = client.patch(
+            f"/tasks/{task['id']}",
+            headers=headers,
+            json={"nodes": edited_locked},
+        )
+        assert changed_tool.status_code == 422
+        assert any(
+            "由模板锁定" in issue["message"]
+            for issue in changed_tool.json()["detail"]["issues"]
+        )
+
+        without_conflict = [
+            node for node in saved_optional.json()["nodes"]
+            if node["id"] != conflict_id
+        ]
+        for index, node in enumerate(without_conflict):
+            node["order"] = index
+        rejected = client.patch(
+            f"/tasks/{task['id']}",
+            headers=headers,
+            json={"nodes": without_conflict},
+        )
+        assert rejected.status_code == 422
+        assert any(
+            "强制步骤“回避与利益冲突校验”不能删除" in issue["message"]
+            for issue in rejected.json()["detail"]["issues"]
+        )
+        unchanged = client.get(f"/tasks/{task['id']}", headers=headers)
+        assert unchanged.json()["nodes"] == saved_optional.json()["nodes"]
+        assert asyncio.run(store.list_runs("template-owner", task["id"])) == []
+
+
+def test_template_rejects_wrong_required_order_before_save_or_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    store, task_service, _, executor = _expert_template_service(
+        _expert_template_tools()
+    )
+    headers = {"X-User-ID": "template-owner"}
+
+    with _template_client(task_service=task_service) as client:
+        created = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers=headers,
+            json=_expert_template_request(),
+        )
+        task = created.json()
+        before_rejected = client.get(
+            f"/tasks/{task['id']}",
+            headers=headers,
+        ).json()
+        reordered = list(task["nodes"])
+        first_tool = task["template_step_bindings"]["lookup_expert_candidates"]
+        conflict_tool = task["template_step_bindings"]["check_expert_conflicts"]
+        first_index = next(
+            i for i, node in enumerate(reordered) if node["id"] == first_tool
+        )
+        conflict_index = next(
+            i
+            for i, node in enumerate(reordered)
+            if node["id"] == conflict_tool
+        )
+        reordered[first_index], reordered[conflict_index] = (
+            reordered[conflict_index],
+            reordered[first_index],
+        )
+        for index, node in enumerate(reordered):
+            node["order"] = index
+
+        validation = client.post(
+            "/tasks/validate",
+            headers=headers,
+            json={"task_id": task["id"], "nodes": reordered},
+        )
+        assert validation.status_code == 200
+        assert validation.json()["valid"] is False
+        assert any(
+            "前置顺序" in issue["message"]
+            for issue in validation.json()["issues"]
+        )
+
+        rejected = client.patch(
+            f"/tasks/{task['id']}",
+            headers=headers,
+            json={"nodes": reordered},
+        )
+        assert rejected.status_code == 422
+        assert any(
+            "前置顺序" in issue["message"]
+            for issue in rejected.json()["detail"]["issues"]
+        )
+        # The invalid edit was never saved or queued as a Run.
+        after_rejected = client.get(
+            f"/tasks/{task['id']}",
+            headers=headers,
+        ).json()
+        assert after_rejected["nodes"] == before_rejected["nodes"]
+        assert executor.executed_nodes == []
+        assert asyncio.run(store.list_runs("template-owner", task["id"])) == []
+
+
+def test_template_run_missing_tool_and_missing_input_are_rejected_before_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    store, task_service, _, executor = _expert_template_service(
+        _expert_template_tools()
+    )
+    headers = {"X-User-ID": "template-owner"}
+
+    with _template_client(task_service=task_service) as client:
+        created = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers=headers,
+            json=_expert_template_request(),
+        )
+        assert created.status_code == 201
+        task = created.json()
+
+        empty_goal = client.patch(
+            f"/tasks/{task['id']}",
+            headers=headers,
+            json={"goal": ""},
+        )
+        assert empty_goal.status_code == 200, empty_goal.text
+        no_input = client.post(
+            f"/tasks/{task['id']}/preflight",
+            headers=headers,
+            json={},
+        )
+        assert no_input.status_code == 200
+        assert no_input.json()["ready"] is False
+        assert any(issue["path"] == "input" for issue in no_input.json()["issues"])
+        no_input_run = client.post(
+            f"/tasks/{task['id']}/runs",
+            headers=headers,
+            json={},
+        )
+        assert no_input_run.status_code == 422
+        assert asyncio.run(store.list_runs("template-owner", task["id"])) == []
+
+        # Losing one live tool after save is detected at preflight and run time.
+        task = empty_goal.json()
+        restored = client.patch(
+            f"/tasks/{task['id']}",
+            headers=headers,
+            json={"goal": "有效测试输入"},
+        )
+        assert restored.status_code == 200
+        executor.tools = []
+        missing = client.post(
+            f"/tasks/{task['id']}/preflight",
+            headers=headers,
+            json={},
+        )
+        assert missing.status_code == 200
+        assert missing.json()["ready"] is False
+        assert missing.json()["missing_capabilities"] == [
+            "expert.conflict_check",
+            "expert.lookup",
+            "expert.rank",
+        ]
+        rejected_run = client.post(
+            f"/tasks/{task['id']}/runs",
+            headers=headers,
+            json={},
+        )
+        assert rejected_run.status_code == 422
+        assert rejected_run.json()["detail"]["code"] == "TEMPLATE_CAPABILITY_MISSING"
+        assert asyncio.run(store.list_runs("template-owner", task["id"])) == []
+        assert executor.executed_nodes == []
+
+
+def test_template_preflight_requires_tool_schema_for_bound_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    _, task_service, _, executor = _expert_template_service(
+        _expert_template_tools()
+    )
+    headers = {"X-User-ID": "template-owner"}
+
+    with _template_client(task_service=task_service) as client:
+        created = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers=headers,
+            json=_expert_template_request(),
+        )
+        assert created.status_code == 201, created.text
+        task = created.json()
+        executor.tools = [
+            tool.model_copy(update={"input_schema": {}})
+            if tool.name == "expert.lookup"
+            else tool
+            for tool in executor.tools
+        ]
+
+        preflight = client.post(
+            f"/tasks/{task['id']}/preflight",
+            headers=headers,
+            json={"input": "测试输入"},
+        )
+
+    assert preflight.status_code == 200
+    assert preflight.json()["ready"] is False
+    assert any(
+        issue["path"].endswith("input_schema")
+        for issue in preflight.json()["issues"]
+    )
+
+
 def test_instantiation_rejects_missing_tools_before_persistence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -694,12 +1132,44 @@ def test_task_record_old_json_defaults_template_provenance_fields() -> None:
     payload.pop("source_template_id")
     payload.pop("source_template_version")
     payload.pop("template_step_bindings")
+    payload.pop("template_inputs")
 
     loaded = TaskRecord.model_validate_json(json.dumps(payload))
 
     assert loaded.source_template_id is None
     assert loaded.source_template_version is None
     assert loaded.template_step_bindings == {}
+    assert loaded.template_inputs is None
+
+
+def test_template_validation_reads_legacy_p3_input_snapshot() -> None:
+    template = TemplateRegistry().get_template("s03_expert_matching")
+    assert template is not None
+    compiled = TaskTemplateCompiler().compile_nodes(
+        template,
+        _expert_template_tools(),
+    )
+    inputs = _expert_template_request()["inputs"]
+    goal = (
+        f"{template.description}\n\n模板输入参数（JSON）：\n"
+        + json.dumps(inputs, ensure_ascii=False, sort_keys=True)
+    )
+    legacy_task = TaskRecord(
+        user_id="template-owner",
+        goal=goal,
+        nodes=compiled.nodes,
+        source_template_id=template.template_id,
+        source_template_version=template.template_version,
+        template_step_bindings=compiled.step_bindings,
+    )
+
+    result = TaskTemplateValidator(compiler=TaskTemplateCompiler()).validate(
+        legacy_task,
+        legacy_task.nodes,
+        tool_schemas=_expert_template_tools(),
+    )
+
+    assert result.valid is True
 
 
 def test_instantiate_request_rejects_client_provenance() -> None:

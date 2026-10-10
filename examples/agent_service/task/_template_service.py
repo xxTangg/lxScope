@@ -132,6 +132,7 @@ class TaskTemplateService:
             source_template_id=template.template_id,
             source_template_version=template.template_version,
             template_step_bindings=compiled.step_bindings,
+            template_inputs=inputs,
         )
 
 

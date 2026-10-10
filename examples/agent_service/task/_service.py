@@ -43,17 +43,24 @@ from ._models import (
     TaskRunRecord,
     TaskRunRequest,
     TaskInputReply,
+    TaskPreflightRequest,
     ToolStepConfig,
     StepVerdict,
     StepType,
     TaskStatus,
     UpdateTaskRequest,
+    TaskValidationIssue,
+    TaskValidationResponse,
 )
 from ._planner import PreviewTaskPlanner, TaskPlanner
 from ._plan_validation import format_plan_issues, validate_task_plan
 from ._store import TaskStoreProtocol
 from ._knowledge import TaskKnowledgeGateway
 from ._sop import TaskSOPStep, TaskStepState
+from ._template_validation import (
+    TaskTemplateValidator,
+    TaskValidationFailure,
+)
 
 
 def _utc_now() -> datetime:
@@ -105,6 +112,7 @@ class TaskService:
         """Bind repository and execution adapters."""
 
         self._store = store
+        self._template_validator = TaskTemplateValidator()
         self._message_bus = message_bus
         self._run_locks: dict[str, asyncio.Lock] = {}
         self._agentscope_executor = agentscope_executor
@@ -140,6 +148,7 @@ class TaskService:
         source_template_id: str | None = None,
         source_template_version: str | None = None,
         template_step_bindings: dict[str, str] | None = None,
+        template_inputs: dict[str, Any] | None = None,
     ) -> TaskRecord:
         """Create a draft, manual task, or trusted template-derived copy."""
 
@@ -163,6 +172,7 @@ class TaskService:
             source_template_id=source_template_id,
             source_template_version=source_template_version,
             template_step_bindings=template_step_bindings or {},
+            template_inputs=template_inputs,
         )
         return await self._store.save_task(record)
 
@@ -370,7 +380,10 @@ class TaskService:
         if body.knowledge_base_ids is not None:
             updates["knowledge_base_ids"] = body.knowledge_base_ids
         if body.nodes is not None:
-            updates["nodes"] = body.nodes
+            updates["nodes"] = [
+                node.model_copy(update={"order": index})
+                for index, node in enumerate(body.nodes)
+            ]
             updates["status"] = (
                 TaskStatus.ACTIVE if body.nodes else TaskStatus.DRAFT
             )
@@ -379,7 +392,94 @@ class TaskService:
                 if body.nodes
                 else TaskGenerationStatus.IDLE
             )
-        return await self._store.save_task(current.model_copy(update=updates))
+        candidate = current.model_copy(update=updates)
+        if (
+            candidate.source_template_id is not None
+            or candidate.source_template_version is not None
+            or body.nodes is not None
+        ):
+            validation = await self.validate_task_definition(
+                user_id,
+                candidate,
+                candidate.nodes,
+                context=candidate.source_context,
+            )
+            if not validation.valid:
+                raise TaskValidationFailure(validation)
+        return await self._store.save_task(candidate)
+
+    async def validate_task_definition(
+        self,
+        user_id: str,
+        task: TaskRecord | None,
+        nodes: list[TaskNode],
+        *,
+        context: TaskContext | None = None,
+        run_input: str | None = None,
+    ) -> TaskValidationResponse:
+        """Validate proposed nodes, discovering tools only for template copies."""
+
+        tool_schemas: list[TaskToolSchema] | None = None
+        if task is not None and (
+            task.source_template_id is not None
+            or task.source_template_version is not None
+        ):
+            tool_schemas = await self.list_tools(
+                user_id,
+                context or task.source_context,
+            )
+        return self._template_validator.validate(
+            task,
+            nodes,
+            tool_schemas=tool_schemas,
+            run_input=run_input,
+        )
+
+    async def preflight_task(
+        self,
+        user_id: str,
+        task_id: str,
+        body: TaskPreflightRequest,
+    ) -> TaskValidationResponse | None:
+        """Check ownership, workflow and current capabilities without writes."""
+
+        task = await self._store.get_task(user_id, task_id)
+        if task is None:
+            return None
+        context = task.source_context.model_copy(
+            update=body.context.model_dump(exclude_none=True),
+        )
+        run_input = body.input.strip() or task.goal.strip()
+        validation = await self.validate_task_definition(
+            user_id,
+            task,
+            task.nodes,
+            context=context,
+            run_input=run_input,
+        )
+        issues = list(validation.issues)
+        if task.status != TaskStatus.ACTIVE:
+            issues.append(
+                TaskValidationIssue(
+                    path="status",
+                    message="只有已保存的有效 Task 才能运行。",
+                ),
+            )
+        if not task.nodes:
+            issues.append(
+                TaskValidationIssue(
+                    path="nodes",
+                    message="Task 至少需要一个可运行节点。",
+                ),
+            )
+        ready = (
+            not issues
+            and not validation.missing_capabilities
+            and not validation.blocked_capabilities
+        )
+        return validation.model_copy(
+            update={"issues": issues, "valid": ready, "ready": ready},
+        )
 
     async def delete_task(self, user_id: str, task_id: str) -> bool:
         """Archive a task while keeping its runs inspectable."""
@@ -401,6 +501,16 @@ class TaskService:
         context = task.source_context.model_copy(
             update=body.context.model_dump(exclude_none=True),
         )
+        run_input = body.input.strip() or task.goal.strip()
+        validation = await self.validate_task_definition(
+            user_id,
+            task,
+            task.nodes,
+            context=context,
+            run_input=run_input,
+        )
+        if not validation.valid:
+            raise TaskValidationFailure(validation)
         run = TaskRunRecord(
             task_id=task.id,
             user_id=user_id,
@@ -418,7 +528,7 @@ class TaskService:
                 for node in task.nodes
             ],
             knowledge_base_ids=task.knowledge_base_ids,
-            input=body.input.strip() or task.goal,
+            input=run_input,
             context=context,
         )
         await self._store.save_run(run)

@@ -32,6 +32,9 @@ from ._models import (
     TaskRunRecord,
     TaskRunRequest,
     TaskInputReply,
+    TaskPreflightRequest,
+    TaskValidationRequest,
+    TaskValidationResponse,
     TaskStepKnowledgeGraphRequest,
     TaskToolSchema,
     UpdateTaskRequest,
@@ -52,6 +55,7 @@ from ._template_service import (
     TaskTemplateService,
     TemplateInstantiationError,
 )
+from ._template_validation import TaskValidationFailure
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +227,56 @@ async def instantiate_task_template(
             status_code=error.status_code,
             detail=error.public_detail(),
         ) from error
+
+
+@task_router.post(
+    "/validate",
+    response_model=TaskValidationResponse,
+    summary="Validate proposed Task nodes before saving",
+)
+async def validate_task(
+    body: TaskValidationRequest,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskValidationResponse:
+    """Validate a new Task structure or an owned Task copy without execution."""
+
+    task = None
+    if body.task_id is not None:
+        task = await task_service.get_task(user_id, body.task_id)
+        if task is None:
+            raise _not_found("Task", body.task_id)
+    nodes = body.nodes if body.nodes is not None else (task.nodes if task else [])
+    context = body.context
+    if task is not None:
+        context = task.source_context.model_copy(
+            update=(body.context.model_dump(exclude_none=True) if body.context else {}),
+        )
+    return await task_service.validate_task_definition(
+        user_id,
+        task,
+        nodes,
+        context=context,
+    )
+
+
+@task_router.post(
+    "/{task_id}/preflight",
+    response_model=TaskValidationResponse,
+    summary="Check whether a saved Task can run",
+)
+async def preflight_task(
+    task_id: str,
+    body: TaskPreflightRequest,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskValidationResponse:
+    """Read-only run check; it never creates a Run or calls a Task tool."""
+
+    result = await task_service.preflight_task(user_id, task_id, body)
+    if result is None:
+        raise _not_found("Task", task_id)
+    return result
 
 
 @task_router.get(
@@ -613,7 +667,13 @@ async def update_task(
 ) -> TaskRecord:
     """Update a task definition and create a new revision."""
 
-    task = await task_service.update_task(user_id, task_id, body)
+    try:
+        task = await task_service.update_task(user_id, task_id, body)
+    except TaskValidationFailure as error:
+        raise HTTPException(
+            status_code=422,
+            detail=error.public_detail(),
+        ) from error
     if task is None:
         raise _not_found("Task", task_id)
     return task
@@ -668,12 +728,18 @@ async def create_run(
 ) -> TaskRunRecord:
     """Queue one execution of the saved task definition."""
 
-    run = await task_service.create_run(
-        user_id,
-        task_id,
-        body,
-        _maybe_get_task_knowledge_gateway(request),
-    )
+    try:
+        run = await task_service.create_run(
+            user_id,
+            task_id,
+            body,
+            _maybe_get_task_knowledge_gateway(request),
+        )
+    except TaskValidationFailure as error:
+        raise HTTPException(
+            status_code=422,
+            detail=error.public_detail(),
+        ) from error
     if run is None:
         raise _not_found("Task", task_id)
     return run

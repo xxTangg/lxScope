@@ -3,7 +3,7 @@
   "template_id": "s03_expert_matching",
   "template_version": "1.0.0",
   "title": "专家智能匹配",
-  "description": "根据项目要求检索候选专家，执行回避检查和评分，并形成待人工确认的推荐结果。",
+  "description": "demo/configurable 样板：根据项目要求检索候选专家、执行回避检查和评分，并形成待人工复核的结果。未接通并验收真实专家库、回避规则和评分契约前，不代表真实业务推荐；AI 文本理由也不构成已核验的冲突结论。",
   "category": "review",
   "required_capabilities": [
     "expert.lookup",
@@ -40,7 +40,7 @@
       "step_key": "extract_project_profile",
       "title": "形成项目画像",
       "kind": "agent",
-      "required": true,
+      "required": false,
       "editable": true,
       "capability_key": null,
       "config": {"type": "agent", "prompt": "从用户提供的信息提取项目领域、专业方向、经验要求和明确限制。只依据已给信息，不推断利益关系或专家资质。"},

@@ -410,6 +410,7 @@ class TaskRecord(BaseModel):
         pattern=r"^\d+\.\d+\.\d+$",
     )
     template_step_bindings: dict[str, str] = Field(default_factory=dict)
+    template_inputs: dict[str, Any] | None = None
     last_run_id: str | None = None
     last_run_status: RunStatus | None = None
     created_at: datetime = Field(default_factory=_utc_now)
@@ -546,6 +547,55 @@ class UpdateTaskRequest(BaseModel):
     nodes: list[TaskNode] | None = Field(default=None, max_length=8)
     source_context: TaskContext | None = None
     knowledge_base_ids: list[str] | None = Field(default=None, max_length=16)
+
+
+class TaskValidationIssue(BaseModel):
+    """One field-specific Task validation finding."""
+
+    path: str = Field(min_length=1, max_length=500)
+    message: str = Field(min_length=1, max_length=2_000)
+
+
+class TaskValidationRequest(BaseModel):
+    """Validate proposed Task nodes before saving them."""
+
+    task_id: str | None = Field(default=None, min_length=1, max_length=80)
+    nodes: list[TaskNode] | None = Field(default=None, max_length=8)
+    context: TaskContext | None = None
+
+    @model_validator(mode="after")
+    def require_task_or_nodes(self) -> "TaskValidationRequest":
+        if self.task_id is None and self.nodes is None:
+            raise ValueError("task_id or nodes must be provided.")
+        return self
+
+
+class TaskPreflightRequest(BaseModel):
+    """Read-only check before a Task run is created."""
+
+    input: str = Field(default="", max_length=50_000)
+    context: TaskContext = Field(default_factory=TaskContext)
+
+
+class TaskValidationResponse(BaseModel):
+    """Result shared by save validation and run preflight routes."""
+
+    task_id: str | None = None
+    valid: bool
+    ready: bool | None = None
+    issues: list[TaskValidationIssue] = Field(default_factory=list)
+    missing_capabilities: list[str] = Field(default_factory=list)
+    blocked_capabilities: list[str] = Field(default_factory=list)
+
+
+class TaskValidationErrorDetail(BaseModel):
+    """Structured failure returned when save or run validation blocks."""
+
+    code: str = "TASK_VALIDATION_FAILED"
+    message: str = "Task 校验未通过。"
+    issues: list[TaskValidationIssue] = Field(default_factory=list)
+    missing_capabilities: list[str] = Field(default_factory=list)
+    blocked_capabilities: list[str] = Field(default_factory=list)
 
 
 class GenerateTaskRequest(BaseModel):
