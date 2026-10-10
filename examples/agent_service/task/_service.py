@@ -65,7 +65,8 @@ from ._models import (
 from ._planner import PreviewTaskPlanner, TaskPlanner
 from ._plan_validation import format_plan_issues, validate_task_plan
 from ._store import TaskStoreProtocol
-from ._knowledge import TaskKnowledgeGateway
+from ._knowledge import TaskKnowledgeError, TaskKnowledgeGateway
+from ._citation_verifier import TASK_CITATION_PROMPT, verify_task_citations
 from ._output_validation import validate_structured_result
 from ._capability_contracts import (
     capability_business_verified,
@@ -73,6 +74,7 @@ from ._capability_contracts import (
     capability_contract,
     capability_external_side_effect,
     is_task_artifact_capability,
+    is_task_native_capability,
     validate_capability_output,
     validate_contract_tool_schema,
 )
@@ -99,6 +101,258 @@ _TERMINAL_RUN_STATUSES = {
 
 
 logger = logging.getLogger(__name__)
+
+_TASK_NATIVE_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
+    "planning.template_retrieve": {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+    "document.citation_verify": {
+        "type": "object",
+        "properties": {"draft": {"type": "string"}},
+        "required": ["draft"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _with_task_native_tool_schemas(
+    nodes: list[TaskNode],
+    tool_schemas: list[TaskToolSchema],
+    *,
+    enabled: bool,
+) -> list[TaskToolSchema]:
+    """Expose Task-owned capabilities to validation, not AgentScope."""
+
+    native_nodes = [
+        node
+        for node in nodes
+        if node.type is StepType.TOOL
+        and isinstance(node.config, ToolStepConfig)
+        and is_task_native_capability(node.capability_key)
+    ]
+    native_names = {node.config.tool_name for node in native_nodes}
+    schemas = [
+        schema for schema in tool_schemas if schema.name not in native_names
+    ]
+    if not enabled:
+        return schemas
+    existing = {schema.name for schema in schemas}
+    for node in native_nodes:
+        if node.config.tool_name in existing:
+            continue
+        input_schema = _TASK_NATIVE_TOOL_SCHEMAS.get(node.capability_key or "")
+        if input_schema is None:
+            continue
+        schemas.append(
+            TaskToolSchema(
+                name=node.config.tool_name,
+                description="由 Task 模块安全适配已有授权知识库能力。",
+                input_schema=input_schema,
+                is_read_only=True,
+            ),
+        )
+        existing.add(node.config.tool_name)
+    return schemas
+
+
+def _needs_external_tool_discovery(task: TaskRecord) -> bool:
+    """Whether the Task has a Tool that must come from the session Toolkit."""
+
+    return any(
+        isinstance(node.config, ToolStepConfig)
+        and not is_task_native_capability(node.capability_key)
+        for node in task.nodes
+    )
+
+
+def _task_source_material_ids(
+    template_inputs: dict[str, Any] | None,
+) -> list[str]:
+    """Read the declared source scope without widening it."""
+
+    if not isinstance(template_inputs, dict):
+        return []
+    raw_ids = template_inputs.get("source_material_ids", [])
+    if raw_ids is None:
+        return []
+    if not isinstance(raw_ids, list) or any(
+        not isinstance(item, str) for item in raw_ids
+    ):
+        raise TaskKnowledgeError(
+            "source_material_invalid",
+            "指定资料标识格式无效，Task 未扩大到其他知识库资料。",
+        )
+    source_ids = list(
+        dict.fromkeys(item.strip() for item in raw_ids if item.strip())
+    )
+    if len(source_ids) > 128:
+        raise TaskKnowledgeError(
+            "source_material_limit",
+            "单个 Task 最多指定 128 份资料。",
+        )
+    return source_ids
+
+
+def _task_run_source_material_ids(
+    run: TaskRunRecord,
+    previous_output: str,
+) -> list[str]:
+    """Merge declared and collected IDs, then recheck authorization."""
+
+    source_ids = list(run.source_material_ids)
+    try:
+        payload = json.loads(previous_output)
+    except (json.JSONDecodeError, RecursionError):
+        payload = None
+    answers = payload.get("answers") if isinstance(payload, dict) else None
+    answer_value = (
+        answers.get("source_material_ids")
+        if isinstance(answers, dict)
+        else None
+    )
+    if answer_value is not None:
+        if not isinstance(answer_value, str):
+            raise TaskKnowledgeError(
+                "source_material_invalid",
+                "InputStep 中的资料标识格式无效。",
+            )
+        normalized = answer_value.strip()
+        if normalized:
+            if normalized.startswith("["):
+                try:
+                    parsed = json.loads(normalized)
+                except (json.JSONDecodeError, RecursionError) as error:
+                    raise TaskKnowledgeError(
+                        "source_material_invalid",
+                        "InputStep 中的资料标识列表不是合法 JSON。",
+                    ) from error
+                if not isinstance(parsed, list) or any(
+                    not isinstance(item, str) for item in parsed
+                ):
+                    raise TaskKnowledgeError(
+                        "source_material_invalid",
+                        "InputStep 中的资料标识列表格式无效。",
+                    )
+                source_ids.extend(parsed)
+            else:
+                source_ids.extend(re.split(r"[,，\n\r]+", normalized))
+    combined = list(
+        dict.fromkeys(item.strip() for item in source_ids if item.strip())
+    )
+    if len(combined) > 128:
+        raise TaskKnowledgeError(
+            "source_material_limit",
+            "单个 Task 最多指定 128 份资料。",
+        )
+    return combined
+
+
+def _task_planning_query(
+    task: TaskRecord | TaskRunRecord,
+    run_input: str,
+    previous_output: str | None = None,
+) -> str:
+    """Build a bounded RAG query from Task inputs and the collected answers."""
+
+    parts: list[str] = []
+    inputs = getattr(task, "template_inputs", None) or {}
+    if not inputs:
+        goal = getattr(task, "goal", "") or getattr(task, "input", "")
+        marker = "模板输入参数（JSON）：\n"
+        if marker in goal:
+            try:
+                candidate = json.loads(goal.split(marker, 1)[1])
+            except (json.JSONDecodeError, RecursionError):
+                candidate = None
+            if isinstance(candidate, dict):
+                inputs = candidate
+    for key in ("project_name", "project_brief", "professional_fields"):
+        value = inputs.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+        elif isinstance(value, list):
+            parts.extend(
+                item.strip()
+                for item in value
+                if isinstance(item, str) and item.strip()
+            )
+
+    if previous_output:
+        try:
+            answer_payload = json.loads(previous_output)
+        except (json.JSONDecodeError, RecursionError):
+            answer_payload = None
+        if isinstance(answer_payload, dict):
+            answers = answer_payload.get("answers")
+            if isinstance(answers, dict):
+                for key in (
+                    "project_name",
+                    "project_brief",
+                    "professional_fields",
+                ):
+                    value = answers.get(key)
+                    if isinstance(value, str) and value.strip():
+                        parts.append(value.strip())
+                    elif isinstance(value, list):
+                        parts.extend(
+                            item.strip()
+                            for item in value
+                            if isinstance(item, str) and item.strip()
+                        )
+
+    if run_input.strip():
+        parts.append(run_input.strip())
+    query = "\n".join(dict.fromkeys(parts))
+    return query[:8_000]
+
+
+def _retrieval_result_for_run(
+    run: TaskRunRecord,
+    current: TaskRunRecord,
+    before_order: int,
+) -> dict[str, Any] | None:
+    """Return only a persisted successful RAG result from an earlier node."""
+
+    for index in range(min(before_order, len(run.nodes)) - 1, -1, -1):
+        node = run.nodes[index]
+        if node.capability_key != "planning.template_retrieve":
+            continue
+        if index >= len(current.node_runs):
+            continue
+        result = current.node_runs[index].result
+        if (
+            isinstance(result, dict)
+            and result.get("status") == "ready"
+            and isinstance(result.get("evidence"), list)
+        ):
+            return result
+    return None
+
+
+def _with_citation_prompt(run: TaskRunRecord, node: TaskNode) -> TaskNode:
+    """Add the citation contract only to this run's Agent snapshot."""
+
+    if (
+        node.type is not StepType.AGENT
+        or not any(
+            item.capability_key == "planning.template_retrieve"
+            and item.order < node.order
+            for item in run.nodes
+        )
+    ):
+        return node
+    assert isinstance(node.config, AgentStepConfig)
+    prompt = f"{node.config.prompt.rstrip()}\n\n{TASK_CITATION_PROMPT}"
+    if len(prompt) > 20_000:
+        raise TaskKnowledgeError(
+            "citation_prompt_too_large",
+            "节点提示词过长，无法安全追加引用核验协议。",
+        )
+    config = node.config.model_copy(update={"prompt": prompt})
+    return node.model_copy(update={"prompt": prompt, "config": config})
 
 _DEFAULT_TASK_GENERATION_TIMEOUT_SECONDS = 45.0
 _TASK_VARIABLE_PATTERN = re.compile(
@@ -595,13 +849,19 @@ class TaskService:
         user_id: str,
         task_id: str,
         body: TaskPreflightRequest,
+        knowledge_gateway: TaskKnowledgeGateway | None = None,
     ) -> TaskValidationResponse | None:
         """Check ownership, workflow and current capabilities without writes."""
 
         task = await self._store.get_task(user_id, task_id)
         if task is None:
             return None
-        return await self._preflight_task_record(user_id, task, body)
+        return await self._preflight_task_record(
+            user_id,
+            task,
+            body,
+            knowledge_gateway=knowledge_gateway,
+        )
 
     async def _preflight_task_record(
         self,
@@ -611,6 +871,7 @@ class TaskService:
         *,
         tool_schemas: list[TaskToolSchema] | None = None,
         tool_discovery_error: bool = False,
+        knowledge_gateway: TaskKnowledgeGateway | None = None,
     ) -> TaskValidationResponse:
         """Inspect a fixed Task snapshot without creating a Run or calling Tools."""
 
@@ -618,10 +879,7 @@ class TaskService:
             update=body.context.model_dump(exclude_none=True),
         )
         run_input = body.input.strip() or task.goal.strip()
-        needs_tools = bool(
-            task.source_template_id
-            or any(isinstance(node.config, ToolStepConfig) for node in task.nodes)
-        )
+        needs_tools = _needs_external_tool_discovery(task)
         if tool_schemas is None:
             if needs_tools:
                 try:
@@ -638,6 +896,11 @@ class TaskService:
                     )
                     tool_schemas = []
                     tool_discovery_error = True
+        tool_schemas = _with_task_native_tool_schemas(
+            task.nodes,
+            tool_schemas or [],
+            enabled=knowledge_gateway is not None,
+        )
         validation_tool_schemas = None if tool_discovery_error else tool_schemas
         validation = self._template_validator.validate(
             task,
@@ -676,6 +939,8 @@ class TaskService:
             tool_schemas=tool_schemas or [],
             tool_discovery_error=tool_discovery_error,
             missing_capabilities=validation.missing_capabilities,
+            knowledge_gateway=knowledge_gateway,
+            preflight_query=run_input,
         )
         satisfied_artifact_capabilities = {
             check.capability_key
@@ -739,6 +1004,8 @@ class TaskService:
         tool_schemas: list[TaskToolSchema],
         missing_capabilities: list[str],
         tool_discovery_error: bool = False,
+        knowledge_gateway: TaskKnowledgeGateway | None = None,
+        preflight_query: str = "",
     ) -> list[TaskCapabilityCheck]:
         """Report tool, schema, permission, and source verification separately."""
 
@@ -782,6 +1049,19 @@ class TaskService:
                 else node.capability_key
             ) or node.config.tool_name
             found_capabilities.add(capability_key)
+            if is_task_native_capability(capability_key):
+                checks.append(
+                    await self._preflight_task_native_capability(
+                        user_id=user_id,
+                        task=task,
+                        nodes=nodes,
+                        node=node,
+                        capability_key=capability_key,
+                        knowledge_gateway=knowledge_gateway,
+                        preflight_query=preflight_query,
+                    ),
+                )
+                continue
             contract = capability_contract(capability_key)
             candidates = tools_by_name.get(node.config.tool_name, [])
             tool = candidates[0] if len(candidates) == 1 else None
@@ -930,6 +1210,127 @@ class TaskService:
                 ),
             )
         return checks
+
+    async def _preflight_task_native_capability(
+        self,
+        *,
+        user_id: str,
+        task: TaskRecord,
+        nodes: list[TaskNode],
+        node: TaskNode,
+        capability_key: str,
+        knowledge_gateway: TaskKnowledgeGateway | None,
+        preflight_query: str,
+    ) -> TaskCapabilityCheck:
+        """Check Task RAG and citation adapters against the user's KB scope."""
+
+        base = {
+            "step_id": node.id,
+            "step_name": node.name,
+            "capability_key": capability_key,
+            "category": capability_category(capability_key),
+            "tool_name": (
+                node.config.tool_name
+                if isinstance(node.config, ToolStepConfig)
+                else None
+            ),
+            "tool_available": knowledge_gateway is not None,
+            "interface_compatible": True,
+            "external_side_effect": False,
+        }
+        if capability_key == "document.citation_verify" and not any(
+            item.type is StepType.TOOL
+            and item.capability_key == "planning.template_retrieve"
+            and item.order < node.order
+            for item in nodes
+        ):
+            return TaskCapabilityCheck(
+                **base,
+                permission_status="not_applicable",
+                business_data_verified=False,
+                status="missing",
+                message="引用核验节点缺少前置的 Task 授权知识库检索节点。",
+            )
+        if knowledge_gateway is None:
+            return TaskCapabilityCheck(
+                **base,
+                permission_status="unavailable",
+                business_data_verified=False,
+                status="missing",
+                message="Task 知识库服务未配置，不能确认授权检索和引用证据。",
+            )
+        try:
+            source_material_ids = _task_source_material_ids(
+                task.template_inputs
+            )
+            if capability_key == "planning.template_retrieve":
+                scope = await knowledge_gateway.retrieve_task_evidence(
+                    user_id,
+                    task.knowledge_base_ids,
+                    _task_planning_query(task, preflight_query),
+                    source_material_ids=source_material_ids,
+                    top_k=8,
+                )
+                selected = scope["knowledge_bases"]
+            else:
+                scope = await knowledge_gateway.inspect_task_scope(
+                    user_id,
+                    task.knowledge_base_ids,
+                    source_material_ids,
+                )
+                selected = scope["knowledge_bases"]
+        except TaskKnowledgeError as error:
+            status = (
+                "missing"
+                if error.code
+                in {
+                    "knowledge_base_required",
+                    "no_indexed_material",
+                    "source_material_unavailable",
+                    "source_material_not_ready",
+                    "source_material_limit",
+                    "source_material_invalid",
+                    "no_matching_evidence",
+                }
+                else "unverified"
+            )
+            return TaskCapabilityCheck(
+                **base,
+                permission_status="unavailable",
+                business_data_verified=False,
+                status=status,
+                message=error.message,
+            )
+        except Exception as error:  # noqa: BLE001 — fail closed
+            logger.info(
+                "Task knowledge scope preflight failed for task=%s: %s",
+                task.id,
+                error,
+            )
+            return TaskCapabilityCheck(
+                **base,
+                permission_status="unavailable",
+                business_data_verified=False,
+                status="unverified",
+                message="Task 无法确认当前用户的知识库访问范围。",
+            )
+
+        source_label = "、".join(item["name"] for item in selected[:4])
+        evidence_note = (
+            f"，并已实际检索到 {len(scope['evidence'])} 条可追溯原文片段"
+            if capability_key == "planning.template_retrieve"
+            else "；确定性引用校验器可用，上游检索状态见检索能力检查"
+        )
+        return TaskCapabilityCheck(
+            **base,
+            permission_status="allowed",
+            business_data_verified=True,
+            status="available",
+            message=(
+                f"已按当前用户权限确认知识库“{source_label}”及已索引资料"
+                f"{evidence_note}。"
+            ),
+        )
 
     async def _preflight_task_artifact_capability(
         self,
@@ -1081,10 +1482,7 @@ class TaskService:
         context = task.source_context.model_copy(
             update=body.context.model_dump(exclude_none=True),
         )
-        needs_tools = bool(
-            task.source_template_id
-            or any(isinstance(node.config, ToolStepConfig) for node in task.nodes)
-        )
+        needs_tools = _needs_external_tool_discovery(task)
         tool_discovery_error = False
         if needs_tools:
             try:
@@ -1103,12 +1501,18 @@ class TaskService:
                 tool_discovery_error = True
         else:
             tool_schemas = []
+        tool_schemas = _with_task_native_tool_schemas(
+            task.nodes,
+            tool_schemas,
+            enabled=knowledge_gateway is not None,
+        )
         validation = await self._preflight_task_record(
             user_id,
             task,
             preflight_body,
             tool_schemas=tool_schemas,
             tool_discovery_error=tool_discovery_error,
+            knowledge_gateway=knowledge_gateway,
         )
         if not validation.ready:
             raise TaskValidationFailure(validation)
@@ -1121,13 +1525,7 @@ class TaskService:
             context = task.source_context.model_copy(
                 update=body.context.model_dump(exclude_none=True),
             )
-            needs_tools = bool(
-                task.source_template_id
-                or any(
-                    isinstance(node.config, ToolStepConfig)
-                    for node in task.nodes
-                )
-            )
+            needs_tools = _needs_external_tool_discovery(task)
             tool_discovery_error = False
             if needs_tools:
                 try:
@@ -1146,12 +1544,18 @@ class TaskService:
                     tool_discovery_error = True
             else:
                 tool_schemas = []
+            tool_schemas = _with_task_native_tool_schemas(
+                task.nodes,
+                tool_schemas,
+                enabled=knowledge_gateway is not None,
+            )
             validation = await self._preflight_task_record(
                 user_id,
                 task,
                 preflight_body,
                 tool_schemas=tool_schemas,
                 tool_discovery_error=tool_discovery_error,
+                knowledge_gateway=knowledge_gateway,
             )
             if not validation.ready:
                 raise TaskValidationFailure(validation)
@@ -1189,6 +1593,9 @@ class TaskService:
                 for node in run_nodes
             ],
             knowledge_base_ids=task.knowledge_base_ids,
+            source_material_ids=_task_source_material_ids(
+                task.template_inputs
+            ),
             input=run_input,
             context=context,
         )
@@ -1427,8 +1834,12 @@ class TaskService:
                         node.config.tool_name
                         for node in tool_nodes
                         if isinstance(node.config, ToolStepConfig)
+                        and not is_task_native_capability(node.capability_key)
                     }
-                    async with run_scope(context, tool_names=tool_names):
+                    if tool_names:
+                        async with run_scope(context, tool_names=tool_names):
+                            await self._advance_sop(run_id, knowledge_gateway)
+                    else:
                         await self._advance_sop(run_id, knowledge_gateway)
                 else:
                     await self._advance_sop(run_id, knowledge_gateway)
@@ -1524,11 +1935,18 @@ class TaskService:
                     task_revision=run.task_revision,
                     history=execution_history,
                 )
-                artifact_spec = await self._build_artifact_spec(
-                    output=previous_output,
-                    context=artifact_context,
-                    format=artifact_config.format.value,
-                )
+                if any(
+                    node.capability_key == "document.citation_verify"
+                    for node in run.nodes
+                ):
+                    # Do not reshape verified content with a second model call.
+                    artifact_spec = spec_from_markdown(previous_output)
+                else:
+                    artifact_spec = await self._build_artifact_spec(
+                        output=previous_output,
+                        context=artifact_context,
+                        format=artifact_config.format.value,
+                    )
                 generated = generate_artifact(
                     output=previous_output,
                     config=artifact_config,
@@ -1810,8 +2228,109 @@ class TaskService:
                     else ""
                 ),
             )
+            if (
+                isinstance(node.config, ToolStepConfig)
+                and is_task_native_capability(node.capability_key)
+            ):
+                if gateway is None:
+                    return StepExecutionResult(
+                        text="Task 知识库服务未配置。",
+                        status="failed",
+                        reason="Task 知识库服务未配置，不能执行授权检索或引用核验。",
+                    )
+                if node.capability_key == "planning.template_retrieve":
+                    try:
+                        result = await gateway.retrieve_task_evidence(
+                            run.user_id,
+                            run.knowledge_base_ids,
+                            _task_planning_query(
+                                run,
+                                run.input,
+                                previous_output,
+                            ),
+                            source_material_ids=_task_run_source_material_ids(
+                                run,
+                                previous_output,
+                            ),
+                            top_k=8,
+                        )
+                    except TaskKnowledgeError as error:
+                        return StepExecutionResult(
+                            text=error.message,
+                            status="failed",
+                            reason=error.message,
+                            metadata={"knowledge_error_code": error.code},
+                        )
+                    return StepExecutionResult(
+                        text=gateway.format_task_evidence(result),
+                        result=result,
+                        metadata={
+                            "knowledge_retrieval": {
+                                "status": "ready",
+                                "evidence_count": len(result["evidence"]),
+                                "retrieved_at": result["retrieved_at"],
+                            },
+                        },
+                    )
+                if node.capability_key == "document.citation_verify":
+                    result = _retrieval_result_for_run(
+                        run,
+                        current,
+                        node.order,
+                    )
+                    if result is None:
+                        detail = "引用核验节点未找到本次运行已保存的授权检索证据。"
+                        return StepExecutionResult(
+                            text=detail,
+                            status="failed",
+                            reason=detail,
+                            metadata={
+                                "citation_verification": {
+                                    "passed": False,
+                                    "issues": [detail],
+                                    "verified_citations": [],
+                                },
+                            },
+                            result={
+                                "passed": False,
+                                "issues": [detail],
+                                "verified_citations": [],
+                            },
+                        )
+                    verification = verify_task_citations(
+                        previous_output,
+                        result["evidence"],
+                    )
+                    text = json.dumps(
+                        verification,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    return StepExecutionResult(
+                        text=text,
+                        result=verification,
+                        metadata={"citation_verification": verification},
+                        status=(
+                            "completed"
+                            if verification["passed"]
+                            else "failed"
+                        ),
+                        reason=(
+                            None
+                            if verification["passed"]
+                            else "引用核验失败：" + "；".join(verification["issues"])
+                        ),
+                    )
+            citation_bound_run = any(
+                item.capability_key == "document.citation_verify"
+                for item in run.nodes
+            )
             state.knowledge_context = ""
-            if gateway is not None and node.type is StepType.AGENT:
+            if (
+                gateway is not None
+                and node.type is StepType.AGENT
+                and not citation_bound_run
+            ):
                 knowledge = await self._retrieve_knowledge(
                     gateway, current, node, previous_output
                 )
@@ -1820,9 +2339,10 @@ class TaskService:
                     context = context.model_copy(
                         update={"knowledge_context": knowledge}
                     )
+            execution_node = _with_citation_prompt(run, node)
             return _normalize_execution_result(
                 await self._select_executor(context).execute_node(
-                    node=node,
+                    node=execution_node,
                     previous_output=previous_output,
                     context=context,
                 )
@@ -1831,6 +2351,62 @@ class TaskService:
         async def verify(
             node: TaskNode, output: str, state: TaskStepState
         ) -> StepVerdict:
+            if (
+                isinstance(node.config, ToolStepConfig)
+                and node.capability_key == "document.citation_verify"
+            ):
+                verification = state.result
+                if not isinstance(verification, dict):
+                    return StepVerdict(
+                        passed=False,
+                        message="引用核验节点没有结构化校验结果。",
+                    )
+                return StepVerdict(
+                    passed=verification.get("passed") is True,
+                    message=(
+                        "引用来源和摘录已通过确定性校验。"
+                        if verification.get("passed") is True
+                        else "引用核验失败："
+                        + "；".join(
+                            str(item)
+                            for item in verification.get("issues", [])
+                        )
+                    ),
+                )
+
+            if (
+                node.type is StepType.AGENT
+                and any(
+                    item.capability_key == "document.citation_verify"
+                    and item.order < node.order
+                    for item in run.nodes
+                )
+            ):
+                current = await self._store.get_run(run.user_id, run.id)
+                evidence_result = (
+                    _retrieval_result_for_run(run, current, node.order)
+                    if current is not None
+                    else None
+                )
+                if evidence_result is None:
+                    return StepVerdict(
+                        passed=False,
+                        message="最终输出缺少本次运行的授权检索证据，不能生成文件。",
+                    )
+                verification = verify_task_citations(
+                    output,
+                    evidence_result["evidence"],
+                )
+                state.metadata["final_citation_verification"] = verification
+                if not verification["passed"]:
+                    return StepVerdict(
+                        passed=False,
+                        message=(
+                            "最终输出引用核验失败："
+                            + "；".join(verification["issues"])
+                        ),
+                    )
+
             if node.output_schema is not None:
                 if node.type is StepType.TOOL and node.capability_key:
                     validation = validate_capability_output(

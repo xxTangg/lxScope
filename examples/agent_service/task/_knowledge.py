@@ -8,8 +8,11 @@ and uses AgentScope's graph models/store for entity-relation extraction.
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import SecretStr
@@ -17,6 +20,15 @@ from pydantic import SecretStr
 from agentscope.app.storage import RedisKnowledgeGraphStore
 
 from ._models import TaskKnowledgeBaseOption
+
+
+class TaskKnowledgeError(RuntimeError):
+    """A safe, user-facing failure at the Task knowledge boundary."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(message)
 
 
 class TaskKnowledgeGateway:
@@ -108,6 +120,290 @@ class TaskKnowledgeGateway:
         if not evidence:
             return ""
         return "\n\n".join(evidence[:12])
+
+    async def inspect_task_scope(
+        self,
+        user_id: str,
+        knowledge_base_ids: list[str],
+        source_material_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Check selected KB access and indexed material without searching."""
+
+        selected_ids = list(
+            dict.fromkeys(item for item in knowledge_base_ids if item)
+        )
+        if not selected_ids:
+            raise TaskKnowledgeError(
+                "knowledge_base_required",
+                "请先为此 Task 选择当前用户有权访问的知识库。",
+            )
+        if len(selected_ids) > 16:
+            raise TaskKnowledgeError(
+                "knowledge_base_limit",
+                "单个 Task 最多选择 16 个知识库。",
+            )
+
+        try:
+            views = await self._resolve_views(user_id, selected_ids)
+        except ValueError as error:
+            raise TaskKnowledgeError(
+                "knowledge_base_unavailable",
+                "所选知识库不存在或当前用户无权访问。",
+            ) from error
+        except Exception as error:  # noqa: BLE001 — fail closed
+            raise TaskKnowledgeError(
+                "knowledge_service_unavailable",
+                "当前知识库服务无法完成 Task 预检。",
+            ) from error
+
+        requested_sources = list(
+            dict.fromkeys(
+                item.strip()
+                for item in (source_material_ids or [])
+                if isinstance(item, str) and item.strip()
+            ),
+        )
+        if len(requested_sources) > 128:
+            raise TaskKnowledgeError(
+                "source_material_limit",
+                "单个 Task 最多指定 128 份资料。",
+            )
+        source_records: list[Any] = []
+        if requested_sources:
+            get_status = getattr(self._service, "get_document_status", None)
+            if not callable(get_status):
+                raise TaskKnowledgeError(
+                    "source_status_unavailable",
+                    "当前知识库服务不能确认指定资料的授权和索引状态。",
+                )
+            try:
+                for view in views:
+                    source_records.extend(
+                        await get_status(user_id, view.id, requested_sources),
+                    )
+            except Exception as error:  # noqa: BLE001 — fail closed
+                raise TaskKnowledgeError(
+                    "source_status_unavailable",
+                    "当前知识库服务不能确认指定资料的授权和索引状态。",
+                ) from error
+            found_ids = {
+                str(getattr(record, "id", "")) for record in source_records
+            }
+            missing_ids = sorted(set(requested_sources) - found_ids)
+            if missing_ids:
+                raise TaskKnowledgeError(
+                    "source_material_unavailable",
+                    "部分资料标识未在所选知识库中找到，或当前用户无权访问。",
+                )
+            not_ready = [
+                record
+                for record in source_records
+                if getattr(record, "status", None) != "ready"
+            ]
+            if not_ready:
+                raise TaskKnowledgeError(
+                    "source_material_not_ready",
+                    "指定资料尚未完成索引，暂时不能用于可核验引用。",
+                )
+        elif not any(
+            int(getattr(getattr(view, "status_counts", None), "ready", 0) or 0)
+            for view in views
+        ):
+            raise TaskKnowledgeError(
+                "no_indexed_material",
+                "所选知识库中没有已完成索引的资料。",
+            )
+
+        return {
+            "knowledge_bases": [
+                {
+                    "id": view.id,
+                    "name": view.name,
+                    "ready_document_count": int(
+                        getattr(
+                            getattr(view, "status_counts", None),
+                            "ready",
+                            0,
+                        )
+                        or 0
+                    ),
+                }
+                for view in views
+            ],
+            "source_material_ids": requested_sources,
+            "source_records": source_records,
+        }
+
+    async def retrieve_task_evidence(
+        self,
+        user_id: str,
+        knowledge_base_ids: list[str],
+        query: str,
+        *,
+        source_material_ids: list[str] | None = None,
+        top_k: int = 8,
+    ) -> dict[str, Any]:
+        """Search authorized KBs and retain evidence for citation checks."""
+
+        normalized_query = query.strip()[:8_000]
+        if not normalized_query:
+            raise TaskKnowledgeError(
+                "query_required",
+                "项目策划输入为空，无法检索授权资料。",
+            )
+        scope = await self.inspect_task_scope(
+            user_id,
+            knowledge_base_ids,
+            source_material_ids,
+        )
+        try:
+            views = await self._resolve_views(
+                user_id,
+                [item["id"] for item in scope["knowledge_bases"]],
+            )
+        except ValueError as error:
+            raise TaskKnowledgeError(
+                "knowledge_base_unavailable",
+                "检索期间知识库不可用或当前用户无权访问。",
+            ) from error
+        except Exception as error:  # noqa: BLE001 — fail closed
+            raise TaskKnowledgeError(
+                "knowledge_service_unavailable",
+                "当前知识库服务无法完成授权检索。",
+            ) from error
+        requested_sources = set(scope["source_material_ids"])
+        evidence: list[dict[str, Any]] = []
+        get_status = getattr(self._service, "get_document_status", None)
+        if not callable(get_status):
+            raise TaskKnowledgeError(
+                "source_status_unavailable",
+                "当前知识库服务不能确认检索结果的来源状态。",
+            )
+
+        try:
+            for view in views:
+                results = await self._service.search(
+                    user_id,
+                    view.id,
+                    normalized_query,
+                    top_k=max(1, min(top_k, 12)),
+                )
+                result_ids = {
+                    str(getattr(result, "document_id", ""))
+                    for result in results
+                    if getattr(result, "document_id", None)
+                }
+                if requested_sources:
+                    result_ids.intersection_update(requested_sources)
+                if not result_ids:
+                    continue
+                records = await get_status(
+                    user_id,
+                    view.id,
+                    sorted(result_ids),
+                )
+                records_by_id = {
+                    str(getattr(record, "id", "")): record
+                    for record in records
+                    if getattr(record, "status", None) == "ready"
+                }
+                for result in results:
+                    document_id = str(getattr(result, "document_id", ""))
+                    record = records_by_id.get(document_id)
+                    if record is None:
+                        continue
+                    chunk = getattr(result, "chunk", None)
+                    content = getattr(chunk, "content", None)
+                    raw_text = getattr(content, "text", "")
+                    if not isinstance(raw_text, str) or not raw_text.strip():
+                        continue
+                    chunk_index = getattr(chunk, "chunk_index", None)
+                    if not isinstance(chunk_index, int) or chunk_index < 0:
+                        continue
+                    digest = hashlib.sha256(
+                        raw_text.encode("utf-8")
+                    ).hexdigest()
+                    max_chars = 2_000
+                    source_text = raw_text[:max_chars]
+                    updated_at = getattr(record, "updated_at", None)
+                    score = getattr(result, "score", None)
+                    evidence.append(
+                        {
+                            "knowledge_base_id": view.id,
+                            "knowledge_base_name": view.name,
+                            "document_id": document_id,
+                            "source": str(
+                                getattr(
+                                    getattr(record, "data", None),
+                                    "filename",
+                                    getattr(chunk, "source", "未知来源"),
+                                )
+                            ),
+                            "source_updated_at": (
+                                updated_at.isoformat()
+                                if hasattr(updated_at, "isoformat")
+                                else None
+                            ),
+                            "chunk_index": chunk_index,
+                            "total_chunks": getattr(
+                                chunk,
+                                "total_chunks",
+                                None,
+                            ),
+                            "score": (
+                                score
+                                if isinstance(score, (int, float))
+                                else None
+                            ),
+                            "content_sha256": digest,
+                            "source_text": source_text,
+                            "source_text_truncated": len(raw_text) > max_chars,
+                            "source_status": "ready",
+                        },
+                    )
+        except TaskKnowledgeError:
+            raise
+        except Exception as error:  # noqa: BLE001 — report retrieval failure
+            raise TaskKnowledgeError(
+                "retrieval_failed",
+                "授权知识库检索失败，Task 已停止，未生成策划初稿。",
+            ) from error
+
+        evidence.sort(
+            key=lambda item: float(item["score"] or 0),
+            reverse=True,
+        )
+        evidence = evidence[:6]
+        if not evidence:
+            raise TaskKnowledgeError(
+                "no_matching_evidence",
+                "授权资料中没有检索到可引用的原文片段，Task 已停止。",
+            )
+        return {
+            "status": "ready",
+            "query": normalized_query,
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            "knowledge_bases": scope["knowledge_bases"],
+            "evidence": evidence,
+            "citation_protocol": (
+                "策划正文中的事实必须标注 [C1] 等引用编号。末尾添加唯一的 "
+                "```task-citations JSON 区块，逐项包含 citation_id、knowledge_base_id、"
+                "document_id、chunk_index、content_sha256 和 quote；"
+                "quote 必须是对应原文片段的"
+                "连续逐字摘录。无法获得证据的内容标为建议或待补充，不得伪造来源。"
+            ),
+        }
+
+    @staticmethod
+    def format_task_evidence(result: dict[str, Any]) -> str:
+        """Serialize retrieval evidence with bounded JSON formatting."""
+
+        return json.dumps(
+            result,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
 
     async def get_graph(
         self,

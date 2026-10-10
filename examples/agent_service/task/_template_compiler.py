@@ -31,6 +31,7 @@ from ._output_validation import (
 )
 from ._capability_contracts import (
     capability_contract,
+    is_task_native_capability,
     validate_contract_tool_schema,
 )
 from ._template_models import (
@@ -238,7 +239,11 @@ class TaskTemplateCompiler:
 
         bound_tools: dict[str, TaskToolSchema] = {}
         tool_names = {
-            capability_key: self._aliases.get(capability_key, capability_key)
+            capability_key: (
+                capability_key
+                if is_task_native_capability(capability_key)
+                else self._aliases.get(capability_key, capability_key)
+            )
             for capability_key in tool_steps
         }
         for capability_key in tool_steps:

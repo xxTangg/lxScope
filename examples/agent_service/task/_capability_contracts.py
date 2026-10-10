@@ -343,6 +343,9 @@ _SIDE_EFFECT_CAPABILITIES = frozenset(
 _TASK_ARTIFACT_CAPABILITIES = frozenset(
     {"document.render", "meeting.minutes_export"}
 )
+_TASK_NATIVE_CAPABILITIES = frozenset(
+    {"planning.template_retrieve", "document.citation_verify"}
+)
 
 
 def capability_category(capability_key: str) -> str:
@@ -379,6 +382,15 @@ def is_task_artifact_capability(capability_key: str) -> bool:
     """Whether an unbound logical capability is provided by Task artifacts."""
 
     return capability_key in _TASK_ARTIFACT_CAPABILITIES
+
+
+def is_task_native_capability(capability_key: str | None) -> bool:
+    """Whether Task itself provides a scoped implementation.
+
+    Native capabilities are confined to the Task execution boundary.
+    """
+
+    return capability_key in _TASK_NATIVE_CAPABILITIES
 
 
 def validate_contract_tool_schema(

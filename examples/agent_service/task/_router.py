@@ -267,13 +267,19 @@ async def validate_task(
 )
 async def preflight_task(
     task_id: str,
+    request: Request,
     body: TaskPreflightRequest,
     user_id: str = Depends(get_current_user_id),
     task_service: TaskService = Depends(_get_task_service),
 ) -> TaskValidationResponse:
     """Read-only run check; it never creates a Run or calls a Task tool."""
 
-    result = await task_service.preflight_task(user_id, task_id, body)
+    result = await task_service.preflight_task(
+        user_id,
+        task_id,
+        body,
+        _maybe_get_task_knowledge_gateway(request),
+    )
     if result is None:
         raise _not_found("Task", task_id)
     return result

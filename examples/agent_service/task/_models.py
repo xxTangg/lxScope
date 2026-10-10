@@ -474,6 +474,10 @@ class TaskRunRecord(BaseModel):
     nodes: list[TaskNode]
     node_runs: list[NodeRunRecord]
     knowledge_base_ids: list[str] = Field(default_factory=list, max_length=16)
+    source_material_ids: list[str] = Field(
+        default_factory=list,
+        max_length=128,
+    )
     input: str = ""
     final_output: str = ""
     final_summary: str = ""
