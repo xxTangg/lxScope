@@ -404,6 +404,12 @@ class TaskRecord(BaseModel):
     generation_status: TaskGenerationStatus = TaskGenerationStatus.IDLE
     generation_error: str | None = None
     source_context: TaskContext = Field(default_factory=TaskContext)
+    source_template_id: str | None = Field(default=None, max_length=80)
+    source_template_version: str | None = Field(
+        default=None,
+        pattern=r"^\d+\.\d+\.\d+$",
+    )
+    template_step_bindings: dict[str, str] = Field(default_factory=dict)
     last_run_id: str | None = None
     last_run_status: RunStatus | None = None
     created_at: datetime = Field(default_factory=_utc_now)

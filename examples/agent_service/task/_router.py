@@ -38,8 +38,20 @@ from ._models import (
 )
 from ._knowledge import TaskKnowledgeGateway
 from ._service import TaskService
-from ._template_models import TaskTemplateDefinition
+from ._template_compiler import (
+    TaskTemplateCompiler,
+    TemplateCapabilityMappingError,
+)
+from ._template_models import (
+    TaskTemplateDefinition,
+    TemplateInstantiationErrorDetail,
+    TemplateInstantiateRequest,
+)
 from ._template_registry import TemplateRegistry, TemplateRegistryError
+from ._template_service import (
+    TaskTemplateService,
+    TemplateInstantiationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +126,25 @@ def _get_template_registry() -> TemplateRegistry:
     return TemplateRegistry()
 
 
+def _get_template_service(
+    registry: TemplateRegistry = Depends(_get_template_registry),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskTemplateService:
+    """Build the Task-only compiler/service from trusted server config."""
+
+    try:
+        compiler = TaskTemplateCompiler.from_environment()
+    except TemplateCapabilityMappingError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=TemplateInstantiationErrorDetail(
+                code="TEMPLATE_CAPABILITY_MAP_INVALID",
+                message="Task 模板能力映射配置无效。",
+            ).model_dump(exclude_defaults=True),
+        ) from error
+    return TaskTemplateService(registry, task_service, compiler=compiler)
+
+
 def _template_registry_error(error: TemplateRegistryError) -> HTTPException:
     """Log a safe diagnostic and return a path-free API error."""
 
@@ -167,6 +198,31 @@ async def get_task_template(
     if template is None:
         raise _not_found("Task template", template_id)
     return template
+
+
+@task_router.post(
+    "/templates/{template_id}/instantiate",
+    response_model=TaskRecord,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a private Task copy from a built-in template",
+)
+async def instantiate_task_template(
+    template_id: str,
+    body: TemplateInstantiateRequest,
+    user_id: str = Depends(get_current_user_id),
+    template_service: TaskTemplateService = Depends(_get_template_service),
+) -> TaskRecord:
+    """Compile a template without invoking the Task planner."""
+
+    try:
+        return await template_service.instantiate(user_id, template_id, body)
+    except TemplateRegistryError as error:
+        raise _template_registry_error(error) from error
+    except TemplateInstantiationError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.public_detail(),
+        ) from error
 
 
 @task_router.get(

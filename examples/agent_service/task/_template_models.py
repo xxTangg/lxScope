@@ -15,6 +15,8 @@ from pydantic import (
     model_validator,
 )
 
+from ._models import TaskContext
+
 
 _CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{1,119}$")
 
@@ -248,6 +250,35 @@ class TaskTemplateDefinition(_TemplateModel):
         ):
             raise ValueError("Template data must not contain credentials.")
         return self
+
+
+class TemplateInstantiateRequest(_TemplateModel):
+    """User input for making a private Task copy of a built-in template."""
+
+    template_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    source_context: TaskContext = Field(default_factory=TaskContext)
+
+
+class TemplateInstantiationErrorDetail(_TemplateModel):
+    """Structured error body for template instantiation API failures."""
+
+    code: Literal[
+        "TEMPLATE_NOT_FOUND",
+        "TEMPLATE_VERSION_MISMATCH",
+        "TEMPLATE_INPUT_INVALID",
+        "TEMPLATE_INPUT_SCHEMA_INVALID",
+        "TEMPLATE_TOOL_CATALOG_INVALID",
+        "TEMPLATE_CAPABILITY_MISSING",
+        "TEMPLATE_CAPABILITY_UNSAFE",
+        "TEMPLATE_VARIABLE_INVALID",
+        "TEMPLATE_NODE_INVALID",
+        "TEMPLATE_CAPABILITY_MAP_INVALID",
+    ]
+    message: str = Field(min_length=1, max_length=500)
+    missing_capabilities: list[str] = Field(default_factory=list, max_length=64)
+    blocked_capabilities: list[str] = Field(default_factory=list, max_length=64)
+    issues: list[str] = Field(default_factory=list, max_length=16)
 
 
 TemplateInputProperty.model_rebuild()

@@ -1,5 +1,6 @@
 """Static checks for the P1 Task scenario template data."""
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -10,11 +11,21 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from examples.agent_service.task._models import TaskRecord, TaskToolSchema
 from examples.agent_service.task._router import (
     _get_template_registry,
     task_router,
 )
-from examples.agent_service.task._template_models import TaskTemplateDefinition
+from examples.agent_service.task._service import TaskService
+from examples.agent_service.task._store import TaskStore
+from examples.agent_service.task._template_compiler import (
+    TaskTemplateCompiler,
+    TemplateCompileError,
+)
+from examples.agent_service.task._template_models import (
+    TaskTemplateDefinition,
+    TemplateInstantiateRequest,
+)
 from examples.agent_service.task._template_registry import (
     TemplateRegistry,
     TemplateRegistryError,
@@ -183,12 +194,88 @@ def test_template_variables_and_sensitive_material_are_bounded() -> None:
             assert ALLOWED_VARIABLES.fullmatch(variable)
 
 
-def _template_client(registry: TemplateRegistry | None = None) -> TestClient:
+def _template_client(
+    registry: TemplateRegistry | None = None,
+    task_service: TaskService | None = None,
+) -> TestClient:
     app = FastAPI()
     app.include_router(task_router)
     if registry is not None:
         app.dependency_overrides[_get_template_registry] = lambda: registry
+    if task_service is not None:
+        app.state.task_service = task_service
     return TestClient(app)
+
+
+class _TemplateToolExecutor:
+    """Expose only test-scoped Task tool schemas to template compilation."""
+
+    def __init__(self, tools: list[TaskToolSchema]) -> None:
+        self.tools = tools
+        self.contexts: list[Any] = []
+
+    async def list_tools(self, context: Any) -> list[TaskToolSchema]:
+        self.contexts.append(context)
+        return self.tools
+
+
+class _PlannerMustNotRun:
+    """Fail loudly if template instantiation crosses into AI planning."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def plan(self, **_: Any) -> Any:
+        self.calls += 1
+        raise AssertionError("Template instantiation must not invoke Planner.")
+
+
+def _expert_template_tools(
+    names: list[str] | None = None,
+) -> list[TaskToolSchema]:
+    capabilities = names or [
+        "expert.lookup",
+        "expert.conflict_check",
+        "expert.rank",
+    ]
+    return [
+        TaskToolSchema(
+            name=name,
+            input_schema={"type": "object"},
+            is_read_only=True,
+        )
+        for name in capabilities
+    ]
+
+
+def _expert_template_service(
+    tools: list[TaskToolSchema],
+) -> tuple[TaskStore, TaskService, _PlannerMustNotRun, _TemplateToolExecutor]:
+    store = TaskStore()
+    planner = _PlannerMustNotRun()
+    executor = _TemplateToolExecutor(tools)
+    task_service = TaskService(
+        store,
+        agentscope_executor=executor,  # type: ignore[arg-type]
+        planner=planner,  # type: ignore[arg-type]
+    )
+    return store, task_service, planner, executor
+
+
+def _expert_template_request() -> dict[str, Any]:
+    return {
+        "template_version": "1.0.0",
+        "inputs": {
+            "project_name": "测试项目",
+            "project_brief": "核安全领域的工程评审",
+            "professional_fields": ["核安全"],
+            "required_expert_count": 3,
+        },
+        "source_context": {
+            "agent_id": "agent-template-test",
+            "session_id": "session-template-test",
+        },
+    }
 
 
 def test_registry_loads_catalog_in_stable_order_independent_of_cwd(
@@ -329,3 +416,295 @@ def test_template_model_rejects_coercion_and_unrecognized_fields() -> None:
     payload["unexpected"] = "must be rejected"
     with pytest.raises(ValidationError):
         TaskTemplateDefinition.model_validate(payload)
+
+
+def test_template_instantiation_copies_without_planner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    template_before = TemplateRegistry().get_template("s03_expert_matching")
+    assert template_before is not None
+    stored_template = template_before.model_dump(mode="json")
+    store, task_service, planner, executor = _expert_template_service(
+        _expert_template_tools()
+    )
+
+    with _template_client(task_service=task_service) as client:
+        unauthenticated = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            json=_expert_template_request(),
+        )
+        assert unauthenticated.status_code == 422
+
+        first_response = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers={"X-User-ID": "template-owner"},
+            json=_expert_template_request(),
+        )
+        second_response = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers={"X-User-ID": "template-owner"},
+            json=_expert_template_request(),
+        )
+        assert first_response.status_code == 201, first_response.text
+        assert second_response.status_code == 201, second_response.text
+
+        first = first_response.json()
+        second = second_response.json()
+        assert first["id"] != second["id"]
+        first_node_ids = {node["id"] for node in first["nodes"]}
+        second_node_ids = {node["id"] for node in second["nodes"]}
+        assert len(first_node_ids) == len(first["nodes"])
+        assert len(second_node_ids) == len(second["nodes"])
+        assert first_node_ids.isdisjoint(second_node_ids)
+        assert [node["order"] for node in first["nodes"]] == list(
+            range(len(first["nodes"]))
+        )
+        assert first["source_template_id"] == "s03_expert_matching"
+        assert first["source_template_version"] == "1.0.0"
+        assert set(first["template_step_bindings"]) == {
+            "collect_matching_requirements",
+            "extract_project_profile",
+            "lookup_expert_candidates",
+            "check_expert_conflicts",
+            "rank_expert_candidates",
+            "explain_matching_reasons",
+            "collect_human_review",
+            "produce_expert_shortlist",
+        }
+        assert "测试项目" in first["goal"]
+        assert planner.calls == 0
+        assert executor.contexts
+        assert all(
+            context.user_id == "template-owner"
+            for context in executor.contexts
+        )
+
+        forbidden = client.get(
+            f"/tasks/{first['id']}",
+            headers={"X-User-ID": "another-user"},
+        )
+        assert forbidden.status_code == 404
+
+        listed = client.get(
+            "/tasks/",
+            headers={"X-User-ID": "template-owner"},
+        )
+        assert listed.status_code == 200
+        assert {task["id"] for task in listed.json()} == {
+            first["id"],
+            second["id"],
+        }
+
+    assert len(asyncio.run(store.list_tasks("template-owner"))) == 2
+    template_after = TemplateRegistry().get_template("s03_expert_matching")
+    assert template_after is not None
+    assert template_after.model_dump(mode="json") == stored_template
+
+
+def test_instantiation_rejects_missing_tools_before_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    store, task_service, planner, _ = _expert_template_service([])
+
+    with _template_client(task_service=task_service) as client:
+        response = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers={"X-User-ID": "template-owner"},
+            json=_expert_template_request(),
+        )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "TEMPLATE_CAPABILITY_MISSING"
+    assert detail["missing_capabilities"] == [
+        "expert.conflict_check",
+        "expert.lookup",
+        "expert.rank",
+    ]
+    assert asyncio.run(store.list_tasks("template-owner")) == []
+    assert planner.calls == 0
+
+
+def test_instantiation_blocks_non_read_only_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    tools = _expert_template_tools()
+    tools[0] = tools[0].model_copy(update={"is_read_only": False})
+    store, task_service, planner, _ = _expert_template_service(tools)
+
+    with _template_client(task_service=task_service) as client:
+        response = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers={"X-User-ID": "template-owner"},
+            json=_expert_template_request(),
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "TEMPLATE_CAPABILITY_UNSAFE"
+    assert response.json()["detail"]["blocked_capabilities"] == [
+        "expert.lookup"
+    ]
+    assert asyncio.run(store.list_tasks("template-owner")) == []
+    assert planner.calls == 0
+
+
+def test_instantiation_rejects_invalid_inputs_before_tool_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    store, task_service, planner, executor = _expert_template_service(
+        _expert_template_tools()
+    )
+    request = _expert_template_request()
+    request["inputs"].pop("project_name")
+
+    with _template_client(task_service=task_service) as client:
+        response = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers={"X-User-ID": "template-owner"},
+            json=request,
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "TEMPLATE_INPUT_INVALID"
+    assert any(
+        issue.startswith("inputs.project_name:")
+        for issue in response.json()["detail"]["issues"]
+    )
+    assert executor.contexts == []
+    assert asyncio.run(store.list_tasks("template-owner")) == []
+    assert planner.calls == 0
+
+
+def test_template_instantiation_rejects_client_provenance_and_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
+    store, task_service, planner, _ = _expert_template_service(
+        _expert_template_tools()
+    )
+    request = _expert_template_request()
+    request["source_template_id"] = "s09_expense_settlement"
+
+    with _template_client(task_service=task_service) as client:
+        spoofed = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers={"X-User-ID": "template-owner"},
+            json=request,
+        )
+        old_version_request = _expert_template_request()
+        old_version_request["template_version"] = "9.9.9"
+        stale = client.post(
+            "/tasks/templates/s03_expert_matching/instantiate",
+            headers={"X-User-ID": "template-owner"},
+            json=old_version_request,
+        )
+
+    assert spoofed.status_code == 422
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "TEMPLATE_VERSION_MISMATCH"
+    assert asyncio.run(store.list_tasks("template-owner")) == []
+    assert planner.calls == 0
+
+
+def test_compiler_binds_aliases_and_rejects_unbound_requirements() -> None:
+    template = TemplateRegistry().get_template("s03_expert_matching")
+    assert template is not None
+    alias_map = {
+        "expert.lookup": "mcp__expert__lookup",
+        "expert.conflict_check": "mcp__expert__check_conflicts",
+        "expert.rank": "mcp__expert__rank",
+    }
+    tools = _expert_template_tools(list(alias_map.values()))
+
+    compiled = TaskTemplateCompiler(alias_map).compile_nodes(template, tools)
+
+    configured_names = {
+        node.config.tool_name
+        for node in compiled.nodes
+        if node.type.value == "tool"
+    }
+    assert configured_names == set(alias_map.values())
+
+    project_template = TemplateRegistry().get_template("s01_project_init")
+    assert project_template is not None
+    project_tools = [
+        TaskToolSchema(name="project.similar_search"),
+        TaskToolSchema(name="project.rule_check"),
+    ]
+    with pytest.raises(TemplateCompileError) as missing_native_capability:
+        TaskTemplateCompiler().compile_nodes(project_template, project_tools)
+    assert missing_native_capability.value.missing_capabilities == (
+        "project.authorization.read",
+    )
+
+
+def test_compiler_rejects_expressions_and_invalid_tool_schemas() -> None:
+    template_payload = json.loads(
+        (TEMPLATE_DIR / "s03_expert_matching.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    template_payload["steps"][1]["config"]["prompt"] = (
+        "Do not evaluate {{previous_output | unsafe}}."
+    )
+    invalid_variables = TaskTemplateDefinition.model_validate(template_payload)
+    tools = _expert_template_tools()
+
+    with pytest.raises(TemplateCompileError) as unsupported_variable:
+        TaskTemplateCompiler().compile_nodes(invalid_variables, tools)
+    assert unsupported_variable.value.code == "TEMPLATE_VARIABLE_INVALID"
+
+    tools[0] = tools[0].model_copy(
+        update={"input_schema": {"type": "not-a-json-schema"}}
+    )
+    current_template = TemplateRegistry().get_template("s03_expert_matching")
+    assert current_template is not None
+    with pytest.raises(TemplateCompileError) as invalid_tool_schema:
+        TaskTemplateCompiler().compile_nodes(
+            current_template,
+            tools,
+        )
+    assert invalid_tool_schema.value.code == "TEMPLATE_NODE_INVALID"
+    assert any(
+        "工具 schema 无效" in issue
+        for issue in invalid_tool_schema.value.issues
+    )
+
+
+def test_template_compiler_reads_only_server_owned_environment_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "LXSCOPE_TASK_CAPABILITY_TOOL_MAP",
+        json.dumps({"expert.lookup": "mcp__expert__lookup"}),
+    )
+
+    compiler = TaskTemplateCompiler.from_environment()
+
+    assert compiler._aliases == {"expert.lookup": "mcp__expert__lookup"}
+
+
+def test_task_record_old_json_defaults_template_provenance_fields() -> None:
+    old_record = TaskRecord(user_id="legacy-user")
+    payload = old_record.model_dump(mode="json")
+    payload.pop("source_template_id")
+    payload.pop("source_template_version")
+    payload.pop("template_step_bindings")
+
+    loaded = TaskRecord.model_validate_json(json.dumps(payload))
+
+    assert loaded.source_template_id is None
+    assert loaded.source_template_version is None
+    assert loaded.template_step_bindings == {}
+
+
+def test_instantiate_request_rejects_client_provenance() -> None:
+    request = _expert_template_request()
+    request["source_template_id"] = "client-controlled"
+
+    with pytest.raises(ValidationError):
+        TemplateInstantiateRequest.model_validate(request)

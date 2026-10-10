@@ -133,9 +133,15 @@ class TaskService:
         self._cancel_requested_run_ids: set[str] = set()
 
     async def create_task(
-        self, user_id: str, body: CreateTaskRequest
+        self,
+        user_id: str,
+        body: CreateTaskRequest,
+        *,
+        source_template_id: str | None = None,
+        source_template_version: str | None = None,
+        template_step_bindings: dict[str, str] | None = None,
     ) -> TaskRecord:
-        """Create a draft or manually-defined reusable task."""
+        """Create a draft, manual task, or trusted template-derived copy."""
 
         has_nodes = bool(body.nodes)
         record = TaskRecord(
@@ -154,6 +160,9 @@ class TaskService:
                 else TaskGenerationStatus.IDLE
             ),
             source_context=body.source_context,
+            source_template_id=source_template_id,
+            source_template_version=source_template_version,
+            template_step_bindings=template_step_bindings or {},
         )
         return await self._store.save_task(record)
 
