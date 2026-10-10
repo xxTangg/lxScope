@@ -278,6 +278,38 @@ class AgentScopeTaskExecutor:
             else len(data)
         )
 
+    async def preflight_artifact_writer(
+        self,
+        *,
+        context: ExecutionContext,
+    ) -> tuple[bool, str]:
+        """Resolve this user's Workspace and confirm the artifact I/O path."""
+
+        try:
+            session = await self._get_session(context)
+            workspace = await self._get_workspace(context, session)
+            backend = workspace.get_backend()
+            operations = ("abspath", "write_file", "read_file", "stat")
+            if any(
+                not callable(getattr(backend, operation, None))
+                for operation in operations
+            ):
+                return False, "当前会话 Workspace 未提供完整的 Task 文件读写接口。"
+            backend.abspath(
+                "artifacts/task-preflight/output.md",
+                cwd=workspace.workdir,
+            )
+        except Exception as error:  # noqa: BLE001 — fail closed
+            logger.info(
+                "Task artifact preflight could not resolve Workspace "
+                "for user=%s task=%s: %s",
+                context.user_id,
+                context.task_id,
+                error,
+            )
+            return False, "当前用户的 Task Workspace 无法完成文件产物预检。"
+        return True, "当前用户的 Workspace 已解析，Task 文件读写路径可用。"
+
     async def read_artifact(
         self,
         *,

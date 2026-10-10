@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from importlib.util import find_spec
 
 from ._artifact_spec import ArtifactSpec
 from ._models import ArtifactConfig, ArtifactFormat
@@ -36,6 +37,22 @@ class GeneratedArtifact:
     media_type: str
     data: bytes
     preview_text: str
+
+
+def artifact_renderer_available(format: ArtifactFormat) -> bool:
+    """Return whether the selected format has its serializer installed."""
+
+    optional_modules = {
+        ArtifactFormat.DOCX: "docx",
+        ArtifactFormat.XLSX: "openpyxl",
+    }
+    module = optional_modules.get(format)
+    if module is None:
+        return format is ArtifactFormat.MARKDOWN
+    try:
+        return find_spec(module) is not None
+    except (ImportError, ValueError, ModuleNotFoundError):
+        return False
 
 
 def generate_artifact(

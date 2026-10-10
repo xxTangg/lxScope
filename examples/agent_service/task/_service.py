@@ -15,6 +15,7 @@ from agentscope.event import CustomEvent
 from agentscope.message import UserMsg
 from agentscope.sop import SOP, SOPEngine, SOPPhase, SOPRunState
 from datetime import datetime, timezone
+from pydantic import ValidationError
 
 from ._artifact_spec import (
     ArtifactSpec,
@@ -22,7 +23,11 @@ from ._artifact_spec import (
     parse_agent_spec,
     spec_from_markdown,
 )
-from ._artifacts import GeneratedArtifact, generate_artifact
+from ._artifacts import (
+    GeneratedArtifact,
+    artifact_renderer_available,
+    generate_artifact,
+)
 from ._executor import (
     PreviewTaskExecutor,
     StepExecutionResult,
@@ -67,6 +72,7 @@ from ._capability_contracts import (
     capability_category,
     capability_contract,
     capability_external_side_effect,
+    is_task_artifact_capability,
     validate_capability_output,
     validate_contract_tool_schema,
 )
@@ -75,6 +81,7 @@ from ._template_validation import (
     TaskTemplateValidator,
     TaskValidationFailure,
 )
+from ._template_models import TemplateArtifactConfig
 
 
 def _utc_now() -> datetime:
@@ -670,6 +677,33 @@ class TaskService:
             tool_discovery_error=tool_discovery_error,
             missing_capabilities=validation.missing_capabilities,
         )
+        satisfied_artifact_capabilities = {
+            check.capability_key
+            for check in capability_checks
+            if is_task_artifact_capability(check.capability_key)
+            and check.status == "available"
+        }
+        template = self._template_validator.template_for_task(task)
+        required_template_capabilities = (
+            set(template.required_capabilities) if template is not None else set()
+        )
+        missing_capabilities = [
+            capability
+            for capability in validation.missing_capabilities
+            if capability not in satisfied_artifact_capabilities
+        ]
+        missing_capabilities = sorted(
+            {
+                *missing_capabilities,
+                *(
+                    check.capability_key
+                    for check in capability_checks
+                    if check.status == "missing"
+                    and check.capability_key in required_template_capabilities
+                ),
+            },
+            key=str.casefold,
+        )
         for check in capability_checks:
             if check.status != "available":
                 issues.append(
@@ -680,7 +714,7 @@ class TaskService:
                 )
         ready = (
             not issues
-            and not validation.missing_capabilities
+            and not missing_capabilities
             and not validation.blocked_capabilities
             and all(check.status == "available" for check in capability_checks)
         )
@@ -690,6 +724,7 @@ class TaskService:
                 "valid": ready,
                 "ready": ready,
                 "capability_checks": capability_checks,
+                "missing_capabilities": missing_capabilities,
             },
         )
 
@@ -865,6 +900,16 @@ class TaskService:
                 set(template.required_capabilities) - found_capabilities
             )
         for capability_key in sorted(required_capabilities - found_capabilities):
+            if is_task_artifact_capability(capability_key):
+                checks.append(
+                    await self._preflight_task_artifact_capability(
+                        capability_key=capability_key,
+                        task=task,
+                        nodes=nodes,
+                        context=run_context,
+                    ),
+                )
+                continue
             business_verified = self._business_data_verified(capability_key)
             checks.append(
                 TaskCapabilityCheck(
@@ -885,6 +930,113 @@ class TaskService:
                 ),
             )
         return checks
+
+    async def _preflight_task_artifact_capability(
+        self,
+        *,
+        capability_key: str,
+        task: TaskRecord,
+        nodes: list[TaskNode],
+        context: ExecutionContext,
+    ) -> TaskCapabilityCheck:
+        """Check an artifact capability against real config and I/O adapters."""
+
+        configured = [node for node in nodes if node.artifact is not None]
+        artifact_node = (
+            configured[0]
+            if len(configured) == 1
+            and nodes
+            and configured[0] is nodes[-1]
+            and nodes[-1].type is not StepType.INPUT
+            else None
+        )
+        base = {
+            "step_id": artifact_node.id if artifact_node is not None else None,
+            "step_name": (
+                artifact_node.name if artifact_node is not None else capability_key
+            ),
+            "capability_key": capability_key,
+            "category": capability_category(capability_key),
+            "tool_available": None,
+            "permission_status": "not_applicable",
+            "business_data_verified": None,
+            "external_side_effect": False,
+        }
+        if artifact_node is None or artifact_node.artifact is None:
+            return TaskCapabilityCheck(
+                **base,
+                interface_compatible=None,
+                status="missing",
+                message=(
+                    "模板要求文件产物能力；请在最终输出节点配置受支持的 Task 产物。"
+                ),
+            )
+
+        artifact_format = artifact_node.artifact.format
+        try:
+            TemplateArtifactConfig.model_validate(
+                {
+                    "format": artifact_format.value,
+                    "filename": artifact_node.artifact.filename,
+                },
+            )
+        except ValidationError:
+            return TaskCapabilityCheck(
+                **base,
+                interface_compatible=False,
+                status="incompatible",
+                message="最终输出节点的文件产物配置无效。",
+            )
+        if not artifact_renderer_available(artifact_format):
+            return TaskCapabilityCheck(
+                **base,
+                interface_compatible=False,
+                status="unverified",
+                message=(
+                    f"当前服务未安装 {artifact_format.value.upper()} 产物渲染组件。"
+                ),
+            )
+        if self._artifact_writer is None:
+            return TaskCapabilityCheck(
+                **base,
+                interface_compatible=True,
+                status="unverified",
+                message="当前 Task 执行器未绑定 Workspace Artifact Writer。",
+            )
+
+        preflight_writer = getattr(
+            self._artifact_writer,
+            "preflight_artifact_writer",
+            None,
+        )
+        if not callable(preflight_writer):
+            return TaskCapabilityCheck(
+                **base,
+                interface_compatible=True,
+                status="unverified",
+                message="当前 Artifact Writer 无法预检用户 Workspace 读写边界。",
+            )
+        try:
+            available, message = await preflight_writer(context=context)
+        except Exception as error:  # noqa: BLE001 — fail closed
+            logger.info(
+                "Task artifact writer preflight failed for task=%s: %s",
+                task.id,
+                error,
+            )
+            available = False
+            message = "当前用户的 Task Workspace 无法完成文件产物预检。"
+        return TaskCapabilityCheck(
+            **base,
+            interface_compatible=True,
+            status="available" if available else "unverified",
+            message=message
+            or (
+                "Task Workspace Artifact Writer 可用。"
+                if available
+                else "Task Workspace Artifact Writer 尚未通过预检。"
+            ),
+        )
 
     def _business_data_verified(self, capability_key: str) -> bool | None:
         """Ask the server-side executor whether the business source is verified."""

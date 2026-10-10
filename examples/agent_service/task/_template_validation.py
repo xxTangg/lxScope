@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from ._capability_contracts import is_task_artifact_capability
 from ._models import (
     TaskNode,
     TaskRecord,
@@ -287,8 +288,22 @@ class TaskTemplateValidator:
             issues.extend(_issues_from_text(error.issues, "nodes"))
 
         if tool_schemas is not None:
+            configured_artifact_capabilities = (
+                _configured_task_artifact_capabilities(template, nodes)
+            )
+            compile_template = template
+            if configured_artifact_capabilities:
+                compile_template = template.model_copy(
+                    update={
+                        "required_capabilities": [
+                            capability
+                            for capability in template.required_capabilities
+                            if capability not in configured_artifact_capabilities
+                        ],
+                    },
+                )
             try:
-                compiler.compile_nodes(template, tool_schemas)
+                compiler.compile_nodes(compile_template, tool_schemas)
             except TemplateCompileError as error:
                 missing.update(error.missing_capabilities)
                 blocked.update(error.blocked_capabilities)
@@ -469,6 +484,36 @@ class TaskTemplateValidator:
                 update["output_schema"] = expected.output_schema
             enriched[node_id] = node.model_copy(update=update)
         return [enriched.get(node.id, node) for node in nodes]
+
+
+def _configured_task_artifact_capabilities(
+    template: TaskTemplateDefinition,
+    nodes: list[TaskNode],
+) -> set[str]:
+    """Resolve only artifact capabilities backed by one valid final output."""
+
+    configured = [node for node in nodes if node.artifact is not None]
+    if (
+        len(configured) != 1
+        or not nodes
+        or configured[0] is not nodes[-1]
+        or nodes[-1].type.value == "input"
+    ):
+        return set()
+    artifact = configured[0].artifact
+    if artifact is None:  # pragma: no cover — narrowed by configured
+        return set()
+    try:
+        TemplateArtifactConfig.model_validate(
+            {"format": artifact.format.value, "filename": artifact.filename},
+        )
+    except ValidationError:
+        return set()
+    return {
+        capability
+        for capability in template.required_capabilities
+        if is_task_artifact_capability(capability)
+    }
 
 
 def _validate_custom_flow(
