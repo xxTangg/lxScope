@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "template_id": "s09_expense_settlement",
+  "template_version": "1.0.0",
+  "title": "报销结算",
+  "description": "读取已授权发票资料，核验票据和费用规则，整理报销草稿；ERP 提交前必须具备真实审批和幂等保障。",
+  "category": "review",
+  "required_capabilities": [
+    "expense.invoice_ocr",
+    "expense.invoice_verify_dedupe",
+    "expense.rule_check",
+    "expense.erp_submit"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["project_id", "invoice_asset_ids", "expense_category"],
+    "properties": {
+      "project_id": {"type": "string", "description": "项目标识。"},
+      "invoice_asset_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "已授权发票资产标识。"},
+      "expense_category": {"type": "string", "description": "报销类别。"},
+      "accounting_period": {"type": "string", "description": "会计期间。"}
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出发票识别结果、验真去重状态、费用规则检查和报销草稿。未具备真实审批、ERP 权限、幂等提交与回执协议时必须阻断提交。",
+  "steps": [
+    {
+      "step_key": "collect_invoice_assets",
+      "title": "收集报销资料",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {"type": "input", "reason": "请提供已授权的发票资产标识和报销信息。", "questions": [{"key": "project_id", "label": "项目标识", "required": true, "options": []}, {"key": "invoice_asset_ids", "label": "发票资产标识", "required": true, "options": []}, {"key": "expense_category", "label": "报销类别", "required": true, "options": []}, {"key": "accounting_period", "label": "会计期间", "required": false, "options": []}]},
+      "output_requirement": "获得发票资产范围和报销分类上下文。",
+      "failure_handling": "资料缺失或无权限访问时阻断，不读取未授权文件。",
+      "sensitive_information": "发票可能包含税务和个人信息，仅处理业务所需字段。"
+    },
+    {
+      "step_key": "recognize_invoice_fields",
+      "title": "识别发票字段",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expense.invoice_ocr",
+      "config": {"type": "tool", "arguments": {"assets": "{{previous_output}}"}},
+      "output_requirement": "返回发票字段及识别状态，保留原始资产引用。",
+      "failure_handling": "OCR 缺失或低置信时标为待人工核对，不推断金额或税号。",
+      "sensitive_information": "模板不保存发票原文、税号、账户或个人信息。"
+    },
+    {
+      "step_key": "verify_and_deduplicate_invoices",
+      "title": "验真与重复检查",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expense.invoice_verify_dedupe",
+      "config": {"type": "tool", "arguments": {"invoices": "{{previous_output}}"}},
+      "output_requirement": "返回真实验真结果、重复风险和可追溯记录。",
+      "failure_handling": "验真接口或去重依据缺失时阻断后续提交，不以模型判断代替。",
+      "sensitive_information": "仅向有权财务人员展示必要票据字段。"
+    },
+    {
+      "step_key": "check_expense_rules",
+      "title": "核对费用规则",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expense.rule_check",
+      "config": {"type": "tool", "arguments": {"invoices": "{{previous_output}}"}},
+      "output_requirement": "按当前有效费用规则返回金额、类别和凭证检查结果及规则版本。",
+      "failure_handling": "规则工具或版本缺失时阻断，不估算可报金额。",
+      "sensitive_information": "费用和项目数据遵循财务权限最小披露。"
+    },
+    {
+      "step_key": "prepare_expense_draft",
+      "title": "整理报销单草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {"type": "agent", "prompt": "整理发票识别、验真去重和费用规则结果为报销单草稿。明确标记未核验、异常和待补凭证，不提交 ERP，不作审批结论。"},
+      "output_requirement": "形成可供财务人员复核的报销单草稿和异常清单。",
+      "failure_handling": "存在异常或缺凭证时保留草稿状态并列出处理项。",
+      "sensitive_information": "输出只保留报销审核必需的票据字段。"
+    },
+    {
+      "step_key": "submit_expense_to_erp",
+      "title": "提交 ERP（审批与提交能力未接入时阻断）",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expense.erp_submit",
+      "config": {"type": "tool", "arguments": {"expense_draft": "{{previous_output}}"}},
+      "output_requirement": "只有真实审批权限、ERP 身份验证、幂等键和审计均通过后才允许提交。",
+      "failure_handling": "当前任一前置能力缺失时必须阻断；不得模拟提交或重复尝试不明状态的外部写入。",
+      "sensitive_information": "禁止在模板或前端放入 ERP 密钥、内部地址或真实发票样本。"
+    }
+  ],
+  "unsupported_capabilities": [
+    {"capability_key": "expense.business_approval", "reason": "现有 InputStep 不具备审批身份验证、权限判断、拒绝/退回和审计协议。"},
+    {"capability_key": "expense.erp_idempotent_submit", "reason": "当前尚无 ERP 提交契约及幂等键规则，外部写入必须保持阻断。"},
+    {"capability_key": "expense.finance_receipt_wait", "reason": "当前没有持久化财务回执等待与恢复协议。"}
+  ]
+}

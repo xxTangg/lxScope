@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "template_id": "s07_report_generation",
+  "template_version": "1.0.0",
+  "title": "报告生成",
+  "description": "基于获准资料生成评审报告草稿，执行引用、一致性与规则检查，并留待人工审核。",
+  "category": "review",
+  "required_capabilities": [
+    "report.rag_retrieve",
+    "report.citation_check",
+    "report.consistency_check",
+    "report.compliance_check",
+    "document.render"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["project_name", "source_material_ids", "required_chapters"],
+    "properties": {
+      "project_name": {"type": "string", "description": "项目名称。"},
+      "source_material_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "已授权资料标识。"},
+      "required_chapters": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "要求生成的章节。"},
+      "applicable_rules": {"type": "array", "items": {"type": "string"}, "description": "经确认的适用规则标识。"}
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出带引用映射、完整性/一致性/合规检查结果及未解决项的报告草稿。人工审核和最终合规签字仍需真实流程。",
+  "steps": [
+    {
+      "step_key": "collect_report_materials",
+      "title": "采集报告资料",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {"type": "input", "reason": "请提供报告范围、章节和已授权资料标识。", "questions": [{"key": "project_name", "label": "项目名称", "required": true, "options": []}, {"key": "source_material_ids", "label": "已授权资料标识", "required": true, "options": []}, {"key": "required_chapters", "label": "要求生成的章节", "required": true, "options": []}, {"key": "applicable_rules", "label": "适用规则标识", "required": false, "options": []}]},
+      "output_requirement": "确定报告范围和可用资料清单。",
+      "failure_handling": "范围或资料授权不明确时请求补充或阻断。",
+      "sensitive_information": "报告资料可能包含商业机密，仅读取获准资料。"
+    },
+    {
+      "step_key": "retrieve_report_evidence",
+      "title": "检索引用证据",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "report.rag_retrieve",
+      "config": {"type": "tool", "arguments": {"request": "{{previous_output}}"}},
+      "output_requirement": "返回与报告章节相关且可定位的资料片段和来源标识。",
+      "failure_handling": "RAG 或资料权限缺失时阻断正式报告草稿生成，不补造引用。",
+      "sensitive_information": "检索结果限于用户授权的资料集合。"
+    },
+    {
+      "step_key": "draft_report_chapters",
+      "title": "生成章节草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {"type": "agent", "prompt": "依据检索证据按要求章节撰写报告草稿。重要判断附来源标识；缺证据、冲突或需要专业判断的内容标注待核实。"},
+      "output_requirement": "输出完整章节草稿，并保留内容与证据之间的映射。",
+      "failure_handling": "证据不足的章节标为待补充，不虚构事实或数据。",
+      "sensitive_information": "只纳入报告范围需要的项目资料。"
+    },
+    {
+      "step_key": "check_report_citations",
+      "title": "核验引用证据",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "report.citation_check",
+      "config": {"type": "tool", "arguments": {"draft": "{{previous_output}}"}},
+      "output_requirement": "标记每条引用的来源、匹配状态和无法验证的内容。",
+      "failure_handling": "引用核验失败时阻断最终报告输出。",
+      "sensitive_information": "只展示授权用户可访问的来源信息。"
+    },
+    {
+      "step_key": "check_report_consistency",
+      "title": "检查报告一致性",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "report.consistency_check",
+      "config": {"type": "tool", "arguments": {"draft": "{{previous_output}}"}},
+      "output_requirement": "列出跨章节矛盾、数字不一致和未覆盖章节。",
+      "failure_handling": "一致性检查工具不可用时保留为未检查状态并阻断正式交付。",
+      "sensitive_information": "检查结果不扩大资料访问范围。"
+    },
+    {
+      "step_key": "check_report_compliance",
+      "title": "检查适用规则",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "report.compliance_check",
+      "config": {"type": "tool", "arguments": {"draft": "{{previous_output}}"}},
+      "output_requirement": "按已绑定的规则返回检查项、证据和未决问题。",
+      "failure_handling": "规则或检查工具缺失时不得标记合规通过。",
+      "sensitive_information": "检查结果仅向获准审核者展示。"
+    },
+    {
+      "step_key": "collect_report_review",
+      "title": "收集报告审核意见",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {"type": "input", "reason": "请复核章节、证据和规则检查结果。该输入收集修改意见，不是签字或合规审批。", "questions": [{"key": "report_feedback", "label": "审核意见或待更正项", "required": false, "options": []}]},
+      "output_requirement": "记录审核意见并保留未解决问题。",
+      "failure_handling": "未收到意见时保持草稿/待审核状态。",
+      "sensitive_information": "审核意见按项目资料授权范围访问。"
+    },
+    {
+      "step_key": "produce_report_draft",
+      "title": "整理报告草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {"type": "agent", "prompt": "整合报告章节、引用映射、各项检查结果和人工意见，逐项保留通过、失败、未检查状态。输出仍为草稿，不代替有权人员签署或最终合规结论。"},
+      "output_requirement": "输出报告草稿及引用和校核清单；文件渲染由 Task 输出配置负责。",
+      "failure_handling": "存在未解决检查项时明确标注并停止宣称报告已完成审核。",
+      "sensitive_information": "导出内容遵循项目资料权限和最小披露原则。"
+    }
+  ],
+  "unsupported_capabilities": [
+    {"capability_key": "report.formal_signoff", "reason": "现有 Task InputStep 不具备签名、审批人授权和审计协议。"}
+  ]
+}
