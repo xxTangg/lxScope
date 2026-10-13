@@ -751,13 +751,10 @@ function Customers({ refreshToken }: { refreshToken: number }) {
   async function revealToken() {
     if (!selected) return;
     try {
-      const result = await api<{ apiTokenOnce: string }>(
-        `/api/v1/customers/${selected.id}/api-token/rotate`,
-        { method: 'POST', body: JSON.stringify({}) },
-      );
-      setToken(result.apiTokenOnce);
+      const result = await api<{ apiToken: string }>(`/api/customers/${selected.id}/api-token`);
+      setToken(result.apiToken);
       setTokenKind('api');
-      setError('API Token 已轮换并显示一次，请立即复制并交给客户系统配置');
+      setError('当前 API Token 已显示；复制后粘贴到管理系统并保存即可');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Token 读取失败');
     }

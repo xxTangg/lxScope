@@ -1,0 +1,7 @@
+services:
+  sales-api:
+    command: pnpm --filter sales-api dev
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./services/sales-api/src:/app/services/sales-api/src:ro

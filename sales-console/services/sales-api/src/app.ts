@@ -67,6 +67,28 @@ async function reissueRechargeCode(
   order.code = await signRechargeCode(order.amount, order.tokens, systemId, order.id, expiresAt);
 }
 
+async function refreshOnlineRechargeDeliveryCode(
+  order: RechargeOrder,
+  systemId: string,
+  expiresAt = Date.now() + RECHARGE_CODE_TTL_MS,
+): Promise<void> {
+  if (
+    order.method !== 'online' ||
+    order.status !== 'approved' ||
+    order.delivered ||
+    typeof order.amount !== 'number' ||
+    !Number.isFinite(order.amount) ||
+    order.amount <= 0 ||
+    typeof order.tokens !== 'number' ||
+    !Number.isInteger(order.tokens) ||
+    order.tokens <= 0
+  ) {
+    throw Object.assign(new Error('该在线充值订单当前不可重新签发交付码'), { status: 409 });
+  }
+  order.expiresAt = expiresAt;
+  order.code = await signRechargeCode(order.amount, order.tokens, systemId, order.id, expiresAt);
+}
+
 function requestID(req: Request): string {
   const header = String(req.headers['x-request-id'] ?? '').trim();
   return header && header.length <= 128 ? header : crypto.randomUUID();
@@ -1264,35 +1286,54 @@ export async function createApp(): Promise<express.Express> {
       const ready = await serial(async () => {
         const items = await db.orders();
         const now = Date.now();
+        const approvedUndelivered = items.filter(
+          (item) =>
+            item.customerID === customer.id && item.status === 'approved' && !item.delivered,
+        );
         const found = strictContract
-          ? items.filter(
-              (item) =>
-                item.customerID === customer.id &&
-                item.status === 'approved' &&
-                !item.delivered &&
-                Boolean(
-                  item.code && item.amount && item.tokens && item.expiresAt && item.expiresAt > now,
-                ),
-            )
-          : items
-              .filter(
-                (item) =>
-                  item.customerID === customer.id && item.status === 'approved' && !item.delivered,
-              )
-              .slice(0, 1);
+          ? approvedUndelivered.filter((item) => {
+              const hasValidRechargeValues =
+                typeof item.amount === 'number' &&
+                Number.isFinite(item.amount) &&
+                item.amount > 0 &&
+                typeof item.tokens === 'number' &&
+                Number.isInteger(item.tokens) &&
+                item.tokens > 0;
+              if (!hasValidRechargeValues) return false;
+              if (item.method === 'online') return true;
+              return Boolean(item.code && item.expiresAt && item.expiresAt > now);
+            })
+          : approvedUndelivered.slice(0, 1);
         if (found.length) {
           const now = Date.now();
           for (const item of found) {
-            if (
+            const hasValidRechargeValues =
               typeof item.amount === 'number' &&
+              Number.isFinite(item.amount) &&
+              item.amount > 0 &&
               typeof item.tokens === 'number' &&
-              typeof item.expiresAt === 'number' &&
+              Number.isInteger(item.tokens) &&
+              item.tokens > 0;
+            const codeExpired = typeof item.expiresAt !== 'number' || item.expiresAt <= now;
+            const codeSignatureValid =
               typeof item.code === 'string' &&
-              !(await isRechargeCodeSignatureValid(item.code))
+              (await isRechargeCodeSignatureValid(item.code));
+
+            if (
+              item.method === 'online' &&
+              hasValidRechargeValues &&
+              (codeExpired || !codeSignatureValid)
+            ) {
+              await refreshOnlineRechargeDeliveryCode(item, customer.systemId);
+            } else if (
+              hasValidRechargeValues &&
+              !codeExpired &&
+              !codeSignatureValid &&
+              typeof item.expiresAt === 'number'
             ) {
               item.code = await signRechargeCode(
-                item.amount,
-                item.tokens,
+                item.amount!,
+                item.tokens!,
                 customer.systemId,
                 item.id,
                 item.expiresAt,
