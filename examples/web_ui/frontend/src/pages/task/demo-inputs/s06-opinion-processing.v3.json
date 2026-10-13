@@ -1,0 +1,9 @@
+{
+  "template_version": "3.0.0",
+  "inputs": {
+    "project_name": "[DEMO/SYNTHETIC] 澄湖科创园综合能源与设备台账优化咨询项目",
+    "classification_dimensions": ["数据与基线", "设备台账", "实施安排", "预算与费用"],
+    "opinion_records_json": "[{\"opinion_id\":\"DEMO-OP-001\",\"text\":\"请说明 2024 年用电基线的数据来源、计量边界和缺失月份处理方法。\",\"source_reference\":\"DEMO/SYNTHETIC: DEMO-MTG-2025-001 演示意见记录 001\"},{\"opinion_id\":\"DEMO-OP-002\",\"text\":\"设备台账应增加设备编码、位置、投运年份和责任部门字段。\",\"source_reference\":\"DEMO/SYNTHETIC: DEMO-MTG-2025-001 演示意见记录 002\"},{\"opinion_id\":\"DEMO-OP-003\",\"text\":\"请列明现场访谈与测量的时间安排，并说明预算口径。\",\"source_reference\":\"DEMO/SYNTHETIC: DEMO-MTG-2025-001 演示意见记录 003\"},{\"opinion_id\":\"DEMO-OP-004\",\"text\":\"设备台账应增加设备编码、位置、投运年份和责任部门字段。\",\"source_reference\":\"DEMO/SYNTHETIC: DEMO-MTG-2025-001 演示意见记录 004（与 002 重复文本）\"}]",
+    "classification_rules_json": "[{\"category\":\"数据与基线\",\"keywords\":[\"基线\",\"计量\",\"用电\"]},{\"category\":\"设备台账\",\"keywords\":[\"台账\",\"设备编码\",\"责任部门\"]},{\"category\":\"实施安排\",\"keywords\":[\"安排\",\"时间\",\"现场\"]},{\"category\":\"预算与费用\",\"keywords\":[\"预算\",\"费用\"]}]"
+  }
+}

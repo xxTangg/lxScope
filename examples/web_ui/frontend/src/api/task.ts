@@ -20,6 +20,28 @@ export type NodeRunStatus =
 export type TaskStepType = 'agent' | 'tool' | 'python' | 'input';
 export type TaskWorkflowMode = 'template_instance' | 'custom_flow' | 'free_ai_planner';
 export type TaskArtifactFormat = 'markdown' | 'docx' | 'xlsx';
+export type TaskErrorCategory =
+	| 'configuration_error'
+	| 'missing_tool'
+	| 'permission_denied'
+	| 'data_source_not_ready'
+	| 'schema_mismatch'
+	| 'input_incomplete'
+	| 'citation_verification_failed'
+	| 'external_interface_failed'
+	| 'artifact_generation_failed'
+	| 'execution_failed';
+
+export interface TaskErrorDetail {
+	category: TaskErrorCategory;
+	code: string;
+	message: string;
+	task_id: string;
+	run_id: string;
+	node_id?: string | null;
+	details: Record<string, unknown>;
+	occurred_at: string;
+}
 
 export interface AgentStepConfig {
 	type: 'agent';
@@ -162,6 +184,7 @@ export interface NodeRunRecord {
 	result?: unknown;
 	metadata?: Record<string, unknown>;
 	error?: string | null;
+	error_detail?: TaskErrorDetail | null;
 	started_at?: string | null;
 	finished_at?: string | null;
 }
@@ -203,6 +226,8 @@ export interface TaskCapabilityCheck {
 	external_side_effect: boolean;
 	status: TaskCapabilityStatus;
 	message: string;
+	error_category?: TaskErrorCategory | null;
+	error_code?: string | null;
 }
 
 export interface TaskPreflightResponse {
@@ -239,6 +264,7 @@ export interface TaskRunRecord {
 	artifacts: TaskArtifactRecord[];
 	status: RunStatus;
 	error?: string | null;
+	error_detail?: TaskErrorDetail | null;
 	context: TaskContext;
 	created_at: string;
 	started_at?: string | null;

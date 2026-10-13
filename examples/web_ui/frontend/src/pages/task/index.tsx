@@ -1,4 +1,4 @@
-import { AlertCircle, Copy, Loader2, Plus, RefreshCw } from 'lucide-react';
+import { AlertCircle, ChevronDown, Copy, Loader2, Plus, RefreshCw } from 'lucide-react';
 import './task-page.css';
 import * as React from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -23,10 +23,15 @@ import type {
 	TaskRunRecord,
 	TaskToolSchema,
 } from '@/api';
-import type { TaskPreflightResponse, TaskTemplateDefinition } from '@/api/task';
 import { taskApi } from '@/api';
 import { ApiError } from '@/api/client';
+import type {
+	TaskErrorCategory,
+	TaskPreflightResponse,
+	TaskTemplateDefinition,
+} from '@/api/task';
 import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Textarea } from '@/components/ui/textarea';
 import { useAgents } from '@/hooks/useAgents';
 import { useSessions } from '@/hooks/useSessions';
@@ -63,6 +68,18 @@ const PERMISSION_STATUS_LABELS: Record<string, string> = {
 	requires_confirmation: '需要交互确认',
 	not_applicable: '不适用',
 	unavailable: '无法检查',
+};
+const TASK_ERROR_CATEGORY_LABELS: Record<TaskErrorCategory, string> = {
+	configuration_error: '配置错误',
+	missing_tool: '缺少工具',
+	permission_denied: '权限不足',
+	data_source_not_ready: '数据源未就绪',
+	schema_mismatch: 'Schema 不匹配',
+	input_incomplete: '输入不足',
+	citation_verification_failed: '引用校验失败',
+	external_interface_failed: '外部接口失败',
+	artifact_generation_failed: '文件生成失败',
+	execution_failed: '节点执行失败',
 };
 
 function toDraft(task: TaskRecord): TaskDraft {
@@ -144,75 +161,141 @@ function getResultWidthLimit(): number {
 	return Math.min(MAX_RESULT_WIDTH, Math.max(360, Math.floor(viewportWidth * 0.38)));
 }
 
-function CapabilityPreflightPanel({ result }: { result: TaskPreflightResponse }) {
-	if (!result.capability_checks.length && !result.issues.length) return null;
+function CapabilityPreflightPanel({
+	result,
+	isChecking,
+}: {
+	result: TaskPreflightResponse | null;
+	isChecking: boolean;
+}) {
+	const [open, setOpen] = React.useState(() => Boolean(result && result.ready !== true));
+	const checks = result?.capability_checks ?? [];
+	const issues = result?.issues ?? [];
+	const availableCount = checks.filter((check) => check.status === 'available').length;
+	const unavailableCount = checks.filter((check) => check.status !== 'available').length;
+	const failureCount = unavailableCount || issues.length;
+	const hasDetails = checks.length > 0 || issues.length > 0;
+	const passed = result?.ready === true;
+	const panelClass = isChecking
+		? 'border-amber-200 bg-amber-50/70 text-amber-950'
+		: result
+			? passed
+				? 'border-emerald-200 bg-emerald-50/70 text-emerald-950'
+				: 'border-red-200 bg-red-50/70 text-red-950'
+			: 'border-slate-200 bg-slate-50/80 text-slate-800';
+	const summary = isChecking
+		? '运行前能力检查中...'
+		: result
+			? passed
+				? `✓ 运行前能力检查已通过 · ${availableCount > 0 ? `${availableCount} 项能力可用` : '当前无能力检查项'}`
+				: `✕ 运行前能力检查未通过${failureCount > 0 ? ` · ${failureCount} 项异常` : ''}`
+			: '运行前能力检查 · 尚未检查，点击“运行”后检查本任务能力';
+
 	return (
-		<div className="mx-5 mb-3 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-3 text-xs text-amber-950 xl:mx-6">
-			<div className="flex items-center justify-between gap-3">
-				<strong>运行前能力检查</strong>
-				<span className="font-semibold">{result.ready ? '通过' : '未通过'}</span>
-			</div>
-			<p className="mt-1 text-[11px] leading-5 text-amber-900">
-				工具可绑定不代表真实业务数据源已经接通；实际 Tool 调用仍会再次检查权限。
-			</p>
-			{result.capability_checks.length > 0 && (
-				<div className="mt-2 space-y-2">
-					{result.capability_checks.map((check) => (
-						<div
-							key={`${check.capability_key}:${check.step_id ?? 'missing'}`}
-							className="rounded-lg border border-amber-200/80 bg-white/80 px-2.5 py-2"
+		<div className={`mx-5 mb-3 min-w-0 rounded-xl border px-3 py-2 text-xs xl:mx-6 ${panelClass}`}>
+			<Collapsible open={open} onOpenChange={setOpen}>
+				<CollapsibleTrigger asChild>
+					<button
+						type="button"
+						disabled={!result || isChecking || !hasDetails}
+						className="flex w-full min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-default"
+					>
+						<span
+							className={`min-w-0 flex-1 break-words font-semibold ${!passed && result ? 'text-red-800' : ''}`}
 						>
-							<div className="flex flex-wrap items-center justify-between gap-1.5">
-								<span className="font-semibold">
-									{check.step_name} · {check.category}
-								</span>
-								<span
-									className={
-										check.status === 'available'
-											? 'text-emerald-700'
-											: 'text-red-700'
-									}
+							{isChecking && (
+								<Loader2
+									className="mr-1.5 inline size-3.5 animate-spin align-[-2px]"
+									aria-hidden="true"
+								/>
+							)}
+							{summary}
+						</span>
+						<span className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-slate-600">
+							{hasDetails && result && (open ? '收起详情' : '展开详情')}
+							{hasDetails && result && (
+								<ChevronDown
+									className={`size-3.5 transition-transform ${open ? 'rotate-180' : ''}`}
+									aria-hidden="true"
+								/>
+							)}
+						</span>
+					</button>
+				</CollapsibleTrigger>
+				<CollapsibleContent className="min-w-0">
+					<p className="mt-2 break-words text-[11px] leading-5 text-slate-700">
+						工具可绑定不代表真实业务数据源已经接通；实际 Tool 调用仍会再次检查权限。
+					</p>
+					{checks.length > 0 && (
+						<div className="mt-2 min-w-0 space-y-2">
+							{checks.map((check) => (
+								<div
+									key={`${check.capability_key}:${check.step_id ?? 'missing'}`}
+									className="min-w-0 rounded-lg border border-slate-200/80 bg-white/90 px-2.5 py-2"
 								>
-									{CAPABILITY_STATUS_LABELS[check.status] ?? check.status}
-								</span>
-							</div>
-							<div className="mt-1 text-[11px] leading-5 text-slate-600">
-								能力：{check.capability_key}；工具：
-								{check.tool_available == null
-									? '不适用'
-									: check.tool_available
-										? '存在'
-										: '缺少'}
-								；接口：
-								{check.interface_compatible == null
-									? '未检查'
-									: check.interface_compatible
-										? '兼容'
-										: '不兼容'}
-								；权限：
-								{PERMISSION_STATUS_LABELS[check.permission_status] ??
-									check.permission_status}
-								；真实数据源：
-								{check.business_data_verified == null
-									? '不适用'
-									: check.business_data_verified
-										? '已验证'
-										: '未验证'}
-							</div>
-							<p className="mt-1 text-[11px] leading-5">{check.message}</p>
+									<div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5">
+										<span className="min-w-0 break-words font-semibold">
+											{check.step_name} · {check.category}
+										</span>
+										<span
+											className={
+												check.status === 'available'
+													? 'text-emerald-700'
+													: 'text-red-700'
+											}
+										>
+											{CAPABILITY_STATUS_LABELS[check.status] ?? check.status}
+										</span>
+									</div>
+									<div className="mt-1 break-words text-[11px] leading-5 text-slate-600">
+										能力：<span className="break-all">{check.capability_key}</span>；工具：
+										{check.tool_available == null
+											? '不适用'
+											: check.tool_available
+												? '存在'
+												: '缺少'}
+										；接口：
+										{check.interface_compatible == null
+											? '未检查'
+											: check.interface_compatible
+												? '兼容'
+												: '不兼容'}
+										；权限：
+										{PERMISSION_STATUS_LABELS[check.permission_status] ??
+											check.permission_status}
+										；真实数据源：
+										{check.business_data_verified == null
+											? '不适用'
+											: check.business_data_verified
+												? '已验证'
+												: '未验证'}
+									</div>
+									<p className="mt-1 break-words text-[11px] leading-5 [overflow-wrap:anywhere]">
+										{check.message}
+									</p>
+									{check.error_category && check.error_code && (
+										<p className="mt-1 break-all text-[10px] font-medium text-red-700">
+											{TASK_ERROR_CATEGORY_LABELS[check.error_category]} · {check.error_code}
+										</p>
+									)}
+								</div>
+							))}
 						</div>
-					))}
-				</div>
-			)}
-			{result.issues.length > 0 && (
-				<ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-5">
-					{result.issues.slice(0, 8).map((issue, index) => (
-						<li key={`${issue.path}:${index}`}>
-							{issue.path}：{issue.message}
-						</li>
-					))}
-				</ul>
-			)}
+					)}
+					{issues.length > 0 && (
+						<ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-5 text-red-800">
+							{issues.map((issue, index) => (
+								<li
+									key={`${issue.path}:${index}`}
+									className="break-words [overflow-wrap:anywhere]"
+								>
+									{issue.path}：{issue.message}
+								</li>
+							))}
+						</ul>
+					)}
+				</CollapsibleContent>
+			</Collapsible>
 		</div>
 	);
 }
@@ -248,6 +331,14 @@ export function TaskPage() {
 	const [error, setError] = React.useState<string | null>(null);
 	const [capabilityPreflight, setCapabilityPreflight] =
 		React.useState<TaskPreflightResponse | null>(null);
+	const [isPreflighting, setIsPreflighting] = React.useState(false);
+	const [preflightResultVersion, setPreflightResultVersion] = React.useState(0);
+	const preflightRequestRef = React.useRef(0);
+	const clearCapabilityPreflight = React.useCallback(() => {
+		preflightRequestRef.current += 1;
+		setCapabilityPreflight(null);
+		setIsPreflighting(false);
+	}, []);
 	const [sidebarWidth, setSidebarWidth] = React.useState(280);
 	const [resultWidth, setResultWidth] = React.useState(380);
 	const [resizingPane, setResizingPane] = React.useState<ResizePane | null>(null);
@@ -388,6 +479,7 @@ export function TaskPage() {
 	}, []);
 
 	const loadTasks = React.useCallback(async () => {
+		clearCapabilityPreflight();
 		setIsLoading(true);
 		setError(null);
 		try {
@@ -414,7 +506,7 @@ export function TaskPage() {
 		} finally {
 			setIsLoading(false);
 		}
-	}, [navigate, restoreLatestRun, taskId]);
+	}, [clearCapabilityPreflight, navigate, restoreLatestRun, taskId]);
 
 	React.useEffect(() => {
 		void loadTasks();
@@ -509,6 +601,7 @@ export function TaskPage() {
 	}, [currentRunId, shouldStreamCurrentRun, currentRun?.status]);
 
 	const selectTask = (task: TaskRecord) => {
+		clearCapabilityPreflight();
 		setSelectedTaskId(task.id);
 		setDraft(toDraft(task));
 		setExecutionAgentId(task.source_context.agent_id ?? undefined);
@@ -608,6 +701,7 @@ export function TaskPage() {
 			nodes: [],
 			source_context: context,
 		});
+		clearCapabilityPreflight();
 		setTasks((previous) => [created, ...previous]);
 		setSelectedTaskId(created.id);
 		setDraft(toDraft(created));
@@ -633,6 +727,7 @@ export function TaskPage() {
 			inputs,
 			source_context: sourceContext,
 		});
+		clearCapabilityPreflight();
 		setTasks((previous) => [created, ...previous.filter((task) => task.id !== created.id)]);
 		setSelectedTaskId(created.id);
 		setDraft(toDraft(created));
@@ -656,6 +751,7 @@ export function TaskPage() {
 		setError(null);
 		try {
 			const created = await taskApi.createCustomFlowCopy(source.id);
+			clearCapabilityPreflight();
 			setTasks((previous) => [created, ...previous]);
 			setSelectedTaskId(created.id);
 			setDraft(toDraft(created));
@@ -663,7 +759,6 @@ export function TaskPage() {
 			setExecutionSessionId(created.source_context.session_id ?? null);
 			setCurrentRun(null);
 			setRunEvents([]);
-			setCapabilityPreflight(null);
 			setIsDirty(false);
 			navigate(`/task/${created.id}`);
 			toast.success('已创建独立自定义流程副本');
@@ -709,6 +804,9 @@ export function TaskPage() {
 
 	const handleRun = async () => {
 		if (!draft || isSaving || isRunning) return;
+		const requestId = ++preflightRequestRef.current;
+		setCapabilityPreflight(null);
+		setIsPreflighting(false);
 		if (!draft.goal.trim() || draft.nodes.length === 0) {
 			setError('请先填写任务目的并配置至少一个任务步骤。');
 			return;
@@ -716,18 +814,21 @@ export function TaskPage() {
 		const saved = isDirty
 			? await saveDraft()
 			: (tasks.find((task) => task.id === draft.id) ?? null);
-		if (!saved) return;
+		if (!saved || requestId !== preflightRequestRef.current) return;
 		setError(null);
-		setCapabilityPreflight(null);
 		setRunEvents([]);
 		setIsRunning(true);
+		setIsPreflighting(true);
 		try {
 			const context = buildExecutionContext();
 			const preflight = await taskApi.preflight(saved.id, {
 				input: runInput.trim(),
 				context,
 			});
+			if (requestId !== preflightRequestRef.current) return;
 			setCapabilityPreflight(preflight);
+			setPreflightResultVersion((version) => version + 1);
+			setIsPreflighting(false);
 			if (!preflight.ready) {
 				setIsRunning(false);
 				setError('运行前能力检查未通过；请查看能力状态和修正建议。');
@@ -737,6 +838,7 @@ export function TaskPage() {
 				input: runInput.trim(),
 				context,
 			});
+			if (requestId !== preflightRequestRef.current) return;
 			setCurrentRun(run);
 			setTasks((previous) =>
 				previous.map((task) =>
@@ -746,8 +848,11 @@ export function TaskPage() {
 				),
 			);
 		} catch (requestError) {
+			if (requestId !== preflightRequestRef.current) return;
 			setIsRunning(false);
 			setError(errorMessage(requestError));
+		} finally {
+			if (requestId === preflightRequestRef.current) setIsPreflighting(false);
 		}
 	};
 
@@ -832,6 +937,7 @@ export function TaskPage() {
 			if (next) {
 				selectTask(next);
 			} else {
+				clearCapabilityPreflight();
 				setSelectedTaskId(null);
 				setDraft(null);
 				setCurrentRun(null);
@@ -847,8 +953,20 @@ export function TaskPage() {
 	const updateDraft = (update: Partial<TaskDraft>) => {
 		setDraft((previous) => (previous ? { ...previous, ...update } : previous));
 		setCapabilityPreflight(null);
+		if (isPreflighting) {
+			preflightRequestRef.current += 1;
+			setIsPreflighting(false);
+			setIsRunning(false);
+		}
 		setIsDirty(true);
 	};
+	const preflightViewState = capabilityPreflight
+		? capabilityPreflight.ready === true
+			? 'passed'
+			: 'failed'
+		: isPreflighting
+			? 'checking'
+			: 'unchecked';
 
 	if (isLoading) {
 		return (
@@ -975,8 +1093,12 @@ export function TaskPage() {
 									<span>{error}</span>
 								</div>
 							)}
-							{capabilityPreflight && (
-								<CapabilityPreflightPanel result={capabilityPreflight} />
+							{draft && (
+								<CapabilityPreflightPanel
+									key={`${draft.id}:${preflightResultVersion}:${preflightViewState}`}
+									result={capabilityPreflight}
+									isChecking={isPreflighting}
+								/>
 							)}
 							<div className="min-h-0 flex-1 overflow-hidden border-t border-slate-100">
 								<section className="h-full min-w-0 overflow-y-auto px-4 py-4 xl:px-5">

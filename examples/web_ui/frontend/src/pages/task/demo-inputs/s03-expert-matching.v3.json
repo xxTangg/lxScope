@@ -1,0 +1,11 @@
+{
+  "template_version": "3.0.0",
+  "inputs": {
+    "project_name": "[DEMO/SYNTHETIC] 澄湖科创园综合能源与设备台账优化咨询项目",
+    "project_brief": "DEMO/SYNTHETIC；DEMO-LXSCOPE-2025-001，需对综合能源、建筑节能和设备资产台账开展咨询。仅依据本请求随附的虚构候选字段做初步排序，不代表正式专家库查询、资质审查或回避审查。",
+    "professional_fields": ["综合能源", "设备资产管理"],
+    "exclusion_rules": "DEMO/SYNTHETIC：仅使用随附候选记录中的声明状态；unknown 或 conflict 均不进入初步排序。正式回避规则需另行核验。",
+    "required_expert_count": 2,
+    "expert_records_json": "[{\"expert_id\":\"DEMO-EXPERT-001\",\"name\":\"演示专家甲\",\"professional_fields\":[\"综合能源\",\"建筑节能\"],\"conflict_status\":\"clear\",\"source_reference\":\"DEMO/SYNTHETIC: DEMO-EXPERT-001 人工构造候选记录\"},{\"expert_id\":\"DEMO-EXPERT-002\",\"name\":\"演示专家乙\",\"professional_fields\":[\"设备资产管理\",\"工程咨询\"],\"conflict_status\":\"clear\",\"source_reference\":\"DEMO/SYNTHETIC: DEMO-EXPERT-002 人工构造候选记录\"},{\"expert_id\":\"DEMO-EXPERT-003\",\"name\":\"演示专家丙\",\"professional_fields\":[\"工程咨询\",\"综合能源\"],\"conflict_status\":\"unknown\",\"source_reference\":\"DEMO/SYNTHETIC: DEMO-EXPERT-003 人工构造候选记录；声明状态未知\"}]"
+  }
+}

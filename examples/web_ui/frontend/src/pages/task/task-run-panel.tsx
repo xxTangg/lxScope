@@ -31,6 +31,7 @@ import type {
 	TaskRunRecord,
 	TaskStepType,
 } from '@/api';
+import type { TaskErrorCategory, TaskErrorDetail } from '@/api/task';
 import { Markdown } from '@/components/markdown';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -65,6 +66,57 @@ type TimelineItem = {
 	node?: NodeRunRecord;
 	showGraphAction?: boolean;
 };
+
+const TASK_ERROR_CATEGORY_LABELS: Record<TaskErrorCategory, string> = {
+	configuration_error: '配置错误',
+	missing_tool: '缺少工具',
+	permission_denied: '权限不足',
+	data_source_not_ready: '数据源未就绪',
+	schema_mismatch: 'Schema 不匹配',
+	input_incomplete: '输入不足',
+	citation_verification_failed: '引用校验失败',
+	external_interface_failed: '外部接口失败',
+	artifact_generation_failed: '文件生成失败',
+	execution_failed: '节点执行失败',
+};
+
+const PRIVATE_RESULT_KEYS = /^(authorization_subject|user_id|userId|access_token|refresh_token|token|secret|password|api_key|private_reasoning|chain_of_thought)$/i;
+
+function sanitizeRunValue(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(sanitizeRunValue);
+	if (!value || typeof value !== 'object') return value;
+	return Object.fromEntries(
+		Object.entries(value as Record<string, unknown>)
+			.filter(([key]) => !PRIVATE_RESULT_KEYS.test(key))
+			.map(([key, child]) => [key, sanitizeRunValue(child)]),
+	);
+}
+
+function formatStructuredValue(value: unknown): string | null {
+	if (value === undefined) return null;
+	try {
+		return JSON.stringify(sanitizeRunValue(value), null, 2) ?? null;
+	} catch {
+		return null;
+	}
+}
+
+function TaskErrorSummary({ detail }: { detail: TaskErrorDetail }) {
+	return (
+		<div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-2.5 text-[11px] leading-5 text-red-800">
+			<div className="font-semibold">
+				{TASK_ERROR_CATEGORY_LABELS[detail.category]} · {detail.code}
+			</div>
+			<div className="mt-0.5 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+				{detail.message}
+			</div>
+			<div className="mt-1 text-[10px] text-red-700/80">
+				TaskRun {detail.run_id}
+				{detail.node_id ? ` · 节点 ${detail.node_id}` : ''}
+			</div>
+		</div>
+	);
+}
 
 const TABS: Array<{ id: IntelligenceTab; label: string }> = [
 	{ id: 'timeline', label: '执行轨迹' },
@@ -359,6 +411,13 @@ function NodeResultCard({
 }) {
 	const definition = run.nodes.find((item) => item.id === nodeRun.node_id);
 	const output = nodeRun.display_summary || nodeRun.output || nodeRun.error;
+	const structuredResult = formatStructuredValue(nodeRun.result);
+	const executionMetadata = formatStructuredValue(nodeRun.metadata);
+	const toolName =
+		nodeRun.metadata?.tool_name ??
+		(definition?.config.type === 'tool' ? definition.config.tool_name : null);
+	const capabilityKey =
+		nodeRun.metadata?.capability_key ?? definition?.capability_key ?? null;
 	const nodeArtifacts = run.artifacts.filter((artifact) => artifact.node_id === nodeRun.node_id);
 	const validation = nodeRun.metadata?.output_schema_validation;
 	const validationRecord =
@@ -398,6 +457,20 @@ function NodeResultCard({
 					{formatDuration(getNodeDuration(nodeRun))}
 				</span>
 			</div>
+			{(nodeRun.started_at || nodeRun.finished_at) && (
+				<div className="mt-1 text-[10px] text-slate-500">
+					{nodeRun.started_at ? `开始 ${formatClockTime(nodeRun.started_at)}` : ''}
+					{nodeRun.started_at && nodeRun.finished_at ? ' · ' : ''}
+					{nodeRun.finished_at ? `结束 ${formatClockTime(nodeRun.finished_at)}` : ''}
+				</div>
+			)}
+			{(toolName || capabilityKey) && (
+				<div className="mt-1 break-all text-[10px] text-slate-500">
+					{toolName ? `Tool/MCP：${String(toolName)}` : 'Task 原生能力'}
+					{capabilityKey ? ` · 能力 ${String(capabilityKey)}` : ''}
+				</div>
+			)}
+			{nodeRun.error_detail && <TaskErrorSummary detail={nodeRun.error_detail} />}
 			{validationStatus && (
 				<div
 					className={
@@ -416,7 +489,17 @@ function NodeResultCard({
 					{output}
 				</div>
 			)}
-			{nodeRun.error && (
+			{nodeRun.output && (
+				<details className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
+					<summary className="cursor-pointer text-[10px] font-medium text-slate-600">
+						查看完整节点输出
+					</summary>
+					<pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-md bg-slate-50 p-2 text-[11px] leading-5 text-slate-700">
+						{nodeRun.output}
+					</pre>
+				</details>
+			)}
+			{nodeRun.error && !nodeRun.error_detail && (
 				<div className="mt-2 rounded-lg bg-red-50 p-2 text-[11px] leading-5 text-red-700">
 					{nodeRun.error}
 				</div>
@@ -445,6 +528,33 @@ function NodeResultCard({
 					{nodeDetails(definition, run)}
 				</div>
 			</details>
+			{(structuredResult || executionMetadata) && (
+				<details className="mt-2 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+					<summary className="cursor-pointer text-[10px] font-medium text-slate-500">
+						查看结构化结果、能力状态与来源证据
+					</summary>
+					{structuredResult && (
+						<div className="mt-2">
+							<div className="mb-1 text-[10px] font-semibold text-slate-600">
+								结构化结果
+							</div>
+							<pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-md border border-slate-100 bg-white p-2 text-[10px] leading-5 text-slate-700">
+								{structuredResult}
+							</pre>
+						</div>
+					)}
+					{executionMetadata && (
+						<div className="mt-2">
+							<div className="mb-1 text-[10px] font-semibold text-slate-600">
+								执行元数据与证据台账
+							</div>
+							<pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-md border border-slate-100 bg-white p-2 text-[10px] leading-5 text-slate-700">
+								{executionMetadata}
+							</pre>
+						</div>
+					)}
+				</details>
+			)}
 			{definition?.knowledge_graph_enabled && (
 				<div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-blue-100 bg-blue-50/60 px-2.5 py-2">
 					<div className="min-w-0">
@@ -698,6 +808,7 @@ export function TaskRunPanel({
 					<TaskInputForm
 						key={run.pending_input.id}
 						request={run.pending_input}
+						templateId={run.source_template_id ?? null}
 						onAnswer={onAnswer}
 					/>
 				)}
@@ -813,7 +924,8 @@ export function TaskRunPanel({
 								onPreviewGraph={setPreviewGraphNodeId}
 							/>
 						)}
-						{run.error && (
+						{run.error_detail && <TaskErrorSummary detail={run.error_detail} />}
+						{run.error && !run.error_detail && (
 							<div className="rounded-xl border border-red-100 bg-red-50 p-3 text-xs leading-5 text-red-700">
 								{run.error}
 							</div>

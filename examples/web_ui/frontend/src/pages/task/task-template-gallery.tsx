@@ -1,6 +1,7 @@
-import { AlertCircle, BookOpen, Loader2, RefreshCw, Sparkles } from 'lucide-react';
+import { AlertCircle, BookOpen, CircleHelp, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import * as React from 'react';
 
+import { TaskTemplatePreview } from './task-template-preview';
 import { taskApi } from '@/api';
 import type { TaskTemplateDefinition } from '@/api/task';
 import { Badge } from '@/components/ui/badge';
@@ -13,8 +14,6 @@ import {
 	DialogTitle,
 } from '@/components/ui/dialog';
 
-import { TaskTemplatePreview } from './task-template-preview';
-
 interface TaskTemplateGalleryProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -24,6 +23,31 @@ interface TaskTemplateGalleryProps {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : '模板目录加载失败，请稍后重试。';
+}
+
+const TEMPLATE_GUIDE_SECTIONS: Record<string, string> = {
+	s01_project_init: 'scenario-s01-project-init',
+	s02_project_planning: 'scenario-s02-project-planning',
+	s03_expert_matching: 'scenario-s03-expert-matching',
+	s04_meeting_preparation: 'scenario-s04-meeting-preparation',
+	s05_meeting_minutes: 'scenario-s05-meeting-minutes',
+	s06_opinion_processing: 'scenario-s06-opinion-processing',
+	s07_report_generation: 'scenario-s07-report-generation',
+	s08_archive_transfer: 'scenario-s08-archive-transfer',
+	s09_expense_settlement: 'scenario-s09-expense-settlement',
+};
+
+function getGuideUrl(section?: string): string {
+	const baseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
+	const guideUrl = new URL('task-user-guide.html', baseUrl);
+	if (section) guideUrl.hash = section;
+	return guideUrl.href;
+}
+
+function openTemplateGuide(template: TaskTemplateDefinition) {
+	const section = TEMPLATE_GUIDE_SECTIONS[template.template_id];
+	if (!section) return;
+	window.open(getGuideUrl(section), '_blank', 'noopener,noreferrer');
 }
 
 export function TaskTemplateGallery({
@@ -78,6 +102,13 @@ export function TaskTemplateGallery({
 							</DialogDescription>
 						</div>
 						<div className="flex items-center gap-2">
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() => window.open(getGuideUrl(), '_blank', 'noopener,noreferrer')}
+							>
+								<BookOpen />使用手册
+							</Button>
 							<Button variant="outline" size="sm" onClick={onOpenFreeTask}>
 								<Sparkles />自由任务（AI 规划）
 							</Button>
@@ -111,30 +142,43 @@ export function TaskTemplateGallery({
 									const selected = template.template_id === selectedTemplateId;
 									const hasUnsupported = (template.unsupported_capabilities ?? []).length > 0;
 									return (
-										<button
+										<div
 											key={template.template_id}
-											type="button"
-											onClick={() => setSelectedTemplateId(template.template_id)}
-											aria-pressed={selected}
-											className={'w-full rounded-xl border p-3 text-left transition-colors ' + (selected ? 'border-blue-300 bg-blue-50 shadow-sm' : 'border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50')}
+											className={'flex w-full items-start gap-1 rounded-xl border p-1.5 transition-colors ' + (selected ? 'border-blue-300 bg-blue-50 shadow-sm' : 'border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50')}
 										>
-											<div className="flex items-start gap-2.5">
-												<div className={'flex size-7 shrink-0 items-center justify-center rounded-lg text-[10px] font-semibold ' + (selected ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600')}>
-													{String(index + 1).padStart(2, '0')}
-												</div>
-												<div className="min-w-0 flex-1">
-													<div className="flex flex-wrap items-center gap-1.5">
-														<span className="text-xs font-semibold text-slate-800">{template.title}</span>
-														<Badge variant="outline" className="text-[9px]">v{template.template_version}</Badge>
+											<button
+												type="button"
+												onClick={() => setSelectedTemplateId(template.template_id)}
+												aria-pressed={selected}
+												className="min-w-0 flex-1 rounded-lg p-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1"
+											>
+												<div className="flex items-start gap-2.5">
+													<div className={'flex size-7 shrink-0 items-center justify-center rounded-lg text-[10px] font-semibold ' + (selected ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600')}>
+														{String(index + 1).padStart(2, '0')}
 													</div>
-													<p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-500">{template.description}</p>
-													<div className="mt-2 flex flex-wrap items-center gap-1.5">
-														<Badge variant="outline" className="text-[9px]">{template.steps.length} 节点</Badge>
-														<Badge variant="outline" className={hasUnsupported ? 'border-amber-200 bg-amber-50 text-amber-800 text-[9px]' : 'text-[9px]'}>{hasUnsupported ? '含未支持能力' : '待校验工具'}</Badge>
+													<div className="min-w-0 flex-1">
+														<div className="flex flex-wrap items-center gap-1.5">
+															<span className="text-xs font-semibold text-slate-800">{template.title}</span>
+															<Badge variant="outline" className="text-[9px]">v{template.template_version}</Badge>
+														</div>
+														<p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-500">{template.description}</p>
+														<div className="mt-2 flex flex-wrap items-center gap-1.5">
+															<Badge variant="outline" className="text-[9px]">{template.steps.length} 节点</Badge>
+															<Badge variant="outline" className={hasUnsupported ? 'border-amber-200 bg-amber-50 text-amber-800 text-[9px]' : 'text-[9px]'}>{hasUnsupported ? '含未支持能力' : '待校验工具'}</Badge>
+														</div>
 													</div>
 												</div>
-											</div>
-										</button>
+											</button>
+											<button
+												type="button"
+												onClick={() => openTemplateGuide(template)}
+												aria-label={`查看${template.title}业务场景使用说明`}
+												title={`查看${template.title}业务场景使用说明`}
+												className="mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-slate-400 outline-none transition-colors hover:bg-white hover:text-blue-700 focus-visible:ring-2 focus-visible:ring-blue-500"
+											>
+												<CircleHelp className="size-4" aria-hidden="true" />
+											</button>
+										</div>
 									);
 								})}
 							</div>
