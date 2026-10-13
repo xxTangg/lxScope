@@ -14,30 +14,55 @@ from ._template_models import TaskTemplateDefinition
 
 TEMPLATE_VERSION_FILES: tuple[tuple[str, str, str], ...] = (
     ("s01_project_init", "1.0.0", "s01_project_init.v1.json"),
+    ("s01_project_init", "2.0.0", "s01_project_init.v2.json"),
     ("s02_project_planning", "1.0.0", "s02_project_planning.v1.json"),
+    ("s02_project_planning", "2.0.0", "s02_project_planning.v2.json"),
+    ("s02_project_planning", "3.0.0", "s02_project_planning.v3.json"),
+    ("s02_project_planning", "3.1.0", "s02_project_planning.v3_1.json"),
+    ("s02_project_planning", "3.2.0", "s02_project_planning.v3_2.json"),
+    ("s02_project_planning", "4.0.0", "s02_project_planning.v4.json"),
+    ("s02_project_planning", "4.1.0", "s02_project_planning.v4_1.json"),
+    ("s02_project_planning", "5.0.0", "s02_project_planning.v5.json"),
     ("s03_expert_matching", "1.0.0", "s03_expert_matching.v1.json"),
+    ("s03_expert_matching", "2.0.0", "s03_expert_matching.v2.json"),
+    ("s03_expert_matching", "3.0.0", "s03_expert_matching.v3.json"),
     ("s04_meeting_preparation", "1.0.0", "s04_meeting_preparation.v1.json"),
+    ("s04_meeting_preparation", "2.0.0", "s04_meeting_preparation.v2.json"),
+    ("s04_meeting_preparation", "3.0.0", "s04_meeting_preparation.v3.json"),
     ("s05_meeting_minutes", "1.0.0", "s05_meeting_minutes.v1.json"),
+    ("s05_meeting_minutes", "2.0.0", "s05_meeting_minutes.v2.json"),
+    ("s05_meeting_minutes", "3.0.0", "s05_meeting_minutes.v3.json"),
     ("s06_opinion_processing", "1.0.0", "s06_opinion_processing.v1.json"),
+    ("s06_opinion_processing", "2.0.0", "s06_opinion_processing.v2.json"),
+    ("s06_opinion_processing", "3.0.0", "s06_opinion_processing.v3.json"),
     ("s07_report_generation", "1.0.0", "s07_report_generation.v1.json"),
+    ("s07_report_generation", "2.0.0", "s07_report_generation.v2.json"),
+    ("s07_report_generation", "3.0.0", "s07_report_generation.v3.json"),
+    ("s07_report_generation", "4.0.0", "s07_report_generation.v4.json"),
     ("s08_archive_transfer", "1.0.0", "s08_archive_transfer.v1.json"),
+    ("s08_archive_transfer", "2.0.0", "s08_archive_transfer.v2.json"),
+    ("s08_archive_transfer", "3.0.0", "s08_archive_transfer.v3.json"),
     ("s09_expense_settlement", "1.0.0", "s09_expense_settlement.v1.json"),
+    ("s09_expense_settlement", "2.0.0", "s09_expense_settlement.v2.json"),
+    ("s09_expense_settlement", "3.0.0", "s09_expense_settlement.v3.json"),
 )
 
 # Keep the public gallery pinned to one explicitly selected version per
 # scenario.
-# Historical files may be added to TEMPLATE_VERSION_FILES without changing this
-# tuple; callers that instantiate new Tasks only see these current versions.
+# Historical files may be added to TEMPLATE_VERSION_FILES without changing
+# this tuple. Gallery/current lookup exposes only these versions; callers that
+# explicitly request an exact published version can resolve its immutable
+# definition through get_template_version().
 CURRENT_TEMPLATE_VERSIONS: tuple[tuple[str, str], ...] = (
-    ("s01_project_init", "1.0.0"),
-    ("s02_project_planning", "1.0.0"),
-    ("s03_expert_matching", "1.0.0"),
-    ("s04_meeting_preparation", "1.0.0"),
-    ("s05_meeting_minutes", "1.0.0"),
-    ("s06_opinion_processing", "1.0.0"),
-    ("s07_report_generation", "1.0.0"),
-    ("s08_archive_transfer", "1.0.0"),
-    ("s09_expense_settlement", "1.0.0"),
+    ("s01_project_init", "2.0.0"),
+    ("s02_project_planning", "5.0.0"),
+    ("s03_expert_matching", "3.0.0"),
+    ("s04_meeting_preparation", "3.0.0"),
+    ("s05_meeting_minutes", "3.0.0"),
+    ("s06_opinion_processing", "3.0.0"),
+    ("s07_report_generation", "4.0.0"),
+    ("s08_archive_transfer", "3.0.0"),
+    ("s09_expense_settlement", "3.0.0"),
 )
 
 # Compatibility view for code and tests that used the original ID/file catalog.

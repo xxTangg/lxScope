@@ -1,6 +1,7 @@
 import { Loader2, Play, RefreshCw, Save } from 'lucide-react';
 
 import type { TaskGenerationStatus } from '@/api';
+import type { TaskDeliveryMode } from '@/api/task';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,6 +16,9 @@ interface TaskHeaderProps {
 	isAwaitingInput?: boolean;
 	isGenerating: boolean;
 	canRerun: boolean;
+	deliveryMode?: TaskDeliveryMode;
+	showDeliveryMode?: boolean;
+	onDeliveryModeChange?: (mode: TaskDeliveryMode) => void;
 	onTitleChange: (title: string) => void;
 	onSave: () => void;
 	onRerun: () => void;
@@ -31,6 +35,9 @@ export function TaskHeader({
 	isAwaitingInput = false,
 	isGenerating,
 	canRerun,
+	deliveryMode = 'strict_verified',
+	showDeliveryMode = false,
+	onDeliveryModeChange,
 	onTitleChange,
 	onSave,
 	onRerun,
@@ -54,6 +61,25 @@ export function TaskHeader({
 				<div className="mt-1 line-clamp-1 max-w-3xl text-xs text-slate-500" title={goal}>{goal || '补充任务目标，帮助 Agent 规划可执行流程。'}</div>
 			</div>
 			<div className="flex shrink-0 flex-wrap items-center gap-2">
+				{showDeliveryMode && (
+					<label className="flex min-h-9 items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 text-[11px] text-amber-950">
+						<span className="font-medium">交付模式</span>
+						<select
+							aria-label="S02 报告交付模式"
+							value={deliveryMode}
+							disabled={isSaving || isRunning || isGenerating}
+							onChange={(event) =>
+								onDeliveryModeChange?.(
+									event.target.value as TaskDeliveryMode,
+								)
+							}
+							className="max-w-40 bg-transparent text-[11px] font-semibold outline-none disabled:opacity-60"
+						>
+							<option value="strict_verified">严格证据校验</option>
+							<option value="demo_draft">演示草稿</option>
+						</select>
+					</label>
+				)}
 				<Button variant="outline" size="sm" onClick={onSave} disabled={!isDirty || isSaving || isRunning || isGenerating} className="border-slate-200">
 					{isSaving ? <Loader2 className="animate-spin" /> : <Save />}{isSaving ? '保存中…' : '保存'}
 				</Button>

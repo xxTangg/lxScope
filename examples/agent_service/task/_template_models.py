@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from ._models import TaskContext
+from ._models import NodeOutputContract, TaskContext
 from ._output_validation import validate_output_schema_definition
 
 
@@ -122,6 +122,7 @@ class TemplateStep(_TemplateModel):
     sensitive_information: str = Field(min_length=1, max_length=2_000)
     artifact: TemplateArtifactConfig | None = None
     output_schema: dict[str, Any] | None = None
+    output_contract: NodeOutputContract | None = None
 
     @model_validator(mode="after")
     def validate_kind_and_capability(self) -> "TemplateStep":
@@ -142,6 +143,24 @@ class TemplateStep(_TemplateModel):
                 raise ValueError(
                     "Template output schemas are supported on Agent steps only."
                 )
+        if (
+            self.output_contract is not None
+            and self.output_contract.validation_mode
+            in {"citations", "claim_evidence"}
+            and self.kind != "agent"
+        ):
+            raise ValueError(
+                "Citation output contracts are supported on Agent steps only."
+            )
+        if (
+            self.output_schema is not None
+            and self.output_contract is not None
+            and self.output_contract.json_schema is not None
+            and self.output_schema != self.output_contract.json_schema
+        ):
+            raise ValueError(
+                "output_schema and output_contract.schema must match."
+            )
         return self
 
 
@@ -311,6 +330,14 @@ class TemplateInstantiationErrorDetail(_TemplateModel):
         "TEMPLATE_NODE_INVALID",
         "TEMPLATE_CAPABILITY_MAP_INVALID",
     ]
+    error_category: Literal[
+        "configuration_error",
+        "missing_tool",
+        "permission_denied",
+        "data_source_not_ready",
+        "schema_mismatch",
+        "external_interface_failed",
+    ] = "configuration_error"
     message: str = Field(min_length=1, max_length=500)
     missing_capabilities: list[str] = Field(default_factory=list, max_length=64)
     blocked_capabilities: list[str] = Field(default_factory=list, max_length=64)

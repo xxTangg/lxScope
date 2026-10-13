@@ -436,7 +436,10 @@ class PostgresTaskStore(TaskStoreProtocol):
                         storage_uri=artifact.path,
                         mime_type=artifact.media_type,
                         size_bytes=artifact.size_bytes,
-                        metadata={"node_id": artifact.node_id},
+                        metadata={
+                            "node_id": artifact.node_id,
+                            "delivery_status": artifact.delivery_status,
+                        },
                         created_at=artifact.created_at,
                     ).on_conflict_do_nothing(),
                 )

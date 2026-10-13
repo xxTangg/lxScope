@@ -61,6 +61,20 @@ class TaskSOPStep(SOPStepBase):
     ) -> AsyncGenerator[Any, None]:
         """Make one attempt and record either a verdict or an input request."""
         del inputs  # Task answers are restored in this step's durable state.
+        if state.verifications and (
+            state.metadata.get("task_retryable") is False
+            or len(state.verifications) >= self.max_attempts
+        ):
+            # Task reconstructs this adapter for resumed Runs. Persisted
+            # terminal verdicts and exhausted budgets must remain terminal.
+            self.max_attempts = min(
+                self.max_attempts, len(state.verifications)
+            )
+            state.phase = SOPPhase.FAILED
+            yield CustomEvent(
+                name="TASK_STEP_UPDATED", value={"node_id": self.node.id}
+            )
+            return
         state.phase = SOPPhase.RUNNING
         yield CustomEvent(
             name="TASK_STEP_STARTED", value={"node_id": self.node.id}
@@ -103,6 +117,12 @@ class TaskSOPStep(SOPStepBase):
             self.record(
                 state, verdict.passed, verdict.message, "task-verifier"
             )
+            if not verdict.passed:
+                state.metadata["task_retryable"] = verdict.retryable
+                if not verdict.retryable:
+                    # SOPEngine owns progression and reads this existing
+                    # adapter limit after each settled verifier result.
+                    self.max_attempts = len(state.verifications)
         else:
             raise ValueError(
                 f"Unsupported step result status: {result.status}"

@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "template_id": "s08_archive_transfer",
+  "template_version": "3.0.0",
+  "title": "归档移交",
+  "description": "整理用户提交的文件元数据，核对完整性并输出待移交清单；本版本不读取文件内容，也不写入档案系统。",
+  "category": "review",
+  "required_capabilities": [
+    "archive.document_metadata",
+    "archive.completeness_check"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_id",
+      "archive_metadata_json",
+      "archive_category",
+      "required_metadata_fields_json"
+    ],
+    "properties": {
+      "project_id": {
+        "type": "string",
+        "description": "项目标识。"
+      },
+      "archive_category": {
+        "type": "string",
+        "description": "归档类别。"
+      },
+      "retention_rule_id": {
+        "type": "string",
+        "description": "经确认的保管规则标识，可选。"
+      },
+      "archive_metadata_json": {
+        "type": "string",
+        "description": "由任务创建者提供的文件元数据 JSON 数组；Task 不读取文件内容。"
+      },
+      "required_metadata_fields_json": {
+        "type": "string",
+        "description": "需要核对的元数据字段 JSON 字符串数组；仅接受 Task 支持的字段。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出文件清单、元数据、完整性检查结果和待移交状态。未接入权限授权、幂等写入和回执恢复前不得写入档案系统。",
+  "steps": [
+    {
+      "step_key": "collect_archive_files",
+      "title": "收集归档元数据清单",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供项目和用户已整理的文件元数据清单；本步骤不读取本地路径或文件内容。",
+        "questions": [
+          {
+            "key": "project_id",
+            "label": "项目标识",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "archive_category",
+            "label": "归档类别",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "retention_rule_id",
+            "label": "保管规则标识",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "archive_metadata_json",
+            "label": "用户提交的文件元数据 JSON 数组",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "required_metadata_fields_json",
+            "label": "必需元数据字段 JSON 数组（可选）",
+            "required": true,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得用户提供的文件元数据、归档类别和项目上下文。",
+      "failure_handling": "元数据缺失或结构无效时阻断，不读取本地任意路径。",
+      "sensitive_information": "仅收集归档清单必需的元数据字段。"
+    },
+    {
+      "step_key": "extract_archive_metadata",
+      "title": "规范化用户提交文件元数据（不读取文件）",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "archive.document_metadata",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "assets": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "规范化元数据并按扩展名给出草稿分类；不声明元数据来自文件读取。",
+      "failure_handling": "元数据结构无效时阻断，不伪造文件属性。",
+      "sensitive_information": "避免从文件中提取归档无关的个人敏感字段。"
+    },
+    {
+      "step_key": "classify_archive_materials",
+      "title": "分类归档材料",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "依据用户提供的归档类别和提取元数据整理文件分类建议。无法判断的文件标为待人工分类，不自行设定保管期限。"
+      },
+      "output_requirement": "输出文件与建议类别的映射，并列出未分类项。",
+      "failure_handling": "分类依据不足时标记待人工处理。",
+      "sensitive_information": "只显示归档分类所需字段。"
+    },
+    {
+      "step_key": "check_archive_completeness",
+      "title": "核对归档完整性",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "archive.completeness_check",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "manifest": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "按用户给出的必需字段清单检查完整性；不做档案系统写入。",
+      "failure_handling": "完整性规则或工具缺失时不得标记归档完整。",
+      "sensitive_information": "检查结果仅包含必要的文件元数据。"
+    },
+    {
+      "step_key": "prepare_transfer_manifest",
+      "title": "生成移交清单",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "整理文件清单、元数据、完整性结果和待补项。标明尚未获得业务授权、尚未写入档案系统及尚无回执的状态。"
+      },
+      "output_requirement": "形成供授权人员核对的归档移交清单。",
+      "failure_handling": "存在缺失文件或未知保管规则时保留待处理状态。",
+      "sensitive_information": "移交清单沿用源文件权限，不公开分享。"
+    },
+    {
+      "step_key": "produce_transfer_manifest",
+      "title": "生成待移交清单",
+      "kind": "agent",
+      "required": true,
+      "editable": false,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "根据前序文件元数据和完整性结果，生成待移交目录与文件清单。只列出本次实际获取的资料。不调用或声称已写入档案系统。"
+      },
+      "output_requirement": "生成与已取得文件数一致的待移交目录与清单，不作为实际归档回执。",
+      "failure_handling": "来源不完整时阻断清单生成；没有档案系统时只保存本地产物，不写入外部系统。",
+      "sensitive_information": "不得在模板或前端保存档案系统密钥、内部地址或真实文件内容。",
+      "artifact": {
+        "format": "xlsx",
+        "filename": "待移交档案清单"
+      }
+    }
+  ],
+  "unsupported_capabilities": [
+    {
+      "capability_key": "archive.write_authorization",
+      "reason": "当前没有真实权限核验、人工授权身份和审计协议。"
+    },
+    {
+      "capability_key": "archive.receipt_wait",
+      "reason": "当前没有持久化外部回执等待和服务重启恢复协议。"
+    },
+    {
+      "capability_key": "archive.write",
+      "reason": "本版仅生成待移交文件清单，不调用档案写入接口。"
+    }
+  ]
+}

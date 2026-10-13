@@ -61,6 +61,7 @@ def generate_artifact(
     config: ArtifactConfig,
     default_stem: str,
     spec: ArtifactSpec | None = None,
+    draft_label: str | None = None,
 ) -> GeneratedArtifact:
     """Render the final Task output in the requested artifact format."""
 
@@ -69,6 +70,10 @@ def generate_artifact(
         data = output.encode("utf-8")
     elif config.format is ArtifactFormat.DOCX:
         data = render_docx(spec or output)
+        if draft_label:
+            from ._office_renderers import mark_docx_draft
+
+            data = mark_docx_draft(data, draft_label)
     elif config.format is ArtifactFormat.XLSX:
         data = render_xlsx(spec or output)
     else:  # pragma: no cover - guarded by the Pydantic enum

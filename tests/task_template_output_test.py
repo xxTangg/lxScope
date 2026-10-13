@@ -26,6 +26,7 @@ from examples.agent_service.task._models import (
 )
 from examples.agent_service.task._output_validation import (
     OutputSchemaDefinitionError,
+    describe_output_schema,
     validate_output_schema_definition,
     validate_structured_result,
 )
@@ -101,6 +102,10 @@ class _DiskTaskExecutor:
     ):
         del tool_name, arguments, context, arguments_resolved
         return "allowed", "Task output test fixture permission"
+
+    async def preflight_artifact_writer(self, *, context):
+        del context
+        return True, "Isolated test-directory writer is available."
 
     def business_data_verified(self, capability_key):
         return capability_key in {
@@ -350,6 +355,52 @@ def test_output_schema_rejects_unimplemented_and_unbounded_features() -> None:
         TaskTemplateDefinition.model_validate(payload)
 
 
+def test_output_schema_supports_bounded_discriminated_one_of() -> None:
+    schema = {
+        "type": "object",
+        "oneOf": [
+            {
+                "type": "object",
+                "required": ["kind", "text"],
+                "additionalProperties": False,
+                "properties": {
+                    "kind": {"type": "string", "enum": ["ordinary"]},
+                    "text": {"type": "string", "minLength": 1},
+                },
+            },
+            {
+                "type": "object",
+                "required": ["kind", "text", "reason"],
+                "additionalProperties": False,
+                "properties": {
+                    "kind": {"type": "string", "enum": ["pending"]},
+                    "text": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+            },
+        ],
+    }
+
+    validate_output_schema_definition(schema)
+    ordinary = validate_structured_result(
+        schema,
+        {"kind": "ordinary", "text": "content"},
+    )
+    pending = validate_structured_result(
+        schema,
+        {"kind": "pending", "text": "content", "reason": "missing source"},
+    )
+    invalid = validate_structured_result(
+        schema,
+        {"kind": "ordinary", "text": "content", "reason": "not allowed"},
+    )
+
+    assert ordinary.passed is True
+    assert pending.passed is True
+    assert invalid.passed is False
+    assert "必须且仅符合以下一种结构" in describe_output_schema(schema)
+
+
 def test_structured_result_validation_has_bounded_trace() -> None:
     passed = validate_structured_result(_OUTPUT_SCHEMA, {"accepted": True})
     failed = validate_structured_result(_OUTPUT_SCHEMA, {"accepted": "yes"})
@@ -580,7 +631,11 @@ async def _structured_schema_failure_is_persisted_and_fails_run(
         failed = await _finish_input_steps(service, run.id)
         assert failed.status is RunStatus.FAILED
         last_node = failed.node_runs[-1]
-        assert last_node.output == '{"accepted": "no"}'
+        assert last_node.output.endswith('{"accepted": "no"}')
+        assert last_node.output.startswith(
+            "> **Task 服务端验收：失败**"
+        )
+        assert "TASK_OUTPUT_SCHEMA_MISMATCH" in last_node.output
         assert last_node.result == {"accepted": "no"}
         assert last_node.error == "结构化结果校验失败：$.accepted: type"
         assert last_node.metadata["output_schema_validation"] == {
@@ -693,6 +748,20 @@ async def _artifact_write_failure_is_not_recorded_as_success(
         assert failed.error == "test Workspace write failure"
         assert failed.artifacts == []
         assert executor.artifact_writes == []
+        artifact_node = next(
+            node for node in failed.nodes if node.artifact is not None
+        )
+        artifact_run = next(
+            node_run
+            for node_run in failed.node_runs
+            if node_run.node_id == artifact_node.id
+        )
+        assert artifact_run.metadata["authoritative_output_status"][
+            "error_code"
+        ] == "TASK_ARTIFACT_GENERATION_FAILED"
+        assert artifact_run.output.startswith(
+            "> **Task 服务端验收：失败**"
+        )
         events = await service.list_events("template-owner", run.id)
         assert all(event.type != "artifact.created" for event in events)
     finally:

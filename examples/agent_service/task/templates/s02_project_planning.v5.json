@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "template_id": "s02_project_planning",
+  "template_version": "5.0.0",
+  "title": "项目策划",
+  "description": "轻量化项目策划草稿：复用授权知识库检索与现有 DOCX 产物路径，不要求逐条 Claim–Evidence 协议或完整证据台账。",
+  "category": "review",
+  "required_capabilities": [
+    "planning.template_retrieve",
+    "document.render"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_name",
+      "project_brief"
+    ],
+    "properties": {
+      "project_name": {
+        "type": "string",
+        "description": "项目名称。"
+      },
+      "project_brief": {
+        "type": "string",
+        "description": "项目背景、目标和策划要求。"
+      },
+      "professional_fields": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "涉及的专业领域。"
+      },
+      "source_material_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "已授权的资料标识。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "生成面向业务人员的八章项目策划 Markdown 初稿；清楚标记待核实数据和未检索到的资料；由用户复核后生成尚未完成正式核验的 DOCX。",
+  "steps": [
+    {
+      "step_key": "collect_planning_inputs",
+      "title": "填写项目需求",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供项目策划所需的背景资料和要求。",
+        "questions": [
+          {
+            "key": "project_name",
+            "label": "项目名称",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "project_brief",
+            "label": "项目背景、目标和策划要求",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "professional_fields",
+            "label": "涉及的专业领域",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "source_material_ids",
+            "label": "已授权资料标识",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得策划需求和资料范围。",
+      "failure_handling": "缺少项目背景或策划目标时请求补充。",
+      "sensitive_information": "项目材料可能包含商业机密，仅处理用户提供或授权的资料。"
+    },
+    {
+      "step_key": "retrieve_planning_template",
+      "title": "检索授权项目资料与策划模板",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "planning.template_retrieve",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "query": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "返回模板内容及其来源标识，或明确说明没有匹配模板。",
+      "failure_handling": "模板检索能力缺失或失败时阻断模板化初稿，不自行伪造模板。",
+      "sensitive_information": "遵守模板库的访问范围，不输出内部链接或凭据。"
+    },
+    {
+      "step_key": "draft_eight_chapter_report",
+      "title": "生成八章策划报告",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "基于当前 TaskRun 的项目需求和上游授权知识库检索结果，生成一份面向业务人员的项目策划报告 Markdown 初稿。仅将上游检索结果中实际出现的资料作为本次检索命中；未命中时明确写“未检索到匹配资料”，不要虚构来源、项目事实或知识库结论。项目输入中尚未独立核实的数值和事项必须在对应章节标记“待核实”“待补充”或“待确认”。\n\n报告必须按顺序包含以下八章：\n1. 项目概况\n2. 资料清单与可信度\n3. 能源基线与计量口径\n4. 设备台账现状\n5. 分析方法与工作计划\n6. 方案建议\n7. 预算与进度边界\n8. 风险、待核实事项与交付清单\n\nB-01 至 B-15 仅作为写作规范，用于提醒项目名称和委托对象、范围、数据时间与计量口径、表计边界、设备台账字段、资料可信度、访谈和现场安全、假设限制、目标与实际效果、建议验证条件、预算审批状态、工期依赖、风险责任及交付复核。不要将这些规范逐条输出为规则对象。\n\n正文以业务策划内容为主。不得输出 Claim、Occurrence、Citation、Binding、Evidence ID、supports、source_quote 映射或 Evidence Ledger；不得声称已完成逐条事实证据审计、正式审核、批准或签发。只输出 Markdown 正文，不要 JSON 或代码围栏。"
+      },
+      "output_requirement": "输出可读 Markdown，包含八章且顺序完整；未确认数据明确标记为待核实、待补充或待确认。",
+      "failure_handling": "输出为空、章节缺失或格式无法解析时停止本次交付，不生成 DOCX。",
+      "sensitive_information": "仅使用本次 TaskRun 的输入与已授权检索结果；不得生成未经提供的来源身份或权限声明。"
+    },
+    {
+      "step_key": "review_planning_outline",
+      "title": "用户复核与意见输入",
+      "kind": "input",
+      "required": false,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "可补充策划要求或指出引用问题；此步骤不是审批签发。",
+        "questions": [
+          {
+            "key": "planning_feedback",
+            "label": "需要调整的章节或引用",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "记录用户更正或补充；无回复时保留原草稿并注明尚未人工复核。",
+      "failure_handling": "未收到意见时继续标示为待人工复核。",
+      "sensitive_information": "不要在意见中重复粘贴无关机密材料。"
+    },
+    {
+      "step_key": "apply_review_and_create_docx",
+      "title": "应用复核意见并生成 DOCX 初稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "根据前序步骤的项目输入、授权知识库检索结果、八章策划初稿以及用户复核反馈，应用用户提出的必要修改并输出最终项目策划 Markdown 初稿。没有补充反馈时保留初稿的业务内容和八章顺序。不得新增无来源事实；未能核实的数据继续明确标记为待核实、待补充或待确认。资料清单只能列出上游检索中实际返回的资料；没有命中时明确写未检索到匹配资料。\n\n章节顺序必须为：项目概况、资料清单与可信度、能源基线与计量口径、设备台账现状、分析方法与工作计划、方案建议、预算与进度边界、风险、待核实事项与交付清单。B-01 至 B-15 只作为写作规范，不输出规则对象。正文面向业务人员，不展示底层协议。\n\n不要输出 Claim、Occurrence、Citation Binding、Evidence ID、supports、source_quote 映射或 Evidence Ledger；不要声称逐条证据审计已通过、正式审核通过、批准、签发或文件已生成。只输出 Markdown 正文，不要 JSON 或代码围栏。"
+      },
+      "output_requirement": "八章 Markdown 完整、结构可解析、待核实内容有明确标记；通过轻量检查后由现有 Artifact Writer 生成 DOCX，并标记尚未完成正式核验。",
+      "failure_handling": "项目输入无效、授权检索未执行、输出为空或八章不完整时停止，不生成 DOCX。",
+      "sensitive_information": "仅使用本次 TaskRun 的输入与已授权检索结果；不得生成未经提供的来源身份或权限声明。",
+      "artifact": {
+        "format": "docx",
+        "filename": "项目策划初稿"
+      }
+    }
+  ],
+  "unsupported_capabilities": []
+}

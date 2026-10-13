@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "template_id": "s05_meeting_minutes",
+  "template_version": "2.0.0",
+  "title": "会议召开与纪要",
+  "description": "处理经授权的会议音频，形成议题摘要和待办草稿，并收集人工修改意见。",
+  "category": "review",
+  "required_capabilities": [
+    "meeting.audio_transcribe",
+    "meeting.minutes_export"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "meeting_id",
+      "audio_asset_id"
+    ],
+    "properties": {
+      "meeting_id": {
+        "type": "string",
+        "description": "会议记录标识。"
+      },
+      "audio_asset_id": {
+        "type": "string",
+        "description": "已授权音频资产标识，不是本机路径。"
+      },
+      "language": {
+        "type": "string",
+        "description": "音频主要语言，可选。"
+      },
+      "agenda": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "会议议题，可选。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出带议题和待办标记的纪要草稿及音频处理状态；音频识别结果需人工复核后使用。",
+  "steps": [
+    {
+      "step_key": "collect_audio_asset",
+      "title": "载入会议音频",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供已有权限的会议音频资产标识。",
+        "questions": [
+          {
+            "key": "meeting_id",
+            "label": "会议记录标识",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "audio_asset_id",
+            "label": "音频资产标识",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "language",
+            "label": "音频主要语言",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "agenda",
+            "label": "会议议题（如有）",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得音频资产标识及处理上下文，不读取未授权的本地文件。",
+      "failure_handling": "资产不可访问或用户无权访问时阻断并说明原因。",
+      "sensitive_information": "音频可能包含个人发言和内部讨论，仅使用获准资产。"
+    },
+    {
+      "step_key": "transcribe_meeting_audio",
+      "title": "语音转写",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "meeting.audio_transcribe",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "asset": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "返回带时间信息的转写文本、识别状态和置信提示（若工具支持）。",
+      "failure_handling": "ASR 能力缺失、超时或失败时阻断，不用模型臆造发言内容。",
+      "sensitive_information": "转写文本按会议内部资料管理，不扩散发言人身份信息。"
+    },
+    {
+      "step_key": "segment_meeting_topics",
+      "title": "议题分段与摘要",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "依据转写文本和已提供议题整理议题分段与摘要。保留时间线索；识别不确定或听不清的内容并标记待核实。"
+      },
+      "output_requirement": "每个议题段落均保留摘要和可定位的转写依据。",
+      "failure_handling": "转写缺失、噪声较大或议题不清时列出不确定区间。",
+      "sensitive_information": "只总结完成纪要所需的发言内容。"
+    },
+    {
+      "step_key": "extract_meeting_actions",
+      "title": "提取待办事项",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "从议题摘要和转写中提取明确的决定、待办、责任角色和时间要求。未明确指派的责任人或日期标记为未指定，不推测。"
+      },
+      "output_requirement": "输出有依据的决定和待办清单，并标明缺少的责任人或期限。",
+      "failure_handling": "没有明确决定或待办时如实说明，不从讨论内容推导正式决议。",
+      "sensitive_information": "避免输出与会议任务无关的发言人个人信息。"
+    },
+    {
+      "step_key": "review_minutes_draft",
+      "title": "人工复核纪要草稿",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请复核识别结果、决定和待办。此步骤收集修改意见，不是正式签发。",
+        "questions": [
+          {
+            "key": "minutes_corrections",
+            "label": "需要更正的内容",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "保存用户提出的修改；没有回复时保留草稿和待复核状态。",
+      "failure_handling": "不把未回复或输入为空视为纪要确认。",
+      "sensitive_information": "修改意见按会议内部资料处理。"
+    },
+    {
+      "step_key": "produce_meeting_minutes",
+      "title": "整理会议纪要",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "整理会议基本信息、议题摘要、决定、待办事项、引用时间和人工修改意见。保留草稿状态和不确定标记，不将其表述为已签发纪要。"
+      },
+      "output_requirement": "生成可供编辑的纪要草稿；导出能力由 Task 文件输出配置提供。",
+      "failure_handling": "若关键复核项未解决，输出待确认清单并保留草稿状态。",
+      "sensitive_information": "导出内容不包含与纪要无关的音频或个人资料。",
+      "artifact": {
+        "format": "docx",
+        "filename": "会议纪要草稿"
+      }
+    }
+  ],
+  "unsupported_capabilities": [
+    {
+      "capability_key": "meeting.formal_signoff",
+      "reason": "现有 InputStep 不构成正式签发、签名或审批。"
+    }
+  ]
+}

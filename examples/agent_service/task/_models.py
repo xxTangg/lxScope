@@ -6,7 +6,13 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from ._output_validation import validate_output_schema_definition
 
@@ -71,6 +77,33 @@ class NodeRunStatus(StrEnum):
     CANCELED = "canceled"
 
 
+TaskErrorCategory = Literal[
+    "configuration_error",
+    "missing_tool",
+    "permission_denied",
+    "data_source_not_ready",
+    "schema_mismatch",
+    "input_incomplete",
+    "citation_verification_failed",
+    "external_interface_failed",
+    "artifact_generation_failed",
+    "execution_failed",
+]
+
+
+class TaskErrorDetail(BaseModel):
+    """Backward-compatible, locatable classification for a Task failure."""
+
+    category: TaskErrorCategory
+    code: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=4_000)
+    task_id: str = Field(min_length=1, max_length=80)
+    run_id: str = Field(min_length=1, max_length=80)
+    node_id: str | None = Field(default=None, max_length=80)
+    details: dict[str, Any] = Field(default_factory=dict, max_length=32)
+    occurred_at: datetime = Field(default_factory=_utc_now)
+
+
 class StepType(StrEnum):
     """Supported Task step implementations."""
 
@@ -108,6 +141,7 @@ class TaskArtifactRecord(BaseModel):
     path: str
     size_bytes: int = Field(ge=0)
     preview_text: str = ""
+    delivery_status: Literal["strict_verified", "draft_unverified"] | None = None
     created_at: datetime = Field(default_factory=_utc_now)
 
 
@@ -201,6 +235,7 @@ class StepVerdict(BaseModel):
 
     passed: bool
     message: str = ""
+    retryable: bool = True
 
 
 class AgentStepConfig(BaseModel):
@@ -234,6 +269,83 @@ StepConfig = Annotated[
 ]
 
 
+class NodeOutputContract(BaseModel):
+    """Optional, versioned contract for a Task node's persisted output."""
+
+    model_config = ConfigDict(
+        extra="forbid", strict=True, populate_by_name=True
+    )
+
+    contract_id: str = Field(
+        min_length=1,
+        max_length=120,
+        pattern=r"^[a-z][a-z0-9_.-]{1,119}$",
+    )
+    contract_version: Literal[1] = 1
+    output_type: Literal[
+        "text",
+        "markdown",
+        "structured_json",
+        "business_result",
+        "evidence_claims",
+        "artifact_descriptor",
+    ]
+    json_schema: dict[str, Any] | None = Field(
+        default=None, alias="schema", serialization_alias="schema"
+    )
+    validation_mode: Literal[
+        "none",
+        "json_schema",
+        "citations",
+        "claim_evidence",
+    ] = "none"
+    provenance_requirement: Literal[
+        "none", "authorized_run_snapshot"
+    ] = "none"
+    downstream_binding: Literal["text_only", "validated_result"] = "text_only"
+    failure_policy: Literal["fail_closed"] = "fail_closed"
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> "NodeOutputContract":
+        if self.json_schema is not None:
+            validate_output_schema_definition(self.json_schema)
+        if self.validation_mode == "json_schema" and self.json_schema is None:
+            raise ValueError("json_schema validation requires a schema.")
+        if (
+            self.downstream_binding == "validated_result"
+            and self.validation_mode != "json_schema"
+        ):
+            raise ValueError(
+                "validated_result binding requires JSON Schema validation."
+            )
+        if self.provenance_requirement == "authorized_run_snapshot" and (
+            self.validation_mode not in {"citations", "claim_evidence"}
+        ):
+            raise ValueError(
+                "authorized provenance requires citations or claim_evidence validation."
+            )
+        if self.validation_mode == "citations" and self.output_type not in {
+            "text",
+            "markdown",
+        }:
+            raise ValueError(
+                "citations validation requires a text or markdown output."
+            )
+        if self.validation_mode in {"citations", "claim_evidence"} and (
+            self.provenance_requirement != "authorized_run_snapshot"
+        ):
+            raise ValueError(
+                "citations and claim_evidence validation require an authorized run snapshot."
+            )
+        if self.validation_mode in {"citations", "claim_evidence"} and (
+            self.json_schema is not None
+        ):
+            raise ValueError(
+                "citation validation modes do not accept a JSON Schema."
+            )
+        return self
+
+
 class TaskNode(BaseModel):
     """One typed step in the linear workflow.
 
@@ -251,6 +363,7 @@ class TaskNode(BaseModel):
     capability_key: str | None = Field(default=None, max_length=120)
     artifact: ArtifactConfig | None = None
     output_schema: dict[str, Any] | None = None
+    output_contract: NodeOutputContract | None = None
     knowledge_graph_enabled: bool = False
     knowledge_base_mode: Literal["inherit", "override", "disabled"] = "inherit"
     knowledge_base_ids: list[str] = Field(default_factory=list, max_length=16)
@@ -306,9 +419,44 @@ class TaskNode(BaseModel):
             raise ValueError("Task node type does not match its config type.")
         if self.output_schema is not None:
             validate_output_schema_definition(self.output_schema)
+        if (
+            self.output_contract is not None
+            and self.output_contract.validation_mode
+            in {"citations", "claim_evidence"}
+            and self.type is not StepType.AGENT
+        ):
+            raise ValueError(
+                "Citation output contracts are supported on Agent steps only."
+            )
+        if (
+            self.output_schema is not None
+            and self.output_contract is not None
+            and self.output_contract.json_schema is not None
+            and self.output_schema != self.output_contract.json_schema
+        ):
+            raise ValueError(
+                "output_schema and output_contract.schema must match."
+            )
         if isinstance(self.config, AgentStepConfig):
             object.__setattr__(self, "prompt", self.config.prompt)
         return self
+
+    @property
+    def effective_output_contract(self) -> NodeOutputContract | None:
+        """Return the explicit contract or a compatibility view of v1 schema."""
+
+        if self.output_contract is not None:
+            return self.output_contract
+        if self.output_schema is None:
+            return None
+        return NodeOutputContract(
+            contract_id="task.output-schema",
+            contract_version=1,
+            output_type="structured_json",
+            schema=self.output_schema,
+            validation_mode="json_schema",
+            downstream_binding="validated_result",
+        )
 
 
 class TaskContext(BaseModel):
@@ -394,6 +542,7 @@ class ExecutionContext(TaskContext):
     run_id: str
     task_revision: int
     history: list[dict[str, Any]] = Field(default_factory=list)
+    previous_result: Any | None = None
     initial_input: str = ""
     user_answers: list[TaskInputReply] = Field(default_factory=list)
     clarification_state: dict[str, Any] = Field(default_factory=dict)
@@ -460,6 +609,7 @@ class NodeRunRecord(BaseModel):
     result: Any | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    error_detail: TaskErrorDetail | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
 
@@ -484,6 +634,7 @@ class TaskRunRecord(BaseModel):
     artifacts: list[TaskArtifactRecord] = Field(default_factory=list)
     status: RunStatus = RunStatus.QUEUED
     error: str | None = None
+    error_detail: TaskErrorDetail | None = None
     context: TaskContext = Field(default_factory=TaskContext)
     created_at: datetime = Field(default_factory=_utc_now)
     started_at: datetime | None = None
@@ -500,6 +651,11 @@ class TaskRunRecord(BaseModel):
     source_task_revision: int | None = Field(default=None, ge=1)
     sop_state: dict[str, Any] | None = None
     pending_input: TaskInputRequest | None = None
+    delivery_mode: Literal[
+        "strict_verified", "demo_draft", "lightweight_draft"
+    ] = "strict_verified"
+    delivery_status: Literal["strict_verified", "draft_unverified"] | None = None
+    verification_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskEventRecord(BaseModel):
@@ -523,6 +679,7 @@ class TaskPlanNode(BaseModel):
     type: StepType = StepType.AGENT
     config: StepConfig | None = None
     artifact: ArtifactConfig | None = None
+    output_contract: NodeOutputContract | None = None
     acceptance_criteria: str = Field(default="", max_length=4_000)
     max_attempts: int = Field(default=3, ge=1, le=10)
 
@@ -649,12 +806,44 @@ class TaskCapabilityCheck(BaseModel):
         "unverified",
     ]
     message: str
+    error_category: TaskErrorCategory | None = None
+    error_code: str | None = Field(default=None, max_length=120)
+
+    @model_validator(mode="after")
+    def classify_unavailable_capability(self) -> "TaskCapabilityCheck":
+        """Expose a stable error code for every blocking Preflight result."""
+
+        if self.status == "available" or self.error_category is not None:
+            return self
+        if self.status == "missing":
+            self.error_category = "missing_tool"
+            self.error_code = self.error_code or "TASK_TOOL_MISSING"
+        elif self.status == "incompatible":
+            self.error_category = "schema_mismatch"
+            self.error_code = self.error_code or "TASK_TOOL_SCHEMA_MISMATCH"
+        elif self.status == "permission_denied":
+            self.error_category = "permission_denied"
+            self.error_code = self.error_code or "TASK_PERMISSION_DENIED"
+        elif self.status == "unsupported":
+            self.error_category = "configuration_error"
+            self.error_code = self.error_code or "TASK_CAPABILITY_BLOCKED"
+        elif self.business_data_verified is False:
+            self.error_category = "data_source_not_ready"
+            self.error_code = self.error_code or "TASK_DATA_SOURCE_UNVERIFIED"
+        elif self.permission_status != "allowed":
+            self.error_category = "permission_denied"
+            self.error_code = self.error_code or "TASK_PERMISSION_UNVERIFIED"
+        else:
+            self.error_category = "external_interface_failed"
+            self.error_code = self.error_code or "TASK_CAPABILITY_UNVERIFIED"
+        return self
 
 
 class TaskValidationErrorDetail(BaseModel):
     """Structured failure returned when save or run validation blocks."""
 
     code: str = "TASK_VALIDATION_FAILED"
+    error_category: TaskErrorCategory = "configuration_error"
     message: str = "Task 校验未通过。"
     issues: list[TaskValidationIssue] = Field(default_factory=list)
     missing_capabilities: list[str] = Field(default_factory=list)
@@ -673,3 +862,6 @@ class TaskRunRequest(BaseModel):
 
     input: str = Field(default="", max_length=50_000)
     context: TaskContext = Field(default_factory=TaskContext)
+    delivery_mode: Literal[
+        "strict_verified", "demo_draft", "lightweight_draft"
+    ] = "strict_verified"

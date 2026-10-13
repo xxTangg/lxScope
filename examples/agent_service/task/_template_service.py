@@ -44,6 +44,11 @@ class TemplateInstantiationError(ValueError):
 
         return TemplateInstantiationErrorDetail(
             code=self.code,
+            error_category=(
+                "missing_tool"
+                if self.missing_capabilities
+                else "configuration_error"
+            ),
             message=(
                 f"当前会话缺少模板能力：{'、'.join(self.missing_capabilities)}。"
                 if self.missing_capabilities
@@ -77,21 +82,30 @@ class TaskTemplateService:
     ) -> TaskRecord:
         """Validate and create a private copy without invoking the Planner."""
 
-        template = self._registry.get_current_template(template_id)
-        if template is None:
+        current_template = self._registry.get_current_template(template_id)
+        if current_template is None:
             raise TemplateInstantiationError(
                 404,
                 "TEMPLATE_NOT_FOUND",
                 "内置 Task 模板不存在。",
             )
-        if request.template_version != template.template_version:
+        # Resolve the exact immutable version requested. The gallery exposes
+        # only the current version, while an explicitly versioned request may
+        # still need to instantiate a published historical definition (for
+        # example, to preserve an existing integration contract). This does
+        # not upgrade or reinterpret Tasks created from that version.
+        template = self._registry.get_template_version(
+            template_id,
+            request.template_version,
+        )
+        if template is None:
             raise TemplateInstantiationError(
                 409,
                 "TEMPLATE_VERSION_MISMATCH",
-                "请求的模板版本与当前内置版本不一致。",
+                "请求的模板版本未发布。",
                 issues=(
                     "template_version: 当前版本为 "
-                    f"{template.template_version}。",
+                    f"{current_template.template_version}。",
                 ),
             )
 

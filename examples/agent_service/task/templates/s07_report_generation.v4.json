@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "template_id": "s07_report_generation",
+  "template_version": "4.0.0",
+  "title": "报告生成",
+  "description": "基于当前用户获准资料生成评审报告草稿；引用来源由 Task 确定性校验，语义支持留待人工复核。",
+  "category": "review",
+  "required_capabilities": [
+    "report.rag_retrieve",
+    "report.citation_check",
+    "document.render"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_name",
+      "source_material_ids",
+      "required_chapters"
+    ],
+    "properties": {
+      "project_name": {
+        "type": "string",
+        "description": "项目名称。"
+      },
+      "source_material_ids": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string"
+        },
+        "description": "已授权资料标识。"
+      },
+      "required_chapters": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string"
+        },
+        "description": "要求生成的章节。"
+      },
+      "applicable_rules": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "经确认的适用规则标识。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出带引用映射、完整性/一致性/合规检查结果及未解决项的报告草稿。人工审核和最终合规签字仍需真实流程。",
+  "steps": [
+    {
+      "step_key": "collect_report_materials",
+      "title": "采集报告资料",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供报告范围、章节和已授权资料标识。",
+        "questions": [
+          {
+            "key": "project_name",
+            "label": "项目名称",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "source_material_ids",
+            "label": "已授权资料标识",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "required_chapters",
+            "label": "要求生成的章节",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "applicable_rules",
+            "label": "适用规则标识",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "确定报告范围和可用资料清单。",
+      "failure_handling": "范围或资料授权不明确时请求补充或阻断。",
+      "sensitive_information": "报告资料可能包含商业机密，仅读取获准资料。"
+    },
+    {
+      "step_key": "retrieve_report_evidence",
+      "title": "检索引用证据",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "report.rag_retrieve",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "request": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "仅从当前用户有权访问的知识库检索并保存原文证据快照。",
+      "failure_handling": "RAG 或资料权限缺失时阻断正式报告草稿生成，不补造引用。",
+      "sensitive_information": "检索结果限于用户授权的资料集合。"
+    },
+    {
+      "step_key": "draft_report_chapters",
+      "title": "生成章节草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "仅依据本次检索节点提供的授权原文，生成报告正文。严格按输入 required_chapters 的名称和顺序组织章节，只能使用这些章节标题，不得新增独立的总结、附录、人工复核或交接章节；补充说明并入相应章节的普通段落。每项来源事实在正文标注 [C1] 形式的编号。末尾必须且仅有一个 task-citations JSON 区块。一个 citation_id 只能映射到一个本次运行 evidence_id；quote 必须是该 evidence 原文中与所引事实直接相关的连续逐字片段。不得把标题、文件名、工作表名或通用标签单独用作事实引文，不得拼接不同来源。只引用实际支撑正文的来源，不要求覆盖全部检索结果；没有证据的数字或事实标为待核实，不制造引用。合成演示资料必须明确标为 DEMO/SYNTHETIC；引用核验不证明语义支持，保留人工复核说明。"
+      },
+      "output_requirement": "按 required_chapters 原顺序生成章节正文，不得增删章节；每项来源事实须有正文引用编号；唯一 task-citations 区块必须只含正文实际引用的编号，且引用必须来自本次授权证据快照。",
+      "failure_handling": "证据缺失时保留待核实标记；授权来源、来源哈希或逐字摘录校验失败时停止，不得以模型自述替代服务端校验。",
+      "sensitive_information": "只纳入报告范围需要的项目资料。",
+      "output_contract": {
+        "contract_id": "task.report-citations.v1",
+        "contract_version": 1,
+        "output_type": "markdown",
+        "validation_mode": "citations",
+        "provenance_requirement": "authorized_run_snapshot",
+        "downstream_binding": "text_only",
+        "failure_policy": "fail_closed"
+      }
+    },
+    {
+      "step_key": "check_report_citations",
+      "title": "核验引用证据",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "report.citation_check",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "draft": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "确定性核对引用编号、来源身份和逐字摘录；不判断语义充分性。",
+      "failure_handling": "引用核验失败时阻断最终报告输出。",
+      "sensitive_information": "只展示授权用户可访问的来源信息。"
+    },
+    {
+      "step_key": "collect_report_review",
+      "title": "复核引用、结构一致性与适用规则",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请人工复核正文事实、引用语义、章节一致性和适用规则；Task 仅执行确定性来源校验。",
+        "questions": [
+          {
+            "key": "report_feedback",
+            "label": "审核意见或待更正项",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "记录审核意见并保留未解决问题。",
+      "failure_handling": "未收到意见时保持草稿/待审核状态。",
+      "sensitive_information": "审核意见按项目资料授权范围访问。"
+    },
+    {
+      "step_key": "produce_report_draft",
+      "title": "整理报告草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "整理已通过确定性引用校验的报告正文与人工意见。严格保留输入 required_chapters 的章节名称和顺序，不得新增独立章节；人工复核、草稿状态和交接说明放入现有章节的普通段落。保留所有待核实状态，不添加无来源事实。保留正文引用编号和唯一 task-citations 区块；若修改正文或引用，必须同步使用本次 TaskRun 授权 evidence_id 及连续逐字原文。语义支持仍需人工复核，不得声称已自动验证、批准或签发。"
+      },
+      "output_requirement": "输出与 required_chapters 顺序一致的草稿；正文引用编号与 task-citations 一致，并由 Task 依据本次运行授权证据再次校验后才生成 DOCX。",
+      "failure_handling": "引用、权限、哈希或原文校验失败时停止文件生成；其他未解决事项保留为待人工复核。",
+      "sensitive_information": "导出内容遵循项目资料权限和最小披露原则。",
+      "artifact": {
+        "format": "docx",
+        "filename": "评审报告草稿"
+      },
+      "output_contract": {
+        "contract_id": "task.report-citations.v1",
+        "contract_version": 1,
+        "output_type": "markdown",
+        "validation_mode": "citations",
+        "provenance_requirement": "authorized_run_snapshot",
+        "downstream_binding": "text_only",
+        "failure_policy": "fail_closed"
+      }
+    }
+  ],
+  "unsupported_capabilities": [
+    {
+      "capability_key": "report.formal_signoff",
+      "reason": "现有 Task InputStep 不具备签名、审批人授权和审计协议。"
+    },
+    {
+      "capability_key": "report.consistency_check",
+      "reason": "报告语义一致性没有可验证的确定性业务适配；由人工复核。"
+    },
+    {
+      "capability_key": "report.compliance_check",
+      "reason": "未接入权威适用规则库；Task 不自动作出合规结论。"
+    }
+  ]
+}

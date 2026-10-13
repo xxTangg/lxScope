@@ -34,6 +34,7 @@ from ._capability_contracts import (
     is_task_native_capability,
     validate_contract_tool_schema,
 )
+from ._scenario_runtime import native_tool_schema
 from ._template_models import (
     TaskTemplateDefinition,
     TemplateAgentConfig,
@@ -206,6 +207,35 @@ class TaskTemplateCompiler:
             for step in template.steps
             if step.kind == "tool"
         }
+        native_capabilities = {
+            capability
+            for capability in tool_steps
+            if is_task_native_capability(capability)
+        }
+        if require_tool_bindings and native_capabilities:
+            native_names = native_capabilities
+            tool_schemas = [
+                schema
+                for schema in tool_schemas
+                if (
+                    schema.name
+                    if isinstance(schema, TaskToolSchema)
+                    else schema.get("name")
+                )
+                not in native_names
+            ]
+            tool_schemas = [
+                *tool_schemas,
+                *[
+                    TaskToolSchema(
+                        name=capability,
+                        description="由 Task 模块受控适配器提供。",
+                        input_schema=native_tool_schema(capability),
+                        is_read_only=True,
+                    )
+                    for capability in sorted(native_capabilities)
+                ],
+            ]
         missing: set[str] = (
             {
                 capability
@@ -215,6 +245,15 @@ class TaskTemplateCompiler:
             if require_tool_bindings
             else set()
         )
+        if any(
+            step.kind == "tool"
+            and step.capability_key == "project.similar_search"
+            for step in template.steps
+        ):
+            # The Task-native authorized RAG adapter checks the authenticated
+            # owner's selected KB scope directly. Older S01 templates declare
+            # this implicit permission capability without a separate Tool node.
+            missing.discard("project.authorization.read")
 
         tools_by_name: dict[str, list[TaskToolSchema]] = defaultdict(list)
         for schema in tool_schemas:
@@ -389,6 +428,13 @@ class TaskTemplateCompiler:
                             else None
                         ),
                         "output_schema": output_schema,
+                        "output_contract": (
+                            step.output_contract.model_dump(
+                                mode="python", by_alias=True
+                            )
+                            if step.output_contract is not None
+                            else None
+                        ),
                     }
                 )
             except ValidationError as error:
@@ -425,6 +471,7 @@ class TaskTemplateCompiler:
         """Reject expressions and references outside Task's variable model."""
 
         prior_input_keys: set[str] = set()
+        previous_result_available = False
         issues: list[str] = []
         for index, step in enumerate(template.steps):
             config = step.config.model_dump(mode="python")
@@ -442,6 +489,13 @@ class TaskTemplateCompiler:
                     variable = match.group(1).strip()
                     if variable in {"user_input", "previous_output"}:
                         continue
+                    if variable == "previous_result":
+                        if previous_result_available:
+                            continue
+                        issues.append(
+                            f"steps[{index}].config: previous_result 需要上一步声明并通过 JSON Schema 校验的输出契约。"
+                        )
+                        continue
                     answer_match = _ANSWER_VARIABLE_PATTERN.fullmatch(variable)
                     if (
                         answer_match is not None
@@ -455,6 +509,13 @@ class TaskTemplateCompiler:
                 prior_input_keys.update(
                     question.key for question in step.config.questions
                 )
+            contract = step.output_contract
+            previous_result_available = bool(
+                contract is not None
+                and contract.validation_mode == "json_schema"
+                and contract.json_schema is not None
+                and contract.downstream_binding == "validated_result"
+            ) or step.output_schema is not None
         if issues:
             raise TemplateCompileError(
                 "TEMPLATE_VARIABLE_INVALID",
@@ -503,11 +564,14 @@ def _runtime_prompt(step: Any) -> str:
         f"失败处理说明：{step.failure_handling}",
         f"敏感信息要求：{step.sensitive_information}",
     ]
-    if step.output_schema is not None:
+    output_schema = step.output_schema
+    if output_schema is None and step.output_contract is not None:
+        output_schema = step.output_contract.json_schema
+    if output_schema is not None:
         sections.append(
             "结构化输出必须符合以下 JSON 字段和类型要求，只返回 JSON，不要代码围栏。"
             "服务端会独立校验，不能自称校验通过。\n"
-            + describe_output_schema(step.output_schema),
+            + describe_output_schema(output_schema),
         )
     return "\n\n".join(sections).strip()
 

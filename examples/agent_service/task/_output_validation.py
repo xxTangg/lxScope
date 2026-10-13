@@ -34,6 +34,7 @@ _SUPPORTED_KEYWORDS = {
     "minItems",
     "maxItems",
     "enum",
+    "oneOf",
 }
 
 
@@ -48,6 +49,7 @@ class OutputSchemaValidation:
     passed: bool
     issues: tuple[str, ...] = ()
     target: str = "result"
+    value: Any | None = None
 
 
 def validate_output_schema_definition(schema: Any) -> None:
@@ -168,7 +170,7 @@ def validate_structured_result(
             break
     if errors:
         return OutputSchemaValidation(False, tuple(errors), target=target)
-    return OutputSchemaValidation(True, target=target)
+    return OutputSchemaValidation(True, target=target, value=normalized)
 
 
 def describe_output_schema(schema: dict[str, Any]) -> str:
@@ -211,7 +213,12 @@ def _validate_schema_node(
 
     schema_type = schema["type"]
     allowed_by_type = {
-        "object": {"properties", "required", "additionalProperties"},
+        "object": {
+            "properties",
+            "required",
+            "additionalProperties",
+            "oneOf",
+        },
         "array": {"items", "minItems", "maxItems"},
         "string": {"minLength", "maxLength"},
         "integer": {"minimum", "maximum"},
@@ -266,6 +273,19 @@ def _validate_schema_node(
             raise OutputSchemaDefinitionError(
                 f"{path}.additionalProperties 仅支持布尔值。"
             )
+        if "oneOf" in schema:
+            variants = schema["oneOf"]
+            if not isinstance(variants, list) or not 2 <= len(variants) <= 8:
+                raise OutputSchemaDefinitionError(
+                    f"{path}.oneOf 必须包含 2 至 8 个受限结构。"
+                )
+            for index, variant in enumerate(variants):
+                _validate_schema_node(
+                    variant,
+                    path=f"{path}.oneOf[{index}]",
+                    depth=depth + 1,
+                    node_count=node_count,
+                )
     elif schema_type == "array":
         if "items" not in schema:
             raise OutputSchemaDefinitionError(f"{path}.items 是必需字段。")
@@ -402,6 +422,15 @@ def _describe_schema_node(
             lines,
             depth=depth + 1,
         )
+    if "oneOf" in schema:
+        lines.append(f"{'  ' * (depth + 1)}- 必须且仅符合以下一种结构")
+        for index, variant in enumerate(schema["oneOf"], start=1):
+            _describe_schema_node(
+                variant,
+                f"结构 {index}",
+                lines,
+                depth=depth + 2,
+            )
 
 
 def _safe_prompt_value(value: Any) -> str:

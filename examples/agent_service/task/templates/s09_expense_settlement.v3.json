@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "template_id": "s09_expense_settlement",
+  "template_version": "3.0.0",
+  "title": "报销结算",
+  "description": "处理用户提供的结构化票据信息，检查任务内重复并按用户提供的费用规则核算草稿；本版本不验真、不审批、不提交 ERP。",
+  "category": "review",
+  "required_capabilities": [
+    "expense.invoice_import",
+    "expense.invoice_verify_dedupe",
+    "expense.rule_check"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_id",
+      "invoice_records_json",
+      "expense_category",
+      "expense_rules_json"
+    ],
+    "properties": {
+      "project_id": {
+        "type": "string",
+        "description": "项目标识。"
+      },
+      "expense_category": {
+        "type": "string",
+        "description": "报销类别。"
+      },
+      "accounting_period": {
+        "type": "string",
+        "description": "会计期间。"
+      },
+      "invoice_records_json": {
+        "type": "string",
+        "description": "用户已整理的结构化票据信息 JSON 数组；Task 不读取票据图片或调用 OCR。"
+      },
+      "expense_rules_json": {
+        "type": "string",
+        "description": "业务方提供的费用规则 JSON，含 rule_id 与限额/类别。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出发票识别结果、验真去重状态、费用规则检查和报销草稿。未具备真实审批、ERP 权限、幂等提交与回执协议时必须阻断提交。",
+  "steps": [
+    {
+      "step_key": "collect_structured_invoice_data",
+      "title": "导入结构化票据信息",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供用户整理的结构化票据信息和费用规则；本步骤不读取票据文件。",
+        "questions": [
+          {
+            "key": "project_id",
+            "label": "项目标识",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "expense_category",
+            "label": "报销类别",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "accounting_period",
+            "label": "会计期间",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "invoice_records_json",
+            "label": "结构化票据信息 JSON 数组",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "expense_rules_json",
+            "label": "费用规则 JSON（rule_id 与限额/类别）",
+            "required": true,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得用户提供的结构化票据字段和报销分类上下文。",
+      "failure_handling": "票据字段缺失或金额无效时阻断，不推测未提供的内容。",
+      "sensitive_information": "仅保留草稿计算必需的票据字段。"
+    },
+    {
+      "step_key": "recognize_invoice_fields",
+      "title": "导入结构化票据信息（不执行 OCR）",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expense.invoice_import",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "assets": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "验证结构化金额字段并标记用户提供；不宣称 OCR 或发票验真。",
+      "failure_handling": "结构化票据字段无效时阻断，不推断金额或税号。",
+      "sensitive_information": "模板不保存发票原文、税号、账户或个人信息。"
+    },
+    {
+      "step_key": "verify_and_deduplicate_invoices",
+      "title": "检查输入内重复票据",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expense.invoice_verify_dedupe",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "invoices": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "只按发票代码与号码进行 Task 输入内重复检查，不执行官方验真。",
+      "failure_handling": "验真接口或去重依据缺失时阻断后续提交，不以模型判断代替。",
+      "sensitive_information": "仅向有权财务人员展示必要票据字段。"
+    },
+    {
+      "step_key": "check_expense_rules",
+      "title": "核对费用规则",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expense.rule_check",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "invoices": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "依据用户提供规则确定性计算限额和类别提示；不审批、不提交 ERP。",
+      "failure_handling": "规则工具或版本缺失时阻断，不估算可报金额。",
+      "sensitive_information": "费用和项目数据遵循财务权限最小披露。"
+    },
+    {
+      "step_key": "prepare_expense_draft",
+      "title": "整理报销单草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "整理发票识别、验真去重和费用规则结果为报销单草稿。明确标记未核验、异常和待补凭证，不提交 ERP，不作审批结论。"
+      },
+      "output_requirement": "形成可供财务人员复核的报销单草稿和异常清单。",
+      "failure_handling": "存在异常或缺凭证时保留草稿状态并列出处理项。",
+      "sensitive_information": "输出只保留报销审核必需的票据字段。"
+    },
+    {
+      "step_key": "produce_expense_submission_package",
+      "title": "生成待提交报销材料",
+      "kind": "agent",
+      "required": true,
+      "editable": false,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "根据已校验的票据字段和金额核算结果，生成待提交报销单。标明所有缺失字段和人工核对项。不调用 ERP，不声称已审批或已提交。"
+      },
+      "output_requirement": "输出待提交报销表和校验摘要，明确未经审批且未提交 ERP。",
+      "failure_handling": "金额、票据验真或费用规则校验缺失时失败关闭；不提交 ERP。",
+      "sensitive_information": "禁止在模板或前端放入 ERP 密钥、内部地址或真实发票样本。",
+      "artifact": {
+        "format": "xlsx",
+        "filename": "待提交报销单草稿"
+      }
+    }
+  ],
+  "unsupported_capabilities": [
+    {
+      "capability_key": "expense.business_approval",
+      "reason": "现有 InputStep 不具备审批身份验证、权限判断、拒绝/退回和审计协议。"
+    },
+    {
+      "capability_key": "expense.erp_idempotent_submit",
+      "reason": "当前尚无 ERP 提交契约及幂等键规则，外部写入必须保持阻断。"
+    },
+    {
+      "capability_key": "expense.finance_receipt_wait",
+      "reason": "当前没有持久化财务回执等待与恢复协议。"
+    },
+    {
+      "capability_key": "expense.erp_submit",
+      "reason": "本版只生成待提交报销材料，不调用 ERP 写入。"
+    },
+    {
+      "capability_key": "expense.invoice_official_verify",
+      "reason": "未接入税务或票据验真服务，不能判定票据真伪。"
+    }
+  ]
+}

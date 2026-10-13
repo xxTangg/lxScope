@@ -1,0 +1,521 @@
+{
+  "schema_version": 1,
+  "template_id": "s02_project_planning",
+  "template_version": "3.2.0",
+  "title": "项目策划",
+  "description": "依据授权项目资料与策划模板生成八章报告；按内容类型约束结构，Task 服务端组装 Claim–Evidence 协议并校验来源。",
+  "category": "review",
+  "required_capabilities": [
+    "planning.template_retrieve",
+    "document.citation_verify",
+    "document.render"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_name",
+      "project_brief"
+    ],
+    "properties": {
+      "project_name": {
+        "type": "string",
+        "description": "项目名称。"
+      },
+      "project_brief": {
+        "type": "string",
+        "description": "项目背景、目标和策划要求。"
+      },
+      "professional_fields": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "涉及的专业领域。"
+      },
+      "source_material_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "已授权的资料标识。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出策划大纲、初稿、可追溯的引用清单和待人工复核项；不得把未核实引用表述为事实。",
+  "steps": [
+    {
+      "step_key": "collect_planning_inputs",
+      "title": "读取项目资料",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供项目策划所需的背景资料和要求。",
+        "questions": [
+          {
+            "key": "project_name",
+            "label": "项目名称",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "project_brief",
+            "label": "项目背景、目标和策划要求",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "professional_fields",
+            "label": "涉及的专业领域",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "source_material_ids",
+            "label": "已授权资料标识",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得策划需求和资料范围。",
+      "failure_handling": "缺少项目背景或策划目标时请求补充。",
+      "sensitive_information": "项目材料可能包含商业机密，仅处理用户提供或授权的资料。"
+    },
+    {
+      "step_key": "retrieve_planning_template",
+      "title": "检索策划模板",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "planning.template_retrieve",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "query": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "返回模板内容及其来源标识，或明确说明没有匹配模板。",
+      "failure_handling": "模板检索能力缺失或失败时阻断模板化初稿，不自行伪造模板。",
+      "sensitive_information": "遵守模板库的访问范围，不输出内部链接或凭据。"
+    },
+    {
+      "step_key": "draft_planning_outline",
+      "title": "推荐策划大纲",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "依据项目需求和检索到的模板提出策划大纲。逐项说明所依据的项目资料或模板章节；模板未命中的内容标明为建议。"
+      },
+      "output_requirement": "输出层级清晰的大纲及每一部分的资料依据。",
+      "failure_handling": "模板不适用或资料不足时列出差异和待补资料。",
+      "sensitive_information": "不得把其他项目的机密内容带入本项目大纲。"
+    },
+    {
+      "step_key": "draft_planning_document",
+      "title": "生成策划初稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "按已确认的大纲整理项目策划初稿。区分资料事实、分析和建议；对缺少依据的内容使用待补充标记。"
+      },
+      "output_requirement": "形成章节完整、可编辑的策划初稿。",
+      "failure_handling": "无法支持的章节标为待补充，不生成虚构数据。",
+      "sensitive_information": "仅使用当前项目授权资料，不扩散无关个人或第三方信息。"
+    },
+    {
+      "step_key": "verify_planning_citations",
+      "title": "核对引用",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "document.citation_verify",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "draft": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "逐项标记可验证引用、失配引用与无引用内容。",
+      "failure_handling": "引用核验能力不可用时阻断正式输出并说明未核验范围。",
+      "sensitive_information": "引用结果只包含用户可访问的来源标识和必要摘录。"
+    },
+    {
+      "step_key": "review_planning_outline",
+      "title": "复核大纲与引用",
+      "kind": "input",
+      "required": false,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "可补充策划要求或指出引用问题；此步骤不是审批签发。",
+        "questions": [
+          {
+            "key": "planning_feedback",
+            "label": "需要调整的章节或引用",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "记录用户提出的更正；无回复时保留未复核标记。",
+      "failure_handling": "未收到意见时继续标示为待人工复核。",
+      "sensitive_information": "不要在意见中重复粘贴无关机密材料。"
+    },
+    {
+      "step_key": "produce_planning_output",
+      "title": "整理策划输出",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "依据已确认的大纲、初稿、授权资料和复核意见，输出符合下方判别式 JSON Schema 的业务 JSON。按 1 至 8 顺序提供八章，并分别把 B-01 至 B-15 作为独立 rule 条目；每个 rule 正文只能表达一个 B 编号，rule_ids 必须只有该编号，来源摘录必须包含该编号和具体条款内容。\n\n每个 item 必须严格属于一种类型，并且只提供该类型允许的字段：\n- fact、rule、historical_case、analysis、recommendation 只能含 kind、text、source_quotes、rule_ids；不得含 unverified_status、reason、expected_evidence_types。fact、historical_case 和 rule 必须给出本次授权资料的连续逐字原文候选；analysis/recommendation 可用空 source_quotes 与空 rule_ids。来源语义需要人工复核不等于 unverified，也不得把 requires_human_review 表示为待处理状态。\n- template_limitation 是本版本单独支持的模板适用性说明，只能用来说明策划模板的来源性质或适用范围；source_quotes 必须给出本次授权 planning_template 原文，rule_ids 必须为 []，正文不得合并或代替任何 B 条款。\n- 只有 unverified 可以含 unverified_status、reason、expected_evidence_types；它还必须输出 source_quotes:[] 和 rule_ids:[]。状态只能为 pending_verification、pending_supplement、pending_confirmation，并说明具体原因和所需证据类型。\n\n字段形状示例（方括号是占位说明，必须替换；source_quotes 只能填写上游授权原文中的连续摘录）：\n{\"kind\":\"fact\",\"text\":\"[有来源支持的业务事实]\",\"source_quotes\":[\"[授权原文连续片段]\"],\"rule_ids\":[]}\n{\"kind\":\"rule\",\"text\":\"B-01 [单条模板要求]\",\"source_quotes\":[\"[包含 B-01 与具体要求的授权原文]\"],\"rule_ids\":[\"B-01\"]}\n{\"kind\":\"analysis\",\"text\":\"【分析】[明确标为分析的内容]\",\"source_quotes\":[],\"rule_ids\":[]}\n{\"kind\":\"recommendation\",\"text\":\"建议[明确标为建议的内容]\",\"source_quotes\":[],\"rule_ids\":[]}\n{\"kind\":\"unverified\",\"text\":\"[尚无来源的事项]\",\"source_quotes\":[],\"rule_ids\":[],\"unverified_status\":\"pending_supplement\",\"reason\":\"[缺少的资料及原因]\",\"expected_evidence_types\":[\"project_material\"]}\n{\"kind\":\"template_limitation\",\"text\":\"策划模板属于演示材料，适用范围有限。\",\"source_quotes\":[\"[明确说明该限制的授权模板原文]\"],\"rule_ids\":[]}\n\n缺少事实来源时，不得伪造来源；按业务含义将该事项标为 unverified。不得因为来源语义支持要人工复核就将已有来源事实改成 unverified。只输出 JSON，不要 Markdown、代码围栏或额外说明。不得生成 Claim、Occurrence、Citation、Evidence ID、document_id、授权主体、哈希、核验通过状态或文件生成状态。Task 会根据严格 Schema 确认类型，再按本次 Run 授权 Evidence 确定性组装协议；来源候选重复、无匹配、权限或哈希异常时失败关闭，语义支持仍需人工复核。"
+      },
+      "output_requirement": "输出通过类型判别 JSON Schema 的八章策划业务数据。普通条目不得包含待处理字段；只有 unverified 可包含待处理状态。Task 服务端确定性生成正文、来源绑定及引用台账，并验证授权来源。",
+      "failure_handling": "JSON 或业务约束不合法、来源候选无法唯一匹配、授权或哈希异常时失败关闭，不生成成功 DOCX。",
+      "sensitive_information": "导出文件沿用 Task 当前用户权限，不创建公开共享链接。",
+      "artifact": {
+        "format": "docx",
+        "filename": "项目策划报告草稿"
+      },
+      "output_contract": {
+        "contract_id": "task.s02.planning.structured_output",
+        "contract_version": 1,
+        "output_type": "structured_json",
+        "schema": {
+          "type": "object",
+          "title": "S02 项目策划业务输出",
+          "description": "Agent 仅提供业务内容与原文候选，不提供服务端协议身份或核验状态。",
+          "required": [
+            "title",
+            "chapters"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160,
+              "description": "项目策划报告草稿标题。"
+            },
+            "chapters": {
+              "type": "array",
+              "minItems": 8,
+              "maxItems": 8,
+              "description": "必须按 1 至 8 顺序提供八章。",
+              "items": {
+                "type": "object",
+                "required": [
+                  "number",
+                  "items"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "number": {
+                    "type": "integer",
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5,
+                      6,
+                      7,
+                      8
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "items": {
+                      "type": "object",
+                      "description": "仅匹配以下一种按 kind 区分的对象形状；额外字段一律拒绝。",
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "text",
+                            "source_quotes",
+                            "rule_ids"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "fact",
+                                "historical_case",
+                                "analysis",
+                                "recommendation"
+                              ]
+                            },
+                            "text": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000
+                            },
+                            "source_quotes": {
+                              "type": "array",
+                              "maxItems": 4,
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              }
+                            },
+                            "rule_ids": {
+                              "type": "array",
+                              "maxItems": 0,
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "B-01",
+                                  "B-02",
+                                  "B-03",
+                                  "B-04",
+                                  "B-05",
+                                  "B-06",
+                                  "B-07",
+                                  "B-08",
+                                  "B-09",
+                                  "B-10",
+                                  "B-11",
+                                  "B-12",
+                                  "B-13",
+                                  "B-14",
+                                  "B-15"
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "text",
+                            "source_quotes",
+                            "rule_ids"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "rule"
+                              ]
+                            },
+                            "text": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000
+                            },
+                            "source_quotes": {
+                              "type": "array",
+                              "maxItems": 4,
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              }
+                            },
+                            "rule_ids": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 1,
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "B-01",
+                                  "B-02",
+                                  "B-03",
+                                  "B-04",
+                                  "B-05",
+                                  "B-06",
+                                  "B-07",
+                                  "B-08",
+                                  "B-09",
+                                  "B-10",
+                                  "B-11",
+                                  "B-12",
+                                  "B-13",
+                                  "B-14",
+                                  "B-15"
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "text",
+                            "source_quotes",
+                            "rule_ids"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "template_limitation"
+                              ]
+                            },
+                            "text": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000
+                            },
+                            "source_quotes": {
+                              "type": "array",
+                              "maxItems": 4,
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "minItems": 1
+                            },
+                            "rule_ids": {
+                              "type": "array",
+                              "maxItems": 0,
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "B-01",
+                                  "B-02",
+                                  "B-03",
+                                  "B-04",
+                                  "B-05",
+                                  "B-06",
+                                  "B-07",
+                                  "B-08",
+                                  "B-09",
+                                  "B-10",
+                                  "B-11",
+                                  "B-12",
+                                  "B-13",
+                                  "B-14",
+                                  "B-15"
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "text",
+                            "source_quotes",
+                            "rule_ids",
+                            "unverified_status",
+                            "reason",
+                            "expected_evidence_types"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "unverified"
+                              ]
+                            },
+                            "text": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000
+                            },
+                            "source_quotes": {
+                              "type": "array",
+                              "maxItems": 0,
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              }
+                            },
+                            "rule_ids": {
+                              "type": "array",
+                              "maxItems": 0,
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "B-01",
+                                  "B-02",
+                                  "B-03",
+                                  "B-04",
+                                  "B-05",
+                                  "B-06",
+                                  "B-07",
+                                  "B-08",
+                                  "B-09",
+                                  "B-10",
+                                  "B-11",
+                                  "B-12",
+                                  "B-13",
+                                  "B-14",
+                                  "B-15"
+                                ]
+                              }
+                            },
+                            "unverified_status": {
+                              "type": "string",
+                              "enum": [
+                                "pending_verification",
+                                "pending_supplement",
+                                "pending_confirmation"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1000
+                            },
+                            "expected_evidence_types": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 3,
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "project_material",
+                                  "planning_template",
+                                  "historical_case"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "validation_mode": "json_schema",
+        "provenance_requirement": "none",
+        "downstream_binding": "validated_result",
+        "failure_policy": "fail_closed"
+      }
+    }
+  ],
+  "unsupported_capabilities": []
+}

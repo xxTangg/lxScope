@@ -82,7 +82,7 @@ class _ArtifactWriter:
 
 def _planning_request() -> TemplateInstantiateRequest:
     return TemplateInstantiateRequest(
-        template_version="1.0.0",
+        template_version="2.0.0",
         inputs={
             "project_name": "Task Artifact 能力测试",
             "project_brief": "验证 Task 文件产物能力映射。",
@@ -121,15 +121,14 @@ async def _custom_planning_task(
     )
     task = await service.create_custom_flow_copy("artifact-owner", standard.id)
     assert task is not None
-    if artifact is not None:
-        nodes = [node.model_copy(deep=True) for node in task.nodes]
-        nodes[-1] = nodes[-1].model_copy(update={"artifact": artifact})
-        task = await service.update_task(
-            "artifact-owner",
-            task.id,
-            UpdateTaskRequest(nodes=nodes),
-        )
-        assert task is not None
+    nodes = [node.model_copy(deep=True) for node in task.nodes]
+    nodes[-1] = nodes[-1].model_copy(update={"artifact": artifact})
+    task = await service.update_task(
+        "artifact-owner",
+        task.id,
+        UpdateTaskRequest(nodes=nodes),
+    )
+    assert task is not None
     return service, task
 
 
@@ -191,8 +190,11 @@ def test_template_validation_maps_render_to_configured_final_artifact() -> None:
         )
 
         assert "document.render" not in result.missing_capabilities
-        assert "planning.template_retrieve" in result.missing_capabilities
-        assert "document.citation_verify" in result.missing_capabilities
+        # RAG and citation nodes now use Task-owned adapters; the live
+        # knowledge permission/scope check belongs to Preflight, not static
+        # template structure validation.
+        assert result.valid
+        assert result.missing_capabilities == []
 
     asyncio.run(scenario())
 

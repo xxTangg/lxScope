@@ -20,6 +20,74 @@ export type NodeRunStatus =
 export type TaskStepType = 'agent' | 'tool' | 'python' | 'input';
 export type TaskWorkflowMode = 'template_instance' | 'custom_flow' | 'free_ai_planner';
 export type TaskArtifactFormat = 'markdown' | 'docx' | 'xlsx';
+export type TaskDeliveryMode =
+	| 'strict_verified'
+	| 'demo_draft'
+	| 'lightweight_draft';
+export type TaskDeliveryStatus = 'strict_verified' | 'draft_unverified';
+
+export interface TaskSourceLedgerEntry {
+	section?: string;
+	claim?: string;
+	claim_id?: string | null;
+	unverified_id?: string | null;
+	citation_id?: string | null;
+	evidence_id?: string | null;
+	knowledge_base_name?: string | null;
+	document_id?: string | null;
+	chunk_index?: number | null;
+	evidence_type?: string | null;
+	source?: string | null;
+	quote?: string | null;
+	status?: string | null;
+	status_detail?: string | null;
+}
+
+export interface TaskDeliveryWarning {
+	warning_code?: string;
+	message: string;
+	disposition?: string;
+}
+
+export interface TaskVerificationReport {
+	mode?: TaskDeliveryMode;
+	status?: TaskDeliveryStatus;
+	delivery_profile?: 's02_lightweight_draft' | string;
+	evidence_ledger_passed?: boolean;
+	evidence_ledger_status?: 'not_performed' | 'passed' | 'failed' | string;
+	chapter_count?: number;
+	completed_chapters?: string[];
+	lightweight_output_validation?: {
+		status?: 'passed' | 'failed';
+		pending_marker_present?: boolean;
+		issues?: string[];
+	};
+	retrieval?: {
+		status?: 'ready' | 'candidates_for_review' | 'not_found' | string;
+		template_status?: string;
+		project_material_status?: string;
+		retrieved_at?: string | null;
+		matched_source_count?: number;
+		source_integrity?: {
+			status?: 'passed' | 'failed' | string;
+			evidence_count?: number;
+			issues?: string[];
+		};
+		knowledge_bases?: Array<{ id?: string; name?: string }>;
+		sources?: Array<{
+			knowledge_base_name?: string;
+			document_id?: string;
+			source?: string;
+			chunk_index?: number;
+			content_sha256?: string;
+			evidence_type?: string;
+		}>;
+	};
+	warnings?: TaskDeliveryWarning[];
+	source_ledger?: TaskSourceLedgerEntry[];
+	semantic_support?: string;
+	human_review_required?: boolean;
+}
 export type TaskErrorCategory =
 	| 'configuration_error'
 	| 'missing_tool'
@@ -118,6 +186,7 @@ export interface TaskArtifactRecord {
 	path: string;
 	size_bytes: number;
 	preview_text: string;
+	delivery_status?: TaskDeliveryStatus | null;
 	created_at: string;
 }
 export interface TaskNode {
@@ -276,6 +345,9 @@ export interface TaskRunRecord {
 	source_task_id?: string | null;
 	source_task_revision?: number | null;
 	pending_input?: TaskInputRequest | null;
+	delivery_mode?: TaskDeliveryMode;
+	delivery_status?: TaskDeliveryStatus | null;
+	verification_report?: TaskVerificationReport;
 }
 
 export interface CreateTaskRequest {
@@ -356,6 +428,7 @@ export interface TaskKnowledgeGraphRebuildResponse {
 export interface TaskRunRequest {
 	input?: string;
 	context?: TaskContext;
+	delivery_mode?: TaskDeliveryMode;
 }
 
 export interface GenerateTaskRequest {

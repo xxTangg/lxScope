@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -20,14 +21,32 @@ from pydantic import SecretStr
 from agentscope.app.storage import RedisKnowledgeGraphStore
 
 from ._models import TaskKnowledgeBaseOption
+from ._s02_project_planning_evidence import (
+    PLANNING_TEMPLATE_NO_MATCH_MESSAGE,
+    PLANNING_TEMPLATE_REJECTION_REASON,
+    PLANNING_TEMPLATE_SEARCH_QUERIES,
+    PROJECT_MATERIAL_SEARCH_QUERIES,
+    _planning_template_content_match,
+    _planning_template_source_match,
+    _project_material_source_match,
+)
+
+
 
 
 class TaskKnowledgeError(RuntimeError):
     """A safe, user-facing failure at the Task knowledge boundary."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         self.code = code
         self.message = message
+        self.details = details or {}
         super().__init__(message)
 
 
@@ -192,8 +211,9 @@ class TaskKnowledgeGateway:
             missing_ids = sorted(set(requested_sources) - found_ids)
             if missing_ids:
                 raise TaskKnowledgeError(
-                    "source_material_unavailable",
-                    "部分资料标识未在所选知识库中找到，或当前用户无权访问。",
+                    "source_material_not_found",
+                    "部分资料标识未在当前用户可访问的所选知识库中找到。请核对文档 ID 和知识库选择；Task 不会扩大检索范围。",
+                    details={"missing_source_count": len(missing_ids)},
                 )
             not_ready = [
                 record
@@ -318,7 +338,11 @@ class TaskKnowledgeGateway:
                     if not isinstance(raw_text, str) or not raw_text.strip():
                         continue
                     chunk_index = getattr(chunk, "chunk_index", None)
-                    if not isinstance(chunk_index, int) or chunk_index < 0:
+                    if (
+                        not isinstance(chunk_index, int)
+                        or isinstance(chunk_index, bool)
+                        or chunk_index < 0
+                    ):
                         continue
                     digest = hashlib.sha256(
                         raw_text.encode("utf-8")
@@ -327,18 +351,27 @@ class TaskKnowledgeGateway:
                     source_text = raw_text[:max_chars]
                     updated_at = getattr(record, "updated_at", None)
                     score = getattr(result, "score", None)
+                    source_name = getattr(
+                        getattr(record, "data", None),
+                        "filename",
+                        None,
+                    )
+                    if (
+                        not isinstance(source_name, str)
+                        or not source_name.strip()
+                    ):
+                        source_name = getattr(chunk, "source", None)
+                    source_name = (
+                        source_name.strip()
+                        if isinstance(source_name, str)
+                        else ""
+                    )
                     evidence.append(
                         {
                             "knowledge_base_id": view.id,
                             "knowledge_base_name": view.name,
                             "document_id": document_id,
-                            "source": str(
-                                getattr(
-                                    getattr(record, "data", None),
-                                    "filename",
-                                    getattr(chunk, "source", "未知来源"),
-                                )
-                            ),
+                            "source": source_name,
                             "source_updated_at": (
                                 updated_at.isoformat()
                                 if hasattr(updated_at, "isoformat")
@@ -387,10 +420,424 @@ class TaskKnowledgeGateway:
             "evidence": evidence,
             "citation_protocol": (
                 "策划正文中的事实必须标注 [C1] 等引用编号。末尾添加唯一的 "
-                "```task-citations JSON 区块，逐项包含 citation_id、knowledge_base_id、"
-                "document_id、chunk_index、content_sha256 和 quote；"
-                "quote 必须是对应原文片段的"
-                "连续逐字摘录。无法获得证据的内容标为建议或待补充，不得伪造来源。"
+                "```task-citations JSON 区块，逐项包含 citation_id、evidence_id 和 quote；"
+                "evidence_id 必须取自本结果中的服务端证据记录，quote 必须是对应原文片段的"
+                "连续逐字摘录。历史任务仍可读取 knowledge_base_id、document_id、chunk_index、"
+                "content_sha256 格式。无法获得证据的内容标为建议或待补充，不得伪造来源。"
+            ),
+        }
+
+    async def retrieve_project_material_evidence(
+        self,
+        user_id: str,
+        knowledge_base_ids: list[str],
+        *,
+        project_name: str = "",
+        source_material_ids: list[str] | None = None,
+        top_k: int = 8,
+    ) -> dict[str, Any]:
+        """Retrieve project facts separately from the planning template.
+
+        Search terms describe project-material intent and never repeat the
+        complete user brief. Search results still pass through the existing
+        user-scoped document status and Task knowledge-base checks. A missing
+        match is recorded as ``not_found`` so downstream output can mark facts
+        pending; authorization or service errors remain fail-closed.
+        """
+
+        requested_sources = list(dict.fromkeys(source_material_ids or []))
+        scope = await self.inspect_task_scope(
+            user_id,
+            knowledge_base_ids,
+            requested_sources,
+        )
+        queries = list(PROJECT_MATERIAL_SEARCH_QUERIES)
+        normalized_name = project_name.strip()[:120]
+        if normalized_name:
+            queries[0] = (
+                f"{normalized_name} 项目委托 项目概况 项目背景 建设目标"
+            )
+
+        candidates_by_key: dict[
+            tuple[str, str, int, str], dict[str, Any]
+        ] = {}
+        query_attempts: list[dict[str, Any]] = []
+        hit_documents: dict[tuple[str, str], dict[str, str]] = {}
+        rejected_documents: dict[tuple[str, str], dict[str, str]] = {}
+        knowledge_bases = scope["knowledge_bases"]
+
+        for query in queries:
+            try:
+                result = await self.retrieve_task_evidence(
+                    user_id,
+                    knowledge_base_ids,
+                    query,
+                    source_material_ids=requested_sources,
+                    top_k=top_k,
+                )
+            except TaskKnowledgeError as error:
+                query_attempts.append(
+                    {
+                        "query": query,
+                        "status": "no_evidence"
+                        if error.code == "no_matching_evidence"
+                        else "failed",
+                    },
+                )
+                if error.code == "no_matching_evidence":
+                    continue
+                details = {
+                    "queries": queries,
+                    "query_attempts": query_attempts,
+                    "hit_documents": list(hit_documents.values()),
+                    "rejected_documents": list(rejected_documents.values()),
+                    "failure_reason": error.message,
+                }
+                raise TaskKnowledgeError(
+                    error.code,
+                    error.message,
+                    details=details,
+                ) from error
+
+            knowledge_bases = result["knowledge_bases"]
+            query_attempts.append(
+                {
+                    "query": query,
+                    "status": "evidence_found",
+                    "evidence_count": len(result["evidence"]),
+                },
+            )
+            for item in result["evidence"]:
+                key = (
+                    item["knowledge_base_id"],
+                    item["document_id"],
+                    item["chunk_index"],
+                    item["content_sha256"],
+                )
+                document_key = (item["knowledge_base_id"], item["document_id"])
+                source = item.get("source")
+                source_name = source.strip() if isinstance(source, str) else ""
+                hit_documents.setdefault(
+                    document_key,
+                    {
+                        "knowledge_base_name": item["knowledge_base_name"],
+                        "document_id": item["document_id"],
+                        "source": source_name,
+                    },
+                )
+                candidates_by_key.setdefault(key, item)
+
+        candidates_by_document: dict[
+            tuple[str, str], list[dict[str, Any]]
+        ] = {}
+        for item in candidates_by_key.values():
+            key = (item["knowledge_base_id"], item["document_id"])
+            candidates_by_document.setdefault(key, []).append(item)
+
+        evidence_by_key: dict[
+            tuple[str, str, int, str], dict[str, Any]
+        ] = {}
+        for document_key, document_chunks in candidates_by_document.items():
+            source_names = {
+                item.get("source") for item in document_chunks
+            }
+            source_name = (
+                next(iter(source_names)) if len(source_names) == 1 else ""
+            )
+            combined_text = "\n".join(
+                item["source_text"]
+                for item in sorted(
+                    document_chunks,
+                    key=lambda candidate: candidate["chunk_index"],
+                )
+            )
+            is_selected = document_key[1] in requested_sources
+            if len(source_names) != 1 or not _project_material_source_match(
+                source_name,
+                combined_text,
+                selected=is_selected,
+            ):
+                rejected_documents.setdefault(
+                    document_key,
+                    {
+                        **hit_documents[document_key],
+                        "reason": "来源标题或同一文档原文片段不符合项目委托资料特征。",
+                    },
+                )
+                continue
+            for item in document_chunks:
+                key = (
+                    item["knowledge_base_id"],
+                    item["document_id"],
+                    item["chunk_index"],
+                    item["content_sha256"],
+                )
+                evidence_by_key[key] = {
+                    **item,
+                    "evidence_type": "project_material",
+                }
+
+        evidence = sorted(
+            evidence_by_key.values(),
+            key=lambda item: (
+                item["knowledge_base_name"],
+                item["source"],
+                item["chunk_index"],
+            ),
+        )[:18]
+        diagnostics = {
+            "queries": queries,
+            "query_attempts": query_attempts,
+            "hit_documents": list(hit_documents.values()),
+            "rejected_documents": list(rejected_documents.values()),
+            "selected_source_material_ids": requested_sources,
+        }
+        if not evidence:
+            failure_reason = (
+                "授权检索未命中项目委托资料。"
+                if not hit_documents
+                else "检索命中文档未满足项目资料标题和原文特征校验。"
+            )
+            diagnostics["failure_reason"] = failure_reason
+            return {
+                "status": "not_found",
+                "message": "未检索到匹配的项目委托资料。",
+                "drafting_guidance": (
+                    "未找到符合条件的授权项目委托资料，不能将用户输入当作知识库证据。"
+                    "若必填项目名称和项目背景已由用户提供，可继续形成待核实的策划草稿；"
+                    "相关内容须标记为用户陈述、DEMO/SYNTHETIC 演示假设或待核实。"
+                    "不得仅因缺少项目资料来源而重复追问；其他确实缺失且会阻止草稿产出的"
+                    "必需输入仍须按正常规则请求补充。"
+                ),
+                "queries": queries,
+                "query_attempts": query_attempts,
+                "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                "knowledge_bases": knowledge_bases,
+                "evidence": [],
+                "retrieval_diagnostics": diagnostics,
+            }
+
+        return {
+            "status": "ready",
+            "message": "已检索到符合项目资料特征的授权原文。",
+            "queries": queries,
+            "query_attempts": query_attempts,
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            "knowledge_bases": knowledge_bases,
+            "evidence": evidence,
+            "retrieval_diagnostics": diagnostics,
+        }
+
+    async def retrieve_planning_template_evidence(
+        self,
+        user_id: str,
+        knowledge_base_ids: list[str],
+        *,
+        top_k: int = 12,
+    ) -> dict[str, Any]:
+        """Search selected authorized KBs for a real planning template.
+
+        The four bounded queries represent only the template-retrieval intent.
+        Results from different chunks are combined only when they belong to the
+        same authorized KB document. Project material IDs belong to a separate
+        retrieval intent and do not constrain template lookup. Every result
+        still passes the existing per-user document-status check in
+        ``retrieve_task_evidence``; no KB outside the Task selection is read.
+        """
+
+        query_attempts: list[dict[str, Any]] = []
+        evidence_by_key: dict[tuple[str, str, int, str], dict[str, Any]] = {}
+        knowledge_bases: list[dict[str, Any]] | None = None
+        hit_documents: dict[tuple[str, str], dict[str, str]] = {}
+        for query in PLANNING_TEMPLATE_SEARCH_QUERIES:
+            try:
+                result = await self.retrieve_task_evidence(
+                    user_id,
+                    knowledge_base_ids,
+                    query,
+                    top_k=top_k,
+                )
+            except TaskKnowledgeError as error:
+                query_attempts.append(
+                    {
+                        "query": query,
+                        "status": "no_evidence"
+                        if error.code == "no_matching_evidence"
+                        else "failed",
+                    },
+                )
+                if error.code == "no_matching_evidence":
+                    continue
+                details = {
+                    "queries": list(PLANNING_TEMPLATE_SEARCH_QUERIES),
+                    "query_attempts": query_attempts,
+                    "hit_documents": list(hit_documents.values()),
+                    "failure_reason": error.message,
+                }
+                raise TaskKnowledgeError(
+                    error.code,
+                    error.message,
+                    details=details,
+                ) from error
+            if knowledge_bases is None:
+                knowledge_bases = result["knowledge_bases"]
+            query_attempts.append(
+                {
+                    "query": query,
+                    "status": "evidence_found",
+                    "evidence_count": len(result["evidence"]),
+                },
+            )
+            for item in result["evidence"]:
+                key = (
+                    item["knowledge_base_id"],
+                    item["document_id"],
+                    item["chunk_index"],
+                    item["content_sha256"],
+                )
+                evidence_by_key.setdefault(key, item)
+                document_key = (item["knowledge_base_id"], item["document_id"])
+                hit_documents.setdefault(
+                    document_key,
+                    {
+                        "knowledge_base_name": item["knowledge_base_name"],
+                        "document_id": item["document_id"],
+                        "source": item["source"],
+                    },
+                )
+
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for item in evidence_by_key.values():
+            key = (item["knowledge_base_id"], item["document_id"])
+            grouped.setdefault(key, []).append(item)
+
+        matches: list[dict[str, Any]] = []
+        rejected_documents: list[dict[str, Any]] = []
+        for key, document_evidence in grouped.items():
+            source = document_evidence[0]["source"]
+            metadata_complete = all(
+                isinstance(item.get("knowledge_base_name"), str)
+                and bool(item["knowledge_base_name"].strip())
+                and isinstance(item.get("document_id"), str)
+                and bool(item["document_id"].strip())
+                and isinstance(item.get("chunk_index"), int)
+                and item["chunk_index"] >= 0
+                and isinstance(item.get("content_sha256"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", item["content_sha256"])
+                and isinstance(item.get("source"), str)
+                and bool(item["source"].strip())
+                and item["source"] != "未知来源"
+                and isinstance(item.get("source_text"), str)
+                and bool(item["source_text"].strip())
+                for item in document_evidence
+            )
+            if not metadata_complete:
+                rejected_documents.append(
+                    {
+                        **hit_documents[key],
+                        "reason": "检索原文缺少完整且真实的来源字段。",
+                    },
+                )
+                continue
+            if not _planning_template_source_match(source):
+                rejected_documents.append(
+                    {
+                        **hit_documents[key],
+                        "reason": "来源文档标题不能确认其为策划报告模板。",
+                    },
+                )
+                continue
+            content_matches, content_diagnostics, reason = (
+                _planning_template_content_match(document_evidence)
+            )
+            if not content_matches:
+                rejected_documents.append(
+                    {
+                        **hit_documents[key],
+                        "reason": reason,
+                        **content_diagnostics,
+                    },
+                )
+                continue
+            matches.append(
+                {
+                    "knowledge_base_name": document_evidence[0][
+                        "knowledge_base_name"
+                    ],
+                    "document_id": document_evidence[0]["document_id"],
+                    "source": source,
+                    **content_diagnostics,
+                    "evidence": sorted(
+                        document_evidence,
+                        key=lambda item: item["chunk_index"],
+                    ),
+                },
+            )
+
+        diagnostics = {
+            "queries": list(PLANNING_TEMPLATE_SEARCH_QUERIES),
+            "query_attempts": query_attempts,
+            "hit_documents": list(hit_documents.values()),
+            "rejected_documents": rejected_documents,
+        }
+        if not matches:
+            failure_reason = (
+                "授权检索未返回可追溯原文。"
+                if not hit_documents
+                else PLANNING_TEMPLATE_REJECTION_REASON
+            )
+            diagnostics["failure_reason"] = failure_reason
+            diagnostic_line = (
+                "定向检索词："
+                + "；".join(PLANNING_TEMPLATE_SEARCH_QUERIES)
+                + "。命中文档："
+                + (
+                    "、".join(
+                        f"{item['source']}（{item['document_id']}）"
+                        for item in hit_documents.values()
+                    )
+                    or "无"
+                )
+                + f"。失败原因：{failure_reason}"
+            )
+            raise TaskKnowledgeError(
+                "no_matching_template",
+                f"{PLANNING_TEMPLATE_NO_MATCH_MESSAGE}\n{diagnostic_line}",
+                details=diagnostics,
+            )
+
+        selected_evidence = [
+            {**item, "evidence_type": "planning_template"}
+            for match in matches
+            for item in match["evidence"]
+        ]
+        selected_evidence.sort(
+            key=lambda item: (
+                item["knowledge_base_name"],
+                item["source"],
+                item["chunk_index"],
+            ),
+        )
+        return {
+            "status": "ready",
+            "query": "\n".join(PLANNING_TEMPLATE_SEARCH_QUERIES),
+            "queries": list(PLANNING_TEMPLATE_SEARCH_QUERIES),
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            "knowledge_bases": knowledge_bases or [],
+            "template_matches": [
+                {
+                    key: value
+                    for key, value in match.items()
+                    if key != "evidence"
+                }
+                for match in matches
+            ],
+            "retrieval_diagnostics": diagnostics,
+            "evidence": selected_evidence,
+            "citation_protocol": (
+                "模板和策划事实只引用本结果保留的授权原文片段。task-citations 使用本结果中"
+                "的 evidence_id 和对应的连续逐字原文摘录；"
+                "不得以模型总结或自行补充的来源代替原文证据。"
             ),
         }
 

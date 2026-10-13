@@ -308,12 +308,13 @@ def _expert_template_service(
 
 def _expert_template_request() -> dict[str, Any]:
     return {
-        "template_version": "1.0.0",
+        "template_version": "3.0.0",
         "inputs": {
             "project_name": "测试项目",
             "project_brief": "核安全领域的工程评审",
             "professional_fields": ["核安全"],
             "required_expert_count": 3,
+            "expert_records_json": "[{\"expert_id\":\"demo-1\",\"name\":\"演示候选\",\"professional_fields\":[\"核安全\"],\"conflict_status\":\"unknown\"}]",
         },
         "source_context": {
             "agent_id": "agent-template-test",
@@ -395,7 +396,7 @@ def test_template_routes_require_identity_and_serve_list_detail_and_404() -> Non
             headers=headers,
         )
         assert detail.status_code == 200
-        assert detail.json()["template_version"] == "1.0.0"
+        assert detail.json()["template_version"] == "3.0.0"
 
         unknown = client.get(
             "/tasks/templates/unknown_template",
@@ -412,9 +413,9 @@ def test_registry_returns_locatable_missing_and_invalid_file_errors(
     with pytest.raises(TemplateRegistryError) as missing:
         registry.list_templates()
     assert missing.value.code == "template_file_missing"
-    assert missing.value.file_name == "s01_project_init.v1.json"
+    assert missing.value.file_name == "s01_project_init.v2.json"
 
-    invalid_file = tmp_path / "s01_project_init.v1.json"
+    invalid_file = tmp_path / "s01_project_init.v2.json"
     invalid_file.write_text("{not-json", encoding="utf-8")
     with pytest.raises(TemplateRegistryError) as invalid_json:
         registry.list_templates()
@@ -426,7 +427,7 @@ def test_registry_returns_locatable_missing_and_invalid_file_errors(
 def test_template_api_reports_invalid_catalog_without_exposing_paths(
     tmp_path: Path,
 ) -> None:
-    invalid_file = tmp_path / "s01_project_init.v1.json"
+    invalid_file = tmp_path / "s01_project_init.v2.json"
     invalid_file.write_text("{not-json", encoding="utf-8")
 
     with _template_client(TemplateRegistry(tmp_path)) as client:
@@ -446,7 +447,7 @@ def test_template_api_reports_invalid_catalog_without_exposing_paths(
 def test_registry_rejects_invalid_template_schema_and_extra_files(
     tmp_path: Path,
 ) -> None:
-    invalid_file = tmp_path / "s01_project_init.v1.json"
+    invalid_file = tmp_path / "s01_project_init.v2.json"
     invalid_file.write_text(json.dumps({"schema_version": 99}), encoding="utf-8")
 
     with pytest.raises(TemplateRegistryError) as invalid_schema:
@@ -523,7 +524,7 @@ def test_template_instantiation_copies_without_planner(
             range(len(first["nodes"]))
         )
         assert first["source_template_id"] == "s03_expert_matching"
-        assert first["source_template_version"] == "1.0.0"
+        assert first["source_template_version"] == "3.0.0"
         assert set(first["template_step_bindings"]) == {
             "collect_matching_requirements",
             "extract_project_profile",
@@ -579,7 +580,7 @@ def test_s03_keeps_safety_steps_required_and_profile_optional() -> None:
     )
 
 
-def test_template_preflight_blocks_unverified_business_tools(
+def test_template_preflight_separates_local_expert_adapter_from_artifact_writer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
@@ -623,12 +624,26 @@ def test_template_preflight_blocks_unverified_business_tools(
         )
         assert preflight.status_code == 200, preflight.text
         assert preflight.json()["ready"] is False
-        checks = preflight.json()["capability_checks"]
-        assert len(checks) == 3
-        assert all(check["tool_available"] is True for check in checks)
-        assert all(check["interface_compatible"] is True for check in checks)
-        assert all(check["business_data_verified"] is False for check in checks)
-        assert all(check["status"] == "unverified" for check in checks)
+        checks = {
+            check["capability_key"]: check
+            for check in preflight.json()["capability_checks"]
+        }
+        assert {
+            "expert.user_data_lookup",
+            "expert.user_conflict_check",
+            "expert.user_rank",
+            "document.render",
+        } <= set(checks)
+        for capability in (
+            "expert.user_data_lookup",
+            "expert.user_conflict_check",
+            "expert.user_rank",
+        ):
+            assert checks[capability]["tool_available"] is True
+            assert checks[capability]["interface_compatible"] is True
+            assert checks[capability]["business_data_verified"] is False
+            assert checks[capability]["status"] == "available"
+        assert checks["document.render"]["status"] == "unverified"
         assert executor.executed_nodes == []
 
         foreign_preflight = client.post(
@@ -715,7 +730,8 @@ def test_optional_template_step_can_be_deleted_but_conflict_check_cannot(
         )
         assert rejected.status_code == 422
         assert any(
-            "强制步骤“回避与利益冲突校验”不能删除" in issue["message"]
+            "强制步骤“整理回避声明并标明未做正式核验”不能删除"
+            in issue["message"]
             for issue in rejected.json()["detail"]["issues"]
         )
         unchanged = client.get(f"/tasks/{task['id']}", headers=headers)
@@ -793,7 +809,7 @@ def test_template_rejects_wrong_required_order_before_save_or_run(
         assert asyncio.run(store.list_runs("template-owner", task["id"])) == []
 
 
-def test_template_run_missing_tool_and_missing_input_are_rejected_before_writes(
+def test_template_run_missing_input_and_artifact_writer_are_rejected_before_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
@@ -833,7 +849,7 @@ def test_template_run_missing_tool_and_missing_input_are_rejected_before_writes(
         assert no_input_run.status_code == 422
         assert asyncio.run(store.list_runs("template-owner", task["id"])) == []
 
-        # Losing one live tool after save is detected at preflight and run time.
+        # External expert Tools are not used by the current Task-local adapter.
         task = empty_goal.json()
         restored = client.patch(
             f"/tasks/{task['id']}",
@@ -849,23 +865,24 @@ def test_template_run_missing_tool_and_missing_input_are_rejected_before_writes(
         )
         assert missing.status_code == 200
         assert missing.json()["ready"] is False
-        assert missing.json()["missing_capabilities"] == [
-            "expert.conflict_check",
-            "expert.lookup",
-            "expert.rank",
-        ]
+        assert missing.json()["missing_capabilities"] == []
+        assert all(
+            check["status"] == "available"
+            for check in missing.json()["capability_checks"]
+            if check["capability_key"].startswith("expert.user_")
+        )
         rejected_run = client.post(
             f"/tasks/{task['id']}/runs",
             headers=headers,
             json={},
         )
         assert rejected_run.status_code == 422
-        assert rejected_run.json()["detail"]["code"] == "TEMPLATE_CAPABILITY_MISSING"
+        assert rejected_run.json()["detail"]["code"] == "TASK_PREFLIGHT_BLOCKED"
         assert asyncio.run(store.list_runs("template-owner", task["id"])) == []
         assert executor.executed_nodes == []
 
 
-def test_template_preflight_requires_tool_schema_for_bound_capabilities(
+def test_template_preflight_does_not_bind_external_schema_for_local_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
@@ -897,10 +914,19 @@ def test_template_preflight_requires_tool_schema_for_bound_capabilities(
 
     assert preflight.status_code == 200
     assert preflight.json()["ready"] is False
-    assert any(
+    assert not any(
         issue["path"].endswith("input_schema")
         for issue in preflight.json()["issues"]
     )
+    assert {
+        check["capability_key"]
+        for check in preflight.json()["capability_checks"]
+        if check["status"] == "available"
+    } >= {
+        "expert.user_data_lookup",
+        "expert.user_conflict_check",
+        "expert.user_rank",
+    }
 
 
 def test_instantiation_and_edit_work_without_tools_but_preflight_blocks_run(
@@ -940,16 +966,17 @@ def test_instantiation_and_edit_work_without_tools_but_preflight_blocks_run(
 
     assert preflight.status_code == 200
     assert preflight.json()["ready"] is False
-    assert preflight.json()["missing_capabilities"] == [
-        "expert.conflict_check",
-        "expert.lookup",
-        "expert.rank",
-    ]
+    assert preflight.json()["missing_capabilities"] == []
+    assert all(
+        check["status"] == "available"
+        for check in preflight.json()["capability_checks"]
+        if check["capability_key"].startswith("expert.user_")
+    )
     assert len(asyncio.run(store.list_tasks("template-owner"))) == 1
     assert planner.calls == 0
 
 
-def test_instantiation_does_not_check_tools_but_preflight_blocks_side_effects(
+def test_unrelated_external_expert_tool_does_not_override_task_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LXSCOPE_TASK_CAPABILITY_TOOL_MAP", raising=False)
@@ -976,10 +1003,10 @@ def test_instantiation_does_not_check_tools_but_preflight_blocks_side_effects(
     check = next(
         item
         for item in preflight.json()["capability_checks"]
-        if item["capability_key"] == "expert.lookup"
+        if item["capability_key"] == "expert.user_data_lookup"
     )
-    assert check["external_side_effect"] is True
-    assert check["status"] == "unsupported"
+    assert check["external_side_effect"] is False
+    assert check["status"] == "available"
     assert len(asyncio.run(store.list_tasks("template-owner"))) == 1
     assert planner.calls == 0
 
@@ -1044,7 +1071,10 @@ def test_template_instantiation_rejects_client_provenance_and_versions(
 
 
 def test_compiler_binds_aliases_and_rejects_unbound_requirements() -> None:
-    template = TemplateRegistry().get_template("s03_expert_matching")
+    template = TemplateRegistry().get_template_version(
+        "s03_expert_matching",
+        "2.0.0",
+    )
     assert template is not None
     alias_map = {
         "expert.lookup": "mcp__expert__lookup",
@@ -1062,17 +1092,20 @@ def test_compiler_binds_aliases_and_rejects_unbound_requirements() -> None:
     }
     assert configured_names == set(alias_map.values())
 
-    project_template = TemplateRegistry().get_template("s01_project_init")
+    project_template = TemplateRegistry().get_template_version(
+        "s01_project_init",
+        "2.0.0",
+    )
     assert project_template is not None
     project_tools = [
         TaskToolSchema(name="project.similar_search"),
         TaskToolSchema(name="project.rule_check"),
     ]
-    with pytest.raises(TemplateCompileError) as missing_native_capability:
-        TaskTemplateCompiler().compile_nodes(project_template, project_tools)
-    assert missing_native_capability.value.missing_capabilities == (
-        "project.authorization.read",
+    compiled_project = TaskTemplateCompiler().compile_nodes(
+        project_template,
+        project_tools,
     )
+    assert len(compiled_project.nodes) == len(project_template.steps)
 
 
 def test_compiler_rejects_expressions_and_invalid_tool_schemas() -> None:
@@ -1094,7 +1127,10 @@ def test_compiler_rejects_expressions_and_invalid_tool_schemas() -> None:
     tools[0] = tools[0].model_copy(
         update={"input_schema": {"type": "not-a-json-schema"}}
     )
-    current_template = TemplateRegistry().get_template("s03_expert_matching")
+    current_template = TemplateRegistry().get_template_version(
+        "s03_expert_matching",
+        "2.0.0",
+    )
     assert current_template is not None
     with pytest.raises(TemplateCompileError) as invalid_tool_schema:
         TaskTemplateCompiler().compile_nodes(

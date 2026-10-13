@@ -307,21 +307,27 @@ _CATEGORY_BY_PREFIX = {
     "document.citation_verify": "规则校验",
     "document.render": "文件处理",
     "expense.erp_submit": "业务系统写入",
+    "expense.invoice_import": "数据输入",
     "expense.invoice_ocr": "OCR/ASR",
     "expense.invoice_verify_dedupe": "规则校验",
     "expense.rule_check": "规则校验",
     "expert.conflict_check": "规则校验",
     "expert.lookup": "数据查询",
     "expert.rank": "确定性计算",
+    "expert.user_conflict_check": "规则校验",
+    "expert.user_data_lookup": "数据查询",
+    "expert.user_rank": "确定性计算",
     "meeting.audio_transcribe": "OCR/ASR",
     "meeting.cost_calculate": "确定性计算",
     "meeting.material_check": "规则校验",
     "meeting.material_generate": "文件处理",
+    "meeting.transcript_import": "数据输入",
     "meeting.minutes_export": "文件处理",
     "notification.send": "消息通知",
     "opinion.classify": "规则校验",
     "opinion.export": "文件处理",
     "opinion.image_ocr": "OCR/ASR",
+    "opinion.text_import": "数据输入",
     "planning.template_retrieve": "数据查询",
     "project.authorization.read": "数据查询",
     "project.rule_check": "规则校验",
@@ -344,7 +350,28 @@ _TASK_ARTIFACT_CAPABILITIES = frozenset(
     {"document.render", "meeting.minutes_export"}
 )
 _TASK_NATIVE_CAPABILITIES = frozenset(
-    {"planning.template_retrieve", "document.citation_verify"}
+    {
+        "planning.template_retrieve",
+        "document.citation_verify",
+        "report.citation_check",
+        "project.similar_search",
+        "project.rule_check",
+        "report.rag_retrieve",
+        "expert.user_data_lookup",
+        "expert.user_conflict_check",
+        "expert.user_rank",
+        "meeting.cost_calculate",
+        "meeting.material_generate",
+        "meeting.material_check",
+        "meeting.transcript_import",
+        "opinion.text_import",
+        "opinion.classify",
+        "archive.document_metadata",
+        "archive.completeness_check",
+        "expense.invoice_import",
+        "expense.invoice_verify_dedupe",
+        "expense.rule_check",
+    }
 )
 
 

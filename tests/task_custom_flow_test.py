@@ -55,6 +55,24 @@ class _TestExecutor:
         del capability_key
         return True
 
+    async def preflight_artifact_writer(self, *, context: Any) -> tuple[bool, str]:
+        del context
+        return True, "Isolated Task test writer is ready."
+
+    async def write_artifact(self, *, path: str, data: bytes, context: Any) -> int:
+        del path, context
+        return len(data)
+
+    async def read_artifact(self, *, path: str, context: Any) -> bytes:
+        del path, context
+        return b""
+
+    async def execute_node(self, *, node: Any, previous_output: str, context: Any):
+        del context
+        from examples.agent_service.task._executor import StepExecutionResult
+
+        return StepExecutionResult(text=f"{node.name}: {previous_output}")
+
 
 def _client(
     planner: _TestPlanner | None = None,
@@ -79,7 +97,7 @@ def _instantiate_s01(client: TestClient, user_id: str = "owner") -> dict[str, An
         "/tasks/templates/s01_project_init/instantiate",
         headers={"X-User-ID": user_id},
         json={
-            "template_version": "1.0.0",
+            "template_version": "2.0.0",
             "inputs": {
                 "project_name": "测试项目",
                 "project_brief": "范围明确的工程评审项目。",
@@ -240,6 +258,11 @@ def test_custom_flow_can_add_delete_change_type_and_reorder_nodes(
                 "order": len(nodes),
             },
         )
+        nodes[-2].pop("artifact", None)
+        nodes[-1]["artifact"] = {
+            "format": "markdown",
+            "filename": "自定义汇总",
+        }
         response = _patch_nodes(client, copied["id"], nodes)
         assert response.status_code == 200, response.text
         assert len(response.json()["nodes"]) == 8
@@ -433,7 +456,8 @@ def test_custom_flow_preflight_still_blocks_missing_tools_and_side_effects(
             for check in checks
             if check["capability_key"] == "project.similar_search"
         )
-        assert similar_check["status"] == "unsupported", similar_check
+        assert similar_check["status"] == "missing", similar_check
+        assert similar_check["error_category"] == "data_source_not_ready"
         run = client.post(
             f"/tasks/{copied['id']}/runs",
             headers={"X-User-ID": "owner"},
@@ -466,10 +490,11 @@ def test_custom_run_snapshot_retains_source_provenance(
             "/tasks/templates/s06_opinion_processing/instantiate",
             headers={"X-User-ID": "owner"},
             json={
-                "template_version": "1.0.0",
+                "template_version": "3.0.0",
                 "inputs": {
                     "project_name": "测试项目",
-                    "image_asset_ids": ["asset-1"],
+                    "opinion_records_json": "[{\"opinion_id\":\"synthetic-1\",\"text\":\"synthetic opinion\"}]",
+                    "classification_rules_json": "[{\"category\":\"synthetic\",\"keywords\":[\"synthetic\"]}]",
                 },
                 "source_context": {
                     "agent_id": "test-agent",
@@ -490,7 +515,7 @@ def test_custom_run_snapshot_retains_source_provenance(
         run = response.json()
         assert run["workflow_mode"] == "custom_flow"
         assert run["source_template_id"] == "s06_opinion_processing"
-        assert run["source_template_version"] == "1.0.0"
+        assert run["source_template_version"] == "3.0.0"
         assert run["source_task_id"] == source["id"]
         assert run["source_task_revision"] == source["revision"]
 

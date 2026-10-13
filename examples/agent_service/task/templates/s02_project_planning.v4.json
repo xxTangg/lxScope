@@ -1,0 +1,335 @@
+{
+  "schema_version": 1,
+  "template_id": "s02_project_planning",
+  "template_version": "4.0.0",
+  "title": "项目策划",
+  "description": "根据授权项目资料编制八章项目策划报告；Task 服务端确定性组装来源状态、引用和待核实清单。",
+  "category": "review",
+  "required_capabilities": [
+    "planning.template_retrieve",
+    "document.render"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_name",
+      "project_brief"
+    ],
+    "properties": {
+      "project_name": {
+        "type": "string",
+        "description": "项目名称。"
+      },
+      "project_brief": {
+        "type": "string",
+        "description": "项目背景、目标和策划要求。"
+      },
+      "professional_fields": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "涉及的专业领域。"
+      },
+      "source_material_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "已授权的资料标识。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "生成结构完整、业务内容清晰的八章项目策划报告；服务端核验授权来源并生成引用台账，未核实事项明确列出。",
+  "steps": [
+    {
+      "step_key": "collect_planning_inputs",
+      "title": "读取项目资料",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供项目策划所需的背景资料和要求。",
+        "questions": [
+          {
+            "key": "project_name",
+            "label": "项目名称",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "project_brief",
+            "label": "项目背景、目标和策划要求",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "professional_fields",
+            "label": "涉及的专业领域",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "source_material_ids",
+            "label": "已授权资料标识",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得策划需求和资料范围。",
+      "failure_handling": "缺少项目背景或策划目标时请求补充。",
+      "sensitive_information": "项目材料可能包含商业机密，仅处理用户提供或授权的资料。"
+    },
+    {
+      "step_key": "retrieve_planning_template",
+      "title": "检索策划模板",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "planning.template_retrieve",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "query": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "返回模板内容及其来源标识，或明确说明没有匹配模板。",
+      "failure_handling": "模板检索能力缺失或失败时阻断模板化初稿，不自行伪造模板。",
+      "sensitive_information": "遵守模板库的访问范围，不输出内部链接或凭据。"
+    },
+    {
+      "step_key": "draft_planning_outline",
+      "title": "推荐策划大纲",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "依据本次 TaskRun 检索到的授权项目资料和策划模板，整理八章报告结构与每章需要解决的业务问题。可以自然提及模板 B-01 至 B-15 写作要求，但不要生成逐条规则清单、引用编号、Evidence ID 或验证结论。资料不足时指出需要补充的信息，不编造项目事实。"
+      },
+      "output_requirement": "输出八章策划结构和待补资料方向，不生成引用协议或验证结论。",
+      "failure_handling": "模板不适用或资料不足时列出差异和待补资料。",
+      "sensitive_information": "不得把其他项目的机密内容带入本项目大纲。"
+    },
+    {
+      "step_key": "draft_planning_document",
+      "title": "生成策划初稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "结合授权项目资料、策划模板与已拟定章节，撰写可供最终整理的业务初稿。重点包括项目背景、资料可信度、能源基线口径、设备台账、分析方法、方案建议、预算进度及风险。区分资料事实、分析、建议与待核实事项；不生成 [C1] 等引用编号、Evidence ID、哈希、Claim/Binding JSON 或“校验通过”结论。不得编造未取得的业务资料。"
+      },
+      "output_requirement": "形成内容连贯、八章齐全的业务初稿，未取得的事实明确标记为待核实。",
+      "failure_handling": "资料不足时保留待核实项；不得用其他项目资料补齐。",
+      "sensitive_information": "仅使用当前项目授权资料，不扩散无关个人或第三方信息。"
+    },
+    {
+      "step_key": "review_planning_outline",
+      "title": "复核大纲与引用",
+      "kind": "input",
+      "required": false,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "可补充策划要求或指出引用问题；此步骤不是审批签发。",
+        "questions": [
+          {
+            "key": "planning_feedback",
+            "label": "需要调整的章节或引用",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "记录用户更正或补充；无回复时保留原草稿并注明尚未人工复核。",
+      "failure_handling": "未收到意见时继续标示为待人工复核。",
+      "sensitive_information": "不要在意见中重复粘贴无关机密材料。"
+    },
+    {
+      "step_key": "produce_planning_output",
+      "title": "整理策划输出",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "根据上游项目资料、策划模板、章节规划、策划初稿和用户反馈，输出八章项目策划报告的结构化业务 JSON，供 Task 服务端整理成报告并核验来源。\n\n报告章节必须按顺序覆盖：第一章 项目概况；第二章 资料清单与可信度；第三章 能源基线与计量口径；第四章 设备台账现状；第五章 分析方法与工作计划；第六章 方案建议；第七章 预算与进度边界；第八章 风险、待核实事项与交付清单。正文以有意义的项目策划内容为主。B-01 至 B-15 是策划模板的写作约束，可以自然应用或提及；不得为了格式要求生成 15 个独立 rule 对象，也不得将模板限制冒充某条 B 规则。\n\n每个普通业务条目使用 kind、text、source_candidates。kind 只能是 fact、historical_case、analysis、recommendation、template_limitation。source_candidates 是从上游本次授权检索原文中逐字复制的连续片段数组；无可确认片段时填空数组。事实、历史案例和模板适用性说明应提供相关原文候选；分析或建议可以为空。不要把分析或建议说成已发生的项目事实。\n\n待核实条目使用 kind=unverified、text、source_candidates:[]、pending_status、reason、expected_evidence_types。pending_status 仅为 pending_verification、pending_supplement、pending_confirmation。每项原因要说明当前缺口；expected_evidence_types 只能使用 project_material、planning_template、historical_case。尚未取得的面积、预算、周期、设备数量、能源数据等应列为待核实或用户输入边界，不得表述为已批准或已实现。\n\n模板本身的来源性质或适用范围可作为 template_limitation 报告附注，并提供原文候选；它不替代 B 条款。允许分析、建议或待核实条目自然提及 B-xx，不会因此改变其业务类型。服务端会逐条解析候选，只根据当前 Run 的授权 Evidence 确认唯一来源；语义支持仍需人工复核。\n\n严禁输出 Claim ID、Occurrence ID、Citation ID、Evidence ID、knowledge_base_id、document_id、authorization_subject、content_sha256、服务端核验状态、签发/审批结论或文件生成状态。只输出符合 Schema 的 JSON，不附 Markdown 围栏或额外文字。"
+      },
+      "output_requirement": "输出八章结构化业务内容；Task 服务端负责来源身份解析、引用编号、待核实状态、证据台账与 DOCX 排版。",
+      "failure_handling": "JSON 无法安全读取、章节缺失或来源权限/身份/哈希异常时失败关闭；严格模式不得生成 DOCX。演示模式仅可将可识别的来源缺口标为待核实并保留警告。",
+      "sensitive_information": "导出文件沿用 Task 当前用户权限，不创建公开共享链接。",
+      "artifact": {
+        "format": "docx",
+        "filename": "项目策划报告"
+      },
+      "output_contract": {
+        "contract_id": "task.s02.planning.report.v4",
+        "contract_version": 1,
+        "output_type": "structured_json",
+        "schema": {
+          "type": "object",
+          "title": "S02 v4 项目策划业务输出",
+          "description": "仅含章节业务内容和原文候选；服务端生成所有证据协议身份。",
+          "required": [
+            "title",
+            "chapters"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "chapters": {
+              "type": "array",
+              "minItems": 8,
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "required": [
+                  "number",
+                  "items"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "number": {
+                    "type": "integer",
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5,
+                      6,
+                      7,
+                      8
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "items": {
+                      "type": "object",
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "text",
+                            "source_candidates"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "fact",
+                                "historical_case",
+                                "analysis",
+                                "recommendation",
+                                "template_limitation"
+                              ]
+                            },
+                            "text": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000
+                            },
+                            "source_candidates": {
+                              "type": "array",
+                              "maxItems": 6,
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "text",
+                            "source_candidates",
+                            "pending_status",
+                            "reason",
+                            "expected_evidence_types"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "unverified"
+                              ]
+                            },
+                            "text": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000
+                            },
+                            "source_candidates": {
+                              "type": "array",
+                              "maxItems": 0,
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "pending_status": {
+                              "type": "string",
+                              "enum": [
+                                "pending_verification",
+                                "pending_supplement",
+                                "pending_confirmation"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1000
+                            },
+                            "expected_evidence_types": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 3,
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "project_material",
+                                  "planning_template",
+                                  "historical_case"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "validation_mode": "json_schema",
+        "provenance_requirement": "none",
+        "downstream_binding": "validated_result",
+        "failure_policy": "fail_closed"
+      }
+    }
+  ],
+  "unsupported_capabilities": []
+}

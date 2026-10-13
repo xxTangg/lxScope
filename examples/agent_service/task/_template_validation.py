@@ -9,7 +9,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ._capability_contracts import is_task_artifact_capability
+from ._capability_contracts import (
+    is_task_artifact_capability,
+    is_task_native_capability,
+)
 from ._models import (
     TaskNode,
     TaskRecord,
@@ -28,6 +31,7 @@ from ._template_compiler import (
 )
 from ._template_registry import TemplateRegistry, TemplateRegistryError
 from ._template_models import TaskTemplateDefinition, TemplateArtifactConfig
+from ._scenario_runtime import native_tool_schema
 
 
 _VARIABLE_PATTERN = re.compile(r"\{\{([^{}]+)\}\}")
@@ -59,6 +63,17 @@ class TaskValidationFailure(ValueError):
 
         return TaskValidationErrorDetail(
             code=self.code,
+            error_category=next(
+                (
+                    check.error_category
+                    for check in self.result.capability_checks
+                    if check.status != "available"
+                    and check.error_category is not None
+                ),
+                "missing_tool"
+                if self.result.missing_capabilities
+                else "configuration_error",
+            ),
             message=self.message,
             issues=self.result.issues,
             missing_capabilities=self.result.missing_capabilities,
@@ -147,6 +162,37 @@ class TaskTemplateValidator:
 
         if task is None:
             return _result(task_id, issues, missing, blocked)
+
+        if tool_schemas is not None:
+            native_nodes = [
+                node
+                for node in nodes
+                if isinstance(node.config, ToolStepConfig)
+                and is_task_native_capability(node.capability_key)
+            ]
+            native_names = {
+                node.config.tool_name for node in native_nodes
+            }
+            tool_schemas = [
+                schema
+                for schema in tool_schemas
+                if schema.name not in native_names
+            ]
+            existing_names = {schema.name for schema in tool_schemas}
+            for node in native_nodes:
+                if node.config.tool_name in existing_names:
+                    continue
+                tool_schemas.append(
+                    TaskToolSchema(
+                        name=node.config.tool_name,
+                        description="由 Task 模块受控适配器提供。",
+                        input_schema=native_tool_schema(
+                            node.capability_key or ""
+                        ),
+                        is_read_only=True,
+                    ),
+                )
+                existing_names.add(node.config.tool_name)
 
         has_template_id = bool(task.source_template_id)
         has_template_version = bool(task.source_template_version)

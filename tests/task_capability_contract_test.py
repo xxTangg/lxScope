@@ -192,7 +192,9 @@ def test_contract_schema_binding_rejects_narrower_tool_interfaces() -> None:
 
 
 def test_compiler_rejects_permissive_but_undeclared_expert_tool_schema() -> None:
-    template = TemplateRegistry().get_template("s03_expert_matching")
+    template = TemplateRegistry().get_template_version(
+        "s03_expert_matching", "2.0.0"
+    )
     assert template is not None
     from examples.agent_service.task._capability_contracts import capability_contract
 

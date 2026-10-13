@@ -197,6 +197,39 @@ def render_docx(value: ArtifactSpec | str) -> bytes:
     return buffer.getvalue()
 
 
+def mark_docx_draft(data: bytes, label: str) -> bytes:
+    """Add a visible first-page and header label to a Task demo draft."""
+
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt, RGBColor
+
+    document = Document(io.BytesIO(data))
+    first_page_label = document.add_paragraph()
+    first_page_label.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    first_page_label.paragraph_format.space_after = Pt(12)
+    label_run = first_page_label.add_run(label)
+    label_run.bold = True
+    label_run.font.size = Pt(10)
+    label_run.font.color.rgb = RGBColor(156, 35, 35)
+    if document.paragraphs:
+        document.paragraphs[0]._p.addprevious(first_page_label._p)
+
+    for section in document.sections:
+        header = section.header.paragraphs[0]
+        header.text = label
+        header.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        for run in header.runs:
+            run.bold = True
+            run.font.size = Pt(8)
+            run.font.color.rgb = RGBColor(156, 35, 35)
+
+    document.core_properties.subject = "DEMO/SYNTHETIC · draft_unverified"
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def _safe_sheet_name(value: str, used: set[str], index: int) -> str:
     candidate = re.sub(r"[\\/:?*\[\]]+", " ", value).strip() or f"数据表{index}"
     candidate = candidate[:31]

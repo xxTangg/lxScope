@@ -1,0 +1,247 @@
+{
+  "schema_version": 1,
+  "template_id": "s03_expert_matching",
+  "template_version": "3.0.0",
+  "title": "专家智能匹配",
+  "description": "支持使用任务创建者提交的结构化候选数据进行初步排序；结果不代表正式专家库查询、回避核验或聘任建议。",
+  "category": "review",
+  "required_capabilities": [
+    "expert.user_data_lookup",
+    "expert.user_conflict_check",
+    "expert.user_rank"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_name",
+      "project_brief",
+      "professional_fields",
+      "expert_records_json"
+    ],
+    "properties": {
+      "project_name": {
+        "type": "string",
+        "description": "项目名称。"
+      },
+      "project_brief": {
+        "type": "string",
+        "description": "项目背景和评审要求。"
+      },
+      "professional_fields": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "所需专业领域。"
+      },
+      "exclusion_rules": {
+        "type": "string",
+        "description": "已确认的回避规则或限制。"
+      },
+      "required_expert_count": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "description": "期望候选人数。"
+      },
+      "expert_records_json": {
+        "type": "string",
+        "description": "由任务创建者提供的结构化候选专家 JSON 数组；不是正式专家库。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出透明的专业字段重合度依据和数据来源状态；正式推荐前仍需接入真实专家库、回避规则和审批能力。",
+  "steps": [
+    {
+      "step_key": "collect_matching_requirements",
+      "title": "读取项目要求",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供项目和专家匹配要求。",
+        "questions": [
+          {
+            "key": "project_name",
+            "label": "项目名称",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "project_brief",
+            "label": "项目背景和评审要求",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "professional_fields",
+            "label": "所需专业领域",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "exclusion_rules",
+            "label": "已确认的回避规则或限制",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "required_expert_count",
+            "label": "期望候选人数",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "expert_records_json",
+            "label": "结构化候选专家 JSON（非正式专家库）",
+            "required": true,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得足以开展匹配的项目和专业要求。",
+      "failure_handling": "专业领域或项目要求不完整时请求补充，不自行推定限制。",
+      "sensitive_information": "项目资料按机密信息处理；避免在输入中提交无关个人敏感信息。"
+    },
+    {
+      "step_key": "extract_project_profile",
+      "title": "形成项目画像",
+      "kind": "agent",
+      "required": false,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "从用户提供的信息提取项目领域、专业方向、经验要求和明确限制。只依据已给信息，不推断利益关系或专家资质。"
+      },
+      "output_requirement": "输出结构化项目画像和待澄清字段。",
+      "failure_handling": "关键要求含糊时请求用户澄清后再查询。",
+      "sensitive_information": "不推断或展示项目资料之外的个人信息。"
+    },
+    {
+      "step_key": "lookup_expert_candidates",
+      "title": "读取用户提供的结构化候选数据",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expert.user_data_lookup",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "query": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "候选来源明确标记为用户提供；不宣称已查询正式专家库。",
+      "failure_handling": "专家查询工具、授权或数据契约缺失时阻断；不得使用模型编造候选人。",
+      "sensitive_information": "仅读取当前用户获准访问的专家资料，禁止把真实个人资料写入模板。"
+    },
+    {
+      "step_key": "check_expert_conflicts",
+      "title": "整理回避声明并标明未做正式核验",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expert.user_conflict_check",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "candidates": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "逐项保留用户提供的回避状态；unknown 或 conflict 不进入初步排序。",
+      "failure_handling": "无回避规则、权限或核验结果时阻断推荐；不得以模型解释替代确定性核验。",
+      "sensitive_information": "冲突详情仅向具备相应权限的用户展示，结果遵守最小披露。"
+    },
+    {
+      "step_key": "rank_expert_candidates",
+      "title": "按专业字段重合度生成初步排序",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "expert.user_rank",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "candidates": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "公开评分公式、排序依据和未验证边界；结果须人工复核。",
+      "failure_handling": "评分规则或排序工具未接入时阻断；不得由模型临时编造评分标准。",
+      "sensitive_information": "仅使用评分所需字段，不输出无关个人信息。"
+    },
+    {
+      "step_key": "explain_matching_reasons",
+      "title": "生成匹配理由",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "仅根据专家库返回字段、回避校验结果和评分依据，整理候选排序理由。分别展示已核验事实、模型归纳和未决项，不自行改变回避状态或评分。"
+      },
+      "output_requirement": "每位候选人均有可追溯依据及校验状态。",
+      "failure_handling": "依据不足的字段标为未知，不生成推断理由。",
+      "sensitive_information": "不在解释中暴露专家的无关联系方式、证件或其他敏感信息。"
+    },
+    {
+      "step_key": "collect_human_review",
+      "title": "收集人工复核意见",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请复核候选列表和匹配依据。该输入仅收集意见，不验证身份、权限或企业审批状态。",
+        "questions": [
+          {
+            "key": "review_feedback",
+            "label": "复核意见或需要排除的候选人",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "记录复核意见；在正式审批协议接入前不得将其记为审批通过。",
+      "failure_handling": "无复核意见时保持待确认，不自动选定专家。",
+      "sensitive_information": "复核意见仅供当前项目匹配使用，避免复制无关专家个人资料。"
+    },
+    {
+      "step_key": "produce_expert_shortlist",
+      "title": "输出候选清单",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "整理候选专家清单、排序依据、回避检查状态和人工复核意见。清楚标注未接通或未确认的业务步骤，不写入专家库或发送邀请。"
+      },
+      "output_requirement": "输出供有权限业务人员复核的 Top N 清单及风险提示。",
+      "failure_handling": "关键工具结果缺失时停止生成候选结论，仅报告阻断原因。",
+      "sensitive_information": "只输出权限允许的最少专家字段，不导出个人敏感资料。",
+      "artifact": {
+        "format": "markdown",
+        "filename": "专家匹配建议清单"
+      }
+    }
+  ],
+  "unsupported_capabilities": [
+    {
+      "capability_key": "expert.business_approval",
+      "reason": "现有 Task InputStep 只收集用户输入，不具备审批人身份、权限核验、审计和拒绝/退回协议。"
+    },
+    {
+      "capability_key": "expert.official_directory",
+      "reason": "当前仅处理用户提交的候选记录，未连接或授权查询正式专家库。"
+    },
+    {
+      "capability_key": "expert.official_conflict_check",
+      "reason": "回避声明来自用户提交数据，未调用正式回避规则或利益冲突系统。"
+    }
+  ]
+}

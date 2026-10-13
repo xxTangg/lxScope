@@ -66,6 +66,10 @@ class _Executor:
         del context
         return self.files[path]
 
+    async def preflight_artifact_writer(self, *, context):
+        del context
+        return True, "Isolated Task test writer is ready."
+
 
 def _agent(name="生成方案", **kwargs):
     return TaskNode(name=name, config=AgentStepConfig(prompt=name), **kwargs)
