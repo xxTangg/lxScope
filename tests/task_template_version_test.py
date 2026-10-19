@@ -62,12 +62,12 @@ S03_V3_INPUTS = {
 }
 CURRENT_VERSIONS = {
     "s01_project_init": "2.0.0",
-    "s02_project_planning": "5.0.0",
+    "s02_project_planning": "5.1.0",
     "s03_expert_matching": "3.0.0",
     "s04_meeting_preparation": "3.0.0",
     "s05_meeting_minutes": "3.0.0",
     "s06_opinion_processing": "3.0.0",
-    "s07_report_generation": "4.0.0",
+    "s07_report_generation": "5.0.0",
     "s08_archive_transfer": "3.0.0",
     "s09_expense_settlement": "3.0.0",
 }
@@ -116,13 +116,13 @@ def test_default_registry_lists_only_nine_current_scenarios() -> None:
     assert templates[2].template_id == S03_ID
 
 
-def test_s07_v4_adds_authorized_citation_contract_without_rewriting_history() -> None:
+def test_s07_v5_uses_ai_acceptance_and_keeps_v4_history() -> None:
     registry = TemplateRegistry()
     current = registry.get_current_template("s07_report_generation")
     assert current is not None
-    assert current.template_version == "4.0.0"
+    assert current.template_version == "5.0.0"
 
-    for version in ("1.0.0", "2.0.0", "3.0.0"):
+    for version in ("1.0.0", "2.0.0", "3.0.0", "4.0.0"):
         historical = registry.get_template_version(
             "s07_report_generation", version
         )
@@ -133,10 +133,13 @@ def test_s07_v4_adds_authorized_citation_contract_without_rewriting_history() ->
     draft = next(
         step for step in current.steps if step.step_key == "draft_report_chapters"
     )
-    assert draft.output_contract is not None
-    assert draft.output_contract.validation_mode == "citations"
-    assert draft.output_contract.provenance_requirement == "authorized_run_snapshot"
-    assert "不要求覆盖全部检索结果" in draft.config.prompt
+    assert draft.output_contract is None
+    assert "task-citations" not in draft.config.prompt
+    assert "task-verifier" in draft.output_requirement
+    assert "report.citation_check" not in current.required_capabilities
+    assert not any(
+        step.capability_key == "report.citation_check" for step in current.steps
+    )
 
     compiled = TaskTemplateCompiler().compile_nodes(
         current,
@@ -147,15 +150,24 @@ def test_s07_v4_adds_authorized_citation_contract_without_rewriting_history() ->
     compiled_draft = next(
         node for node in compiled.nodes if node.id == draft_node_id
     )
-    assert compiled_draft.effective_output_contract is not None
-    assert compiled_draft.effective_output_contract.validation_mode == "citations"
+    assert compiled_draft.effective_output_contract is None
+
+    historical_v4 = registry.get_template_version("s07_report_generation", "4.0.0")
+    assert historical_v4 is not None
+    historical_draft = next(
+        step
+        for step in historical_v4.steps
+        if step.step_key == "draft_report_chapters"
+    )
+    assert historical_draft.output_contract is not None
+    assert historical_draft.output_contract.validation_mode == "citations"
 
 
 def test_s02_v3_history_and_v5_lightweight_default_preserve_contracts() -> None:
     registry = TemplateRegistry()
     current = registry.get_current_template("s02_project_planning")
     assert current is not None
-    assert current.template_version == "5.0.0"
+    assert current.template_version == "5.1.0"
     assert len(current.steps) == 5
 
     v1 = registry.get_template_version("s02_project_planning", "1.0.0")

@@ -523,11 +523,6 @@ export function TaskPage() {
 			draft.source_template_id === 's02_project_planning' &&
 			['4.0.0', '4.1.0'].includes(draft.source_template_version ?? ''),
 	);
-	const isS02V5Template = Boolean(
-		draft?.workflow_mode === 'template_instance' &&
-			draft.source_template_id === 's02_project_planning' &&
-			draft.source_template_version === '5.0.0',
-	);
 	const currentRunIdRef = React.useRef(currentRunId);
 	React.useEffect(() => {
 		currentRunIdRef.current = currentRunId;
@@ -859,7 +854,7 @@ export function TaskPage() {
 				delivery_mode:
 					saved.workflow_mode === 'template_instance' &&
 					saved.source_template_id === 's02_project_planning' &&
-					saved.source_template_version === '5.0.0'
+					['5.0.0', '5.1.0'].includes(saved.source_template_version ?? '')
 						? 'lightweight_draft'
 						: saved.workflow_mode === 'template_instance' &&
 					saved.source_template_id === 's02_project_planning' &&
@@ -1050,18 +1045,6 @@ export function TaskPage() {
 								onRerun={handleRerun}
 								onRun={() => void handleRun()}
 							/>
-							{isS02V4Template && deliveryMode === 'demo_draft' && (
-								<div className="mx-5 mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-950 xl:mx-6">
-									<strong>演示草稿模式：</strong>
-									仅允许把可安全标记为待核验的来源缺口降级为警告，并在 DOCX 中加注演示水印。身份、知识库权限、证据来源身份与哈希校验仍然强制执行；此结果不是正式交付。
-								</div>
-							)}
-							{isS02V5Template && (
-								<div className="mx-5 mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-950 xl:mx-6">
-									<strong>轻量项目策划初稿：</strong>
-									继续检查当前用户授权的知识库检索、来源身份、内容哈希和 Workspace 权限；本版本不执行逐条 Claim–Evidence 审计，生成 DOCX 会标记“尚未完成正式核验”。
-								</div>
-							)}
 							<div className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-[11px] leading-5 text-blue-900 xl:mx-6">
 								<div className="min-w-0">
 									<div className="font-semibold">

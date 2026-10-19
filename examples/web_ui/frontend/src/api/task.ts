@@ -53,6 +53,12 @@ export interface TaskVerificationReport {
 	mode?: TaskDeliveryMode;
 	status?: TaskDeliveryStatus;
 	delivery_profile?: 's02_lightweight_draft' | string;
+	acceptance?: {
+		method?: 'task-verifier' | string;
+		status?: 'passed' | 'failed' | string;
+		message?: string;
+		retryable?: boolean;
+	};
 	evidence_ledger_passed?: boolean;
 	evidence_ledger_status?: 'not_performed' | 'passed' | 'failed' | string;
 	chapter_count?: number;

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Small deterministic output checks for the S02 lightweight draft template."""
+"""Legacy deterministic output check retained for the published S02 v5.0.0."""
 
 from __future__ import annotations
 
@@ -7,7 +7,11 @@ import re
 from typing import Any
 
 
-S02_LIGHTWEIGHT_TEMPLATE_VERSION = "5.0.0"
+S02_LIGHTWEIGHT_TEMPLATE_VERSION = "5.1.0"
+S02_LIGHTWEIGHT_TEMPLATE_VERSIONS = frozenset(
+    {"5.0.0", S02_LIGHTWEIGHT_TEMPLATE_VERSION}
+)
+S02_LIGHTWEIGHT_LEGACY_RULE_VALIDATION_VERSION = "5.0.0"
 _MAX_MARKDOWN_BYTES = 96_000
 _CHINESE_NUMERALS = {
     "一": 1,

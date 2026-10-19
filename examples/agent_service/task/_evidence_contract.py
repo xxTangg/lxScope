@@ -93,7 +93,7 @@ TASK_CLAIM_EVIDENCE_PROMPT = """Task 通用 Claim–Evidence 输出协议（严�
 正文后只输出一个 `task-claim-evidence` JSON 区块，顶层且仅含 `claims`、`bindings`、`unverified_items`。使用紧凑单行 JSON，不缩进，不重复报告正文或手工生成来源台账。字段必须严格如下，不得添加 `section` 等额外字段：Claim 为 `claim_id`、`kind`（fact/rule/historical_case/analysis/recommendation/unverified）、`anchor`（与 claim_id 相同）、`text`、`citation_ids`、`occurrences`；Occurrence 为 `occurrence_id`、`text`、`citation_ids`；Binding 为 `claim_id`、`occurrence_id`、`citation_id`、本次 TaskRun 授权快照中的 `evidence_id`、连续逐字 `quote`；Unverified 为 `unverified_id`、`claim_id`、`occurrence_id`、`status`（pending_verification/pending_supplement/pending_confirmation）、`reason`、`expected_evidence_types`。每个 occurrence/citation 组合各有一个 binding；claim.citation_ids 必须等于其 occurrences.citation_ids 的并集。事实、规则和历史案例没有来源时必须声明为 unverified；纯分析或建议可在明确标注且不冒充来源事实时使用空 citation_ids。每个独立待核实事项都登记一个 unverified_id。
 每条 binding 必须针对它自己的 occurrence 选择来源中最短且相关的连续逐字摘录；不能把一条宽泛引用摘录复制给多个不同声明来代替独立核对。摘录应包含该声明的关键用语及其项目编号、数值等重要标识；来源中找不到相应原文时，不要引用该来源，也不得改写、拼接或补造原文。`task-citations` 是每个引用编号一条的来源索引；它不能替代逐 occurrence 的 `bindings`。
 UnverifiedRecord.status 是结构化业务状态：`pending_verification`=待核实（来源或事实尚未核实），`pending_supplement`=待补充（明确缺少资料），`pending_confirmation`=待确认（等待责任人作出确认/决定）。每个状态都仍是未解决状态，不代表核验通过；历史记录省略 status 时服务端按 `pending_verification` 兼容读取。服务端以 UnverifiedRecord 和 Claim kind 判断是否未解决，不以正文关键词判断事实是否已核实。
-若节点原有协议要求输出 `task-citations`，必须按该协议提供；缺失时 Task 服务只会在完整绑定无歧义的条件下生成候选索引，不会验证或放宽来源。服务随后仍会独立校验 Run 内 evidence_id、授权主体、来源状态、内容哈希、引用编号和逐字原文；任一字段缺失、歧义或无效都会失败关闭。不要声称服务端核验结论。语义支持不由此协议自动证明，仍需人工复核。"""
+若节点原有协议要求输出 `task-citations`，必须按该协议提供。Task 通用 task-verifier 会结合本次运行的实际输入、前序结果和授权检索内容评估引用及来源说明；模型生成的编号、摘录和通过声明不构成服务端核验结果。知识库访问范围仍由 Task 检索边界强制执行。语义支持仍需人工复核。"""
 
 
 TASK_CLAIM_EVIDENCE_REPAIR_PROMPT = """Task Claim–Evidence 协议修复专用响应：

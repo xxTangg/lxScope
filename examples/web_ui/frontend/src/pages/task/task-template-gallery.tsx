@@ -90,8 +90,8 @@ export function TaskTemplateGallery({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="!flex !h-[min(88vh,900px)] !w-[min(1180px,calc(100%-2rem))] !max-w-[1180px] !grid-rows-[auto_minmax(0,1fr)] gap-3 p-5">
-				<DialogHeader className="pr-8">
+			<DialogContent className="!grid !h-[min(88vh,900px)] !w-[min(1180px,calc(100%-2rem))] !max-w-[1180px] !grid-cols-1 !grid-rows-[auto_minmax(0,1fr)] gap-3 p-5">
+				<DialogHeader className="min-w-0 pr-8">
 					<div className="flex flex-wrap items-center justify-between gap-3">
 						<div>
 							<DialogTitle className="flex items-center gap-2 text-lg">
@@ -119,7 +119,7 @@ export function TaskTemplateGallery({
 					</div>
 				</DialogHeader>
 
-				<div className="grid min-h-0 gap-4 overflow-hidden lg:grid-cols-[minmax(310px,0.78fr)_minmax(0,1.22fr)]">
+				<div className="grid min-h-0 min-w-0 grid-cols-1 grid-rows-[minmax(180px,0.72fr)_minmax(220px,1.28fr)] gap-4 overflow-hidden lg:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] lg:grid-rows-1">
 					<section className="min-h-0 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/60 p-3">
 						<div className="mb-3 flex items-center justify-between px-1">
 							<div className="text-xs font-semibold text-slate-800">九个预置场景</div>

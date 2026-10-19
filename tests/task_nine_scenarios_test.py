@@ -233,12 +233,12 @@ def test_all_scenarios_create_private_tasks_and_fail_preflight_closed() -> None:
 
             current_versions = {
                 "s01_project_init": "2.0.0",
-            "s02_project_planning": "5.0.0",
+                "s02_project_planning": "5.1.0",
                 "s03_expert_matching": "3.0.0",
                 "s04_meeting_preparation": "3.0.0",
                 "s05_meeting_minutes": "3.0.0",
                 "s06_opinion_processing": "3.0.0",
-                "s07_report_generation": "4.0.0",
+                "s07_report_generation": "5.0.0",
                 "s08_archive_transfer": "3.0.0",
                 "s09_expense_settlement": "3.0.0",
             }

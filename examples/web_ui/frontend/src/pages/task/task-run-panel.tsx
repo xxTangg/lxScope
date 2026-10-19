@@ -35,8 +35,6 @@ import type {
 	TaskDeliveryStatus,
 	TaskErrorCategory,
 	TaskErrorDetail,
-	TaskSourceLedgerEntry,
-	TaskVerificationReport,
 } from '@/api/task';
 import { Markdown } from '@/components/markdown';
 import { Badge } from '@/components/ui/badge';
@@ -639,7 +637,7 @@ function ArtifactList({
 									{deliveryStatusLabel(
 										artifact.delivery_status,
 										run.source_template_id === 's02_project_planning' &&
-											run.source_template_version === '5.0.0',
+											['5.0.0', '5.1.0'].includes(run.source_template_version ?? ''),
 									)}
 								</Badge>
 							)}
@@ -685,168 +683,6 @@ function deliveryStatusLabel(
 		return '项目策划初稿 · 尚未正式核验';
 	}
 	return status === 'draft_unverified' ? '演示草稿 · 待核验' : '严格校验通过';
-}
-
-function SourceLedger({ entries }: { entries: TaskSourceLedgerEntry[] }) {
-	if (!entries.length) {
-		return <p className="mt-2 text-[10px] text-slate-600">本次运行没有可展示的来源台账条目。</p>;
-	}
-	return (
-		<div className="mt-2 space-y-1.5">
-			{entries.map((entry, index) => (
-				<details
-					key={`${entry.claim_id ?? entry.unverified_id ?? 'source'}:${entry.citation_id ?? index}:${index}`}
-					className="rounded-lg border border-slate-200 bg-white px-2.5 py-2"
-				>
-					<summary className="cursor-pointer break-words text-[10px] font-medium text-slate-800 [overflow-wrap:anywhere]">
-						<span className="mr-1 text-slate-500">
-							{entry.status === 'verified' ? '✓' : '•'}
-						</span>
-						{entry.citation_id ?? entry.unverified_id ?? entry.claim_id ?? '来源记录'}
-						{entry.status ? ` · ${entry.status}` : ''}
-						{entry.source ? ` · ${entry.source}` : ''}
-					</summary>
-					<div className="mt-2 space-y-1 break-words text-[10px] leading-4 text-slate-600 [overflow-wrap:anywhere]">
-						{entry.claim && <p><strong>对应内容：</strong>{entry.claim}</p>}
-						{entry.status_detail && <p><strong>状态说明：</strong>{entry.status_detail}</p>}
-						{entry.knowledge_base_name && <p><strong>知识库：</strong>{entry.knowledge_base_name}</p>}
-						{entry.document_id && <p><strong>文档 ID：</strong>{entry.document_id}</p>}
-						{entry.chunk_index != null && <p><strong>分块：</strong>{entry.chunk_index}</p>}
-						{entry.evidence_id && <p><strong>Evidence ID：</strong>{entry.evidence_id}</p>}
-						{entry.quote && <p><strong>原文摘录：</strong>{entry.quote}</p>}
-					</div>
-				</details>
-			))}
-		</div>
-	);
-}
-
-function S02DeliverySummary({ run }: { run: TaskRunRecord }) {
-	const lightweight =
-		run.workflow_mode === 'template_instance' &&
-		run.source_template_id === 's02_project_planning' &&
-		run.source_template_version === '5.0.0';
-	if (
-		run.source_template_id !== 's02_project_planning' ||
-		(!lightweight && !['4.0.0', '4.1.0'].includes(run.source_template_version ?? ''))
-	) return null;
-	const report: TaskVerificationReport = run.verification_report ?? {};
-	const demo = run.delivery_mode === 'demo_draft';
-	const lightweightMode = lightweight || run.delivery_mode === 'lightweight_draft';
-	const succeeded = run.status === 'succeeded';
-	const failed = run.status === 'failed' || run.status === 'timed_out';
-	const verified = !lightweightMode && succeeded && run.delivery_status === 'strict_verified' && report.evidence_ledger_passed === true;
-	const draft = succeeded && run.delivery_status === 'draft_unverified';
-	const tone = draft
-		? 'border-amber-300 bg-amber-50 text-amber-950'
-		: verified
-			? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-			: failed
-				? 'border-red-200 bg-red-50 text-red-900'
-				: 'border-blue-200 bg-blue-50 text-blue-900';
-	const summary = draft && lightweightMode
-		? '项目策划初稿已生成 · 尚未完成正式核验'
-		: draft
-			? '演示草稿已生成 · 未完成完整证据核验'
-		: verified
-			? '严格模式校验已通过 · 语义支持仍需人工复核'
-			: failed
-				? '交付校验或文件生成失败 · 未形成成功交付'
-				: lightweightMode
-					? '轻量项目策划初稿模式 · 正在检查授权检索与输出结构'
-					: demo
-					? '演示草稿模式 · 正在执行来源和权限校验'
-					: '严格证据校验模式 · 正在执行';
-	return (
-		<section className={`rounded-xl border p-3 ${tone}`} aria-live="polite">
-			<div className="flex flex-wrap items-center justify-between gap-2">
-				<div className="text-xs font-semibold">{summary}</div>
-				<Badge variant="outline" className="border-current bg-white/70 text-[9px]">
-					{lightweightMode ? 'lightweight_draft' : demo ? 'demo_draft' : 'strict_verified'}
-				</Badge>
-			</div>
-			{failed && run.error && (
-				<p className="mt-1 break-words text-[10px] leading-4 [overflow-wrap:anywhere]">{run.error}</p>
-			)}
-			{verified && (
-				<p className="mt-1 text-[10px] leading-4">
-					来源身份、授权范围、哈希与原文摘录校验通过；语义是否充分支持业务结论仍需人工复核。
-				</p>
-			)}
-			{draft && lightweightMode && (
-				<p className="mt-1 text-[10px] leading-4">
-					DOCX 已标记“项目策划初稿 · 尚未完成正式核验”。本版本不执行逐条 Claim–Evidence 审计，不代表事实或语义已核实。
-				</p>
-			)}
-			{draft && !lightweightMode && (
-				<p className="mt-1 text-[10px] leading-4">
-					文件带有 DEMO/SYNTHETIC 水印。身份、权限、来源身份和哈希错误不会降级；请复核下列警告与证据台账。
-				</p>
-			)}
-			{report.chapter_count != null && (
-				<div className="mt-2 text-[10px] font-medium">
-					已生成章节：{report.completed_chapters?.join('、') || `${report.chapter_count} 章`}
-				</div>
-			)}
-			{lightweightMode && report.retrieval && (
-				<div className="mt-2 rounded-lg border border-amber-200 bg-white/70 p-2 text-[10px] leading-4">
-					<div className="font-semibold">
-						知识库检索状态：{retrievalStatusLabel(report.retrieval.status)} · 返回 {report.retrieval.matched_source_count ?? 0} 个来源记录
-					</div>
-					<div>
-						来源身份、当前 Run 知识库范围与可验证哈希：
-						{report.retrieval.source_integrity?.evidence_count
-							? report.retrieval.source_integrity.status === 'passed'
-								? '已检查'
-								: '未通过检查'
-							: '没有来源记录可检查'}
-					</div>
-					<div>
-						策划模板：{retrievalStatusLabel(report.retrieval.template_status)} · 项目资料：{retrievalStatusLabel(report.retrieval.project_material_status)}
-					</div>
-					<div>逐条 Claim–Evidence 审计：未执行；检索命中不等于报告事实已核验。</div>
-					{report.retrieval.sources?.length ? (
-						<ul className="mt-1 list-disc space-y-0.5 pl-4 text-slate-700">
-							{report.retrieval.sources.map((source, index) => (
-								<li key={`${source.document_id ?? source.source ?? 'source'}:${source.chunk_index ?? index}`} className="break-words [overflow-wrap:anywhere]">
-									{source.source ?? source.document_id ?? '授权来源'}
-									{source.knowledge_base_name ? ` · ${source.knowledge_base_name}` : ''}
-									{source.chunk_index != null ? ` · 分块 ${source.chunk_index}` : ''}
-								</li>
-							))}
-						</ul>
-					) : (
-						<div className="mt-1">没有可展示的授权检索来源；报告须保留待核实事项。</div>
-					)}
-				</div>
-			)}
-			{Boolean(report.warnings?.length) && (
-				<div className="mt-2 rounded-lg border border-amber-300/80 bg-white/70 p-2">
-					<div className="text-[10px] font-semibold">需要关注的警告（{report.warnings?.length}）</div>
-					<ul className="mt-1 list-disc space-y-1 pl-4 text-[10px] leading-4">
-						{report.warnings?.map((warning, index) => (
-							<li key={`${warning.warning_code ?? 'warning'}:${index}`} className="break-words [overflow-wrap:anywhere]">
-								{warning.message}
-							</li>
-						))}
-					</ul>
-				</div>
-				)}
-			{report.human_review_required && (
-				<div className="mt-2 text-[10px] font-medium">
-					{report.source_ledger?.length ? '来源与待核验事项台账' : '语义支持需人工复核'}
-				</div>
-			)}
-			{report.source_ledger && <SourceLedger entries={report.source_ledger} />}
-		</section>
-	);
-}
-
-function retrievalStatusLabel(status?: string): string {
-	if (status === 'ready') return '已返回资料';
-	if (status === 'candidates_for_review') return '候选资料待人工检查';
-	if (status === 'not_found') return '未检索到匹配资料';
-	return '状态待确认';
 }
 
 export function TaskRunPanel({
@@ -999,7 +835,6 @@ export function TaskRunPanel({
 			</div>
 
 			<div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-				{run && <S02DeliverySummary run={run} />}
 				{run?.status === 'awaiting_input' && run.pending_input && (
 					<TaskInputForm
 						key={run.pending_input.id}

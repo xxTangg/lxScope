@@ -493,7 +493,7 @@ class TaskTemplateCompiler:
                         if previous_result_available:
                             continue
                         issues.append(
-                            f"steps[{index}].config: previous_result 需要上一步声明并通过 JSON Schema 校验的输出契约。"
+                            f"steps[{index}].config: previous_result 需要上一步声明输出契约并通过 Task AI verifier 验收。"
                         )
                         continue
                     answer_match = _ANSWER_VARIABLE_PATTERN.fullmatch(variable)

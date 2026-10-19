@@ -68,42 +68,16 @@ from ._planner import PreviewTaskPlanner, TaskPlanner
 from ._plan_validation import format_plan_issues, validate_task_plan
 from ._store import TaskStoreProtocol
 from ._knowledge import TaskKnowledgeError, TaskKnowledgeGateway
-from ._citation_verifier import TASK_CITATION_PROMPT, verify_task_citations
+from ._citation_verifier import TASK_CITATION_PROMPT
 from ._evidence_contract import (
     TASK_CLAIM_EVIDENCE_PROMPT,
-    TASK_CLAIM_EVIDENCE_REPAIR_PROMPT,
-    TASK_CLAIM_EVIDENCE_REPAIR_LOCKED_CITATIONS_PROMPT,
-    claim_evidence_failure_is_retryable,
-    claim_evidence_protocol_envelope_failure_is_retryable,
-    claim_evidence_protocol_repair_body_matches,
-    compare_claim_evidence_inventories,
-    diagnose_task_claim_evidence_protocol_materialization,
     _evidence_records,
-    extract_claim_evidence_inventory,
-    extract_claim_evidence_protocol_repair_inventory,
-    extract_locked_claim_evidence_content_conflicts,
-    materialize_locked_claim_evidence_content_repair,
-    materialize_task_citations_from_bindings,
-    materialize_task_claim_evidence_protocol_repair,
-    wrap_claim_evidence_repair_payload_for_validation,
     normalize_evidence_snapshot,
-    normalize_task_protocol_format,
-    validate_claim_evidence_document,
 )
-from ._s02_project_planning_evidence import (
-    materialize_s02_project_planning_ledger,
-)
-from ._s02_structured_output import (
-    S02_STRUCTURED_OUTPUT_TEMPLATE_VERSIONS,
-    assemble_s02_v3_output,
-    assemble_s02_v4_output,
-    assemble_s02_v4_1_output,
-)
+from ._s02_structured_output import S02_STRUCTURED_OUTPUT_TEMPLATE_VERSIONS
 from ._s02_lightweight_output import (
-    S02_LIGHTWEIGHT_TEMPLATE_VERSION,
-    validate_s02_lightweight_markdown,
+    S02_LIGHTWEIGHT_TEMPLATE_VERSIONS,
 )
-from ._output_validation import validate_structured_result
 from ._errors import classify_node_error
 from ._capability_contracts import (
     capability_business_verified,
@@ -112,7 +86,6 @@ from ._capability_contracts import (
     capability_external_side_effect,
     is_task_artifact_capability,
     is_task_native_capability,
-    validate_capability_output,
     validate_contract_tool_schema,
 )
 from ._sop import TaskSOPStep, TaskStepState
@@ -389,13 +362,11 @@ def _retrieval_result_for_run(
 
 
 def _is_s02_lightweight_run(run: TaskRunRecord) -> bool:
-    """Identify only the immutable S02 v5 template execution contract."""
+    """Identify S02 v5 tasks, including user-owned copies of those templates."""
 
     return bool(
-        getattr(run, "workflow_mode", None)
-        is TaskWorkflowMode.TEMPLATE_INSTANCE
-        and run.source_template_id == "s02_project_planning"
-        and run.source_template_version == S02_LIGHTWEIGHT_TEMPLATE_VERSION
+        run.source_template_id == "s02_project_planning"
+        and run.source_template_version in S02_LIGHTWEIGHT_TEMPLATE_VERSIONS
     )
 
 
@@ -579,7 +550,7 @@ _S02_FINAL_OUTPUT_PROMPT = """\
 最终输出请整理成一份紧凑、完整、供人工编辑的策划报告：八章正文各写一次，
 把大纲要求合并到对应章节；不要分别重印完整大纲、完整初稿、摘要、人工引用表
 或重复的待核实清单。保留必要的项目事实、模板规则、建议和待核实事项，只删重复表达。
-Task 服务端会从协议区块生成来源证据台账和引用索引。
+Task 通用 task-verifier 会结合本节点验收标准与本次运行的授权检索结果评估报告。
 每个独立事实或规则使用独立 Claim；每个正文段落或表格行最多一个 occurrence。
 锚点必须内联在它标记的正文同一物理行末尾，不得另起一行，也不得在同一段落后连续放多个锚点。
 例如：`项目编号为 DEMO-001 [C1]。<!-- task-claim:CL-01:O-01-1 -->`。
@@ -596,50 +567,12 @@ Task 服务端会从协议区块生成来源证据台账和引用索引。
 Claim–Evidence 区块使用紧凑、合法的 JSON，不缩进或重复正文；不要手工重复生成来源台账。
 每个 binding 的 quote 必须是本次运行授权证据中的连续逐字原文；
 不得编造 evidence_id、来源、哈希、摘录或校验结论。
-`task-citations` 可以按上方格式随协议输出；如缺失，Task 服务只会在 Claim–Evidence 区块完整且
-绑定无歧义时从绑定生成候选索引，该索引仍须通过本次 Run 的来源、权限、哈希和原文校验。
+`task-citations` 必须按上方格式随协议输出，并由 task-verifier 对照本次运行实际提供的来源评估；
+不能把模型生成的引用编号或摘录当成已完成服务端校验。
 正文后必须有一个完整的 `task-claim-evidence` 区块，JSON 与围栏必须闭合。
 不要在正文声称服务端校验通过、文件已生成或审批已通过。
-结构和来源由服务端确定性校验；语义支持仍需人工复核。
+知识库访问边界仍由 Task 服务强制执行；引用语义支持仍需人工复核。
 """
-
-
-_S02_TARGETED_CONTENT_REPAIR_PROMPT = """\
-Task 对 S02 v2 最终输出仅授权一次局部内容修订：
-只处理反馈中点名的一个 occurrence。将其中有授权来源支持的陈述与待核实事项
-拆成相邻的独立正文段落/表格行：原 occurrence 保留原有引用编号并改为有来源支持的
-Claim；新增一个独立 Claim 承载待核实内容，不带任何引用编号，并沿用反馈中的
-unverified_id、reason 和 expected_evidence_types。不得删除待核实内容。
-每个锚点必须内联在它对应的正文同一物理行末尾；每段/表格行只允许一个锚点。
-除目标行和紧邻新增行外，报告正文必须逐行原样保留；其他 Claim 类型、occurrence、
-待核实登记、引用编号和引用来源不得改变。目标行原有文字必须全部保留，不得补写新事实。
-输出完整报告正文，随后只输出一个紧凑 JSON `task-claim-evidence` 区块，顶层且仅含
-`claims` 与 `unverified_items`；claims 每项仅含 claim_id/kind，覆盖正文全部锚点；
-不输出 bindings、citations 或 `task-citations`。Task 服务会使用本次运行锁定的引用
-声明生成完整协议，并继续执行所有原有来源身份、权限、哈希、逐字原文和场景校验。
-无法严格遵守时原样返回失败，不要声称校验通过。
-"""
-
-
-def _task_protocol_materialization_notice(metadata: dict[str, Any]) -> str:
-    repair = metadata.get("task_protocol_repair")
-    if (
-        not isinstance(repair, dict)
-        or repair.get("materialization_passed") is not False
-    ):
-        return ""
-    diagnostics = repair.get("materialization_diagnostics")
-    messages = [
-        str(item["message"])
-        for item in diagnostics
-        if isinstance(item, dict) and item.get("message")
-    ] if isinstance(diagnostics, list) else []
-    if not messages:
-        return "协议修复无法安全物化，来源与引用校验尚未开始。"
-    return (
-        "协议修复无法安全物化，来源与引用校验尚未开始："
-        + "；".join(messages)
-    )
 
 
 def _claim_evidence_policy_prompt(run: TaskRunRecord) -> str:
@@ -692,6 +625,16 @@ def _with_citation_prompt(run: TaskRunRecord, node: TaskNode) -> TaskNode:
         and node.id == run.nodes[-1].id
     )
     is_s02_lightweight_output = _is_s02_lightweight_run(run)
+    has_explicit_citation_protocol = any(
+        item.capability_key
+        in {"document.citation_verify", "report.citation_check"}
+        or (
+            item.effective_output_contract is not None
+            and item.effective_output_contract.validation_mode
+            in {"citations", "claim_evidence"}
+        )
+        for item in run.nodes
+    )
     is_s07_v3_final_output = bool(
         run.source_template_id == "s07_report_generation"
         and run.source_template_version == "3.0.0"
@@ -715,6 +658,7 @@ def _with_citation_prompt(run: TaskRunRecord, node: TaskNode) -> TaskNode:
         and not requires_claim_evidence
         and not is_s02_v3_final_output
         and not is_s02_lightweight_output
+        and has_explicit_citation_protocol
     ):
         prompt += f"\n\n{TASK_CITATION_PROMPT}"
     if requires_claim_evidence:
@@ -1772,7 +1716,8 @@ class TaskService:
                 business_data_verified=False,
                 status="available",
                 message=(
-                    "Task 内确定性适配可用；仅处理本次 Task 明确提交的数据，"
+                    "Task 内数据处理适配可用；步骤结果由通用 Task AI verifier "
+                    "按节点验收标准评估。适配器仅处理本次 Task 提交的数据，"
                     "不表示已连接或验证对应外部业务系统。"
                 ),
             )
@@ -1796,9 +1741,10 @@ class TaskService:
                 business_data_verified=False,
                 status="available",
                 message=(
-                    "Task 内确定性引用校验器可用；运行时只检查本次 TaskRun "
-                    "前序授权检索节点保存的 Evidence 快照，不会重新检索或接受"
-                    "用户声明的来源。语义支持仍需人工复核。"
+                    "运行时将把本次 TaskRun 前序授权检索节点保存的 Evidence "
+                    "快照提供给通用 Task AI verifier 评估；不会重新检索或接受"
+                    "用户声明的来源。知识库访问范围仍由 Task 强制执行，语义支持"
+                    "仍需人工复核。"
                 ),
             )
         try:
@@ -1878,8 +1824,8 @@ class TaskService:
             )
         else:
             evidence_note = (
-                "；确定性校验器可用，但只核验编号、来源身份和逐字摘录，"
-                "不自动判定语义支持"
+                "；步骤输出由通用 Task AI verifier 结合本次授权检索结果评估，"
+                "引用语义支持仍需人工复核"
             )
         return TaskCapabilityCheck(
             **base,
@@ -2071,7 +2017,8 @@ class TaskService:
         is_s02_v5_task = bool(
             task.workflow_mode == TaskWorkflowMode.TEMPLATE_INSTANCE
             and task.source_template_id == "s02_project_planning"
-            and task.source_template_version == S02_LIGHTWEIGHT_TEMPLATE_VERSION
+            and task.source_template_version
+            in S02_LIGHTWEIGHT_TEMPLATE_VERSIONS
         )
         if body.delivery_mode == "demo_draft" and not (
             is_s02_v4_task
@@ -2102,7 +2049,7 @@ class TaskService:
                         TaskValidationIssue(
                             path="delivery_mode",
                             message=(
-                                "lightweight_draft 仅适用于标准 S02 v5.0.0 模板 Task。"
+                                "lightweight_draft 仅适用于标准 S02 v5.x 轻量模板 Task。"
                             ),
                         )
                     ],
@@ -2577,133 +2524,42 @@ class TaskService:
             run = await self._store.get_run(run.user_id, run.id) or run
             delivery_status: str | None = None
             verification_report: dict[str, Any] | None = None
-            if (
-                run.source_template_id == "s02_project_planning"
-                and run.source_template_version in {"4.0.0", "4.1.0"}
-            ):
+            if run.source_template_id == "s02_project_planning":
                 final_node = run.node_runs[-1] if run.node_runs else None
                 metadata = final_node.metadata if final_node is not None else {}
-                adapter_result = metadata.get("s02_v4_delivery")
-                report = (
-                    adapter_result.get("delivery_report")
-                    if isinstance(adapter_result, dict)
-                    else None
-                )
-                ledger_status = metadata.get("evidence_ledger")
+                ai_verification = metadata.get("task_ai_verification")
                 if (
-                    not isinstance(report, dict)
-                    or not isinstance(adapter_result, dict)
-                    or adapter_result.get("passed") is not True
-                    or not isinstance(ledger_status, dict)
-                    or ledger_status.get("passed") is not True
+                    not isinstance(ai_verification, dict)
+                    or ai_verification.get("method") != "task-verifier"
+                    or ai_verification.get("passed") is not True
                 ):
                     raise RuntimeError(
-                        "S02 v4 交付状态缺少已完成的服务端证据台账校验。"
-                    )
-                delivery_status = (
-                    "draft_unverified"
-                    if run.delivery_mode == "demo_draft"
-                    else "strict_verified"
-                )
-                ledger = ledger_status.get("ledger", [])
-                source_ledger = [
-                    {
-                        field: item.get(field)
-                        for field in (
-                            "section",
-                            "claim",
-                            "claim_id",
-                            "unverified_id",
-                            "citation_id",
-                            "evidence_id",
-                            "knowledge_base_name",
-                            "document_id",
-                            "chunk_index",
-                            "evidence_type",
-                            "source",
-                            "quote",
-                            "status",
-                            "status_detail",
-                        )
-                        if field in item
-                    }
-                    for item in ledger
-                    if isinstance(item, dict)
-                ] if isinstance(ledger, list) else []
-                report = {
-                    **report,
-                    "chapter_count": report.get("chapter_count", 8),
-                    "completed_chapters": report.get(
-                        "completed_chapters",
-                        [f"第{number}章" for number in range(1, 9)],
-                    ),
-                    "source_ledger": source_ledger,
-                    "adapter_passed": adapter_result.get("passed") is True,
-                    "claim_count": adapter_result.get("claim_count", 0),
-                    "occurrence_count": adapter_result.get("occurrence_count", 0),
-                    "binding_count": adapter_result.get("binding_count", 0),
-                    "citation_count": adapter_result.get("citation_count", 0),
-                    "unverified_count": adapter_result.get("unverified_count", 0),
-                    "mode": run.delivery_mode,
-                    "status": delivery_status,
-                    "evidence_ledger_passed": True,
-                    "warnings": list(report.get("warnings", [])),
-                    "semantic_support": "requires_human_review",
-                    "human_review_required": True,
-                }
-                verification_report = report
-            elif _is_s02_lightweight_run(run):
-                final_node = run.node_runs[-1] if run.node_runs else None
-                metadata = final_node.metadata if final_node is not None else {}
-                output_validation = metadata.get(
-                    "s02_lightweight_output_validation"
-                )
-                retrieval_report = metadata.get("s02_lightweight_retrieval")
-                source_validation = metadata.get(
-                    "s02_lightweight_source_validation"
-                )
-                delivery = metadata.get("s02_lightweight_delivery")
-                if (
-                    not isinstance(output_validation, dict)
-                    or output_validation.get("passed") is not True
-                    or not isinstance(retrieval_report, dict)
-                    or not isinstance(source_validation, dict)
-                    or source_validation.get("passed") is not True
-                    or not isinstance(delivery, dict)
-                    or delivery.get("passed") is not True
-                ):
-                    raise RuntimeError(
-                        "S02 v5 轻量草稿缺少有效的输出结构或授权检索记录。"
+                        "S02 缺少本次 TaskRun 的通用 AI 验收记录。"
                     )
                 delivery_status = "draft_unverified"
                 verification_report = {
-                    "delivery_profile": "s02_lightweight_draft",
-                    "mode": "lightweight_draft",
+                    "delivery_profile": "ai_verified_draft",
+                    "mode": run.delivery_mode,
                     "status": delivery_status,
-                    "chapter_count": output_validation.get(
-                        "chapter_count", 0
-                    ),
-                    "completed_chapters": output_validation.get(
-                        "completed_chapters", []
-                    ),
-                    "lightweight_output_validation": {
+                    "acceptance": {
+                        "method": "task-verifier",
                         "status": "passed",
-                        "pending_marker_present": output_validation.get(
-                            "pending_marker_present"
-                        ) is True,
-                        "issues": [],
+                        "message": ai_verification.get("message", ""),
+                        "retryable": ai_verification.get("retryable"),
                     },
-                    "retrieval": retrieval_report,
-                    "source_integrity": source_validation,
+                    "retrieval": metadata.get("s02_lightweight_retrieval"),
+                    "source_integrity": metadata.get(
+                        "s02_lightweight_source_validation"
+                    ),
                     "evidence_ledger_status": "not_performed",
                     "semantic_support": "requires_human_review",
                     "human_review_required": True,
                     "warnings": [
                         {
-                            "warning_code": "TASK_S02_EVIDENCE_LEDGER_NOT_PERFORMED",
+                            "warning_code": "TASK_EVIDENCE_LEDGER_NOT_PERFORMED",
                             "message": (
-                                "轻量版仅检查报告结构和本次授权检索记录；"
-                                "未执行逐条 Claim–Evidence 审计，内容需人工复核。"
+                                "业务内容由通用 Task task-verifier 按步骤验收标准评估；"
+                                "未执行逐条 Claim–Evidence 台账核验，来源语义仍需人工复核。"
                             ),
                             "disposition": "manual_review_required",
                         }
@@ -2742,14 +2598,8 @@ class TaskService:
                 if any(
                     node.capability_key == "document.citation_verify"
                     for node in run.nodes
-                ) or (
-                    run.source_template_id == "s02_project_planning"
-                    and (
-                        run.source_template_version in {"4.0.0", "4.1.0"}
-                        or _is_s02_lightweight_run(run)
-                    )
-                ):
-                    # Do not reshape verified content with a second model call.
+                ) or _is_s02_lightweight_run(run):
+                    # Keep markdown documents intact after AI step verification.
                     artifact_spec = spec_from_markdown(previous_output)
                 else:
                     artifact_spec = await self._build_artifact_spec(
@@ -2763,8 +2613,8 @@ class TaskService:
                     default_stem=f"task-{run.id}",
                     spec=artifact_spec,
                     draft_label=(
-                        "项目策划初稿 · 尚未完成正式核验"
-                        if _is_s02_lightweight_run(run)
+                        "项目策划初稿 · 已通过 Task AI 验收 · 来源事实仍需人工复核"
+                        if run.source_template_id == "s02_project_planning"
                         else (
                             "DEMO/SYNTHETIC · 演示草稿 · 未完成完整证据核验"
                             if delivery_status == "draft_unverified"
@@ -3109,13 +2959,17 @@ class TaskService:
                 and definition.effective_output_contract is not None
                 and definition.effective_output_contract.downstream_binding
                 == "validated_result"
-                and node.metadata.get("output_contract_validation", {}).get(
-                    "status"
+                and isinstance(
+                    node.metadata.get("task_ai_verification"), dict
                 )
-                == "passed"
-                and node.result is not None
+                and node.metadata["task_ai_verification"].get("method")
+                == "task-verifier"
+                and node.metadata["task_ai_verification"].get("passed")
+                is True
             ):
-                item["structured_result"] = node.result
+                item["ai_verified_result"] = _task_output_value(
+                    node.output
+                )
             history.append(item)
         return history
 
@@ -3125,79 +2979,11 @@ class TaskService:
         async def execute(
             node: TaskNode, state: TaskStepState
         ) -> StepExecutionResult:
-            retry_policy = state.metadata.get(
-                "claim_evidence_retry_policy", {}
-            )
-            retry_inventory = (
-                retry_policy.get("inventory")
-                if isinstance(retry_policy, dict)
-                and retry_policy.get("retryable") is True
-                else None
-            )
-            protocol_repair = (
-                retry_inventory.get("protocol_repair")
-                if isinstance(retry_inventory, dict)
-                else None
-            )
-            targeted_content_repair = (
-                retry_inventory.get("s02_targeted_content_repair")
-                if isinstance(retry_inventory, dict)
-                else None
-            )
             verification_feedback = (
                 state.verifications[-1].message
                 if state.verifications
                 else ""
             )
-            if (
-                isinstance(protocol_repair, dict)
-                and isinstance(protocol_repair.get("body"), str)
-            ):
-                if "locked_citations" in protocol_repair:
-                    repair_scope = (
-                        "只补齐 Claim/Occurrence 与待核实元数据；已有的完整"
-                        " task-citations JSON 区块由服务端锁定并按协议放到末尾，"
-                        "不得重写或生成新的 citations。不得重写、删减或增补正文，"
-                        "不得推断或伪造 Claim 类型、待核实事项、来源或原文摘录。"
-                    )
-                else:
-                    repair_scope = (
-                        "只补齐一个合法的 task-claim-evidence JSON 区块及必要的"
-                        " task-citations 区块；不得重写、删减或增补正文，不得推断或"
-                        "伪造 Claim 类型、待核实事项、来源或原文摘录。"
-                    )
-                verification_feedback += (
-                    "\n\nTask 仅允许进行一次协议包络修复。必须原样保留下方报告正文，"
-                    + repair_scope
-                    + "生成结果仍会经过本次 TaskRun 的完整来源、权限、哈希、引用和 "
-                    "Claim 校验。\n原正文 SHA-256："
-                    + str(protocol_repair.get("body_sha256", ""))
-                    + "\n<task-preserved-body>\n"
-                    + protocol_repair["body"]
-                    + "\n</task-preserved-body>"
-                )
-            if (
-                isinstance(targeted_content_repair, dict)
-                and isinstance(
-                    targeted_content_repair.get("protocol_repair"), dict
-                )
-            ):
-                locked = targeted_content_repair["protocol_repair"]
-                verification_feedback += (
-                    "\n\nTask 仅允许按反馈修订一个被点名的 S02 v2 内容冲突。"
-                    "以下是原始报告正文；除目标 occurrence 行外必须逐行保留。"
-                    "正文 SHA-256："
-                    + str(locked.get("body_sha256", ""))
-                    + "\n目标冲突："
-                    + json.dumps(
-                        targeted_content_repair.get("conflict", {}),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    + "\n原正文如下：\n<task-preserved-body>\n"
-                    + str(locked.get("body", ""))
-                    + "\n</task-preserved-body>"
-                )
             current = await self._store.get_run(run.user_id, run.id)
             if current is None or current.status is RunStatus.CANCELED:
                 raise asyncio.CancelledError
@@ -3215,17 +3001,22 @@ class TaskService:
                 previous_contract = (
                     previous_definition.effective_output_contract
                 )
-                previous_validation = previous_record.metadata.get(
-                    "output_contract_validation", {}
+                previous_verification = previous_record.metadata.get(
+                    "task_ai_verification", {}
                 )
                 if (
                     previous_record.status is NodeRunStatus.SUCCEEDED
                     and previous_contract is not None
                     and previous_contract.downstream_binding
                     == "validated_result"
-                    and previous_validation.get("status") == "passed"
+                    and isinstance(previous_verification, dict)
+                    and previous_verification.get("method")
+                    == "task-verifier"
+                    and previous_verification.get("passed") is True
                 ):
-                    previous_result = previous_record.result
+                    previous_result = _task_output_value(
+                        previous_record.output
+                    )
             answers = [
                 TaskInputReply.model_validate(answer)
                 for step in (current.sop_state or {}).get("steps", [])
@@ -3428,12 +3219,12 @@ class TaskService:
                     "document.citation_verify",
                     "report.citation_check",
                 }:
-                    result = _retrieval_result_for_run(
+                    evidence_result = _retrieval_result_for_run(
                         run,
                         current,
                         node.order,
                     )
-                    if result is None:
+                    if evidence_result is None:
                         detail = "引用核验节点未找到本次运行已保存的授权检索证据。"
                         return StepExecutionResult(
                             text=detail,
@@ -3447,35 +3238,50 @@ class TaskService:
                                 },
                             },
                             result={
-                                "passed": False,
-                                "issues": [detail],
-                                "verified_citations": [],
+                                "status": "authorized_evidence_missing",
+                                "message": detail,
                             },
                         )
-                    verification = verify_task_citations(
-                        previous_output,
-                        result["evidence"],
-                        authorization_subject=run.user_id,
-                    )
+                    authorized_sources = [
+                        {
+                            field: item.get(field)
+                            for field in (
+                                "evidence_id",
+                                "source_type",
+                                "source_id",
+                                "knowledge_base_id",
+                                "knowledge_base_name",
+                                "document_id",
+                                "chunk_index",
+                                "source",
+                                "content_sha256",
+                                "source_text",
+                                "evidence_type",
+                            )
+                            if field in item
+                        }
+                        for item in evidence_result.get("evidence", [])
+                        if isinstance(item, dict)
+                    ]
+                    review_input = {
+                        "status": "ready_for_ai_review",
+                        "report_to_review": previous_output,
+                        "authorized_sources": authorized_sources,
+                        "review_instruction": (
+                            "按本节点验收标准，结合本次 TaskRun 实际授权来源评估报告引用；"
+                            "不得把本结果说成服务端确定性引用核验。"
+                        ),
+                    }
                     text = json.dumps(
-                        verification,
+                        review_input,
                         ensure_ascii=False,
                         separators=(",", ":"),
                     )
                     return StepExecutionResult(
                         text=text,
-                        result=verification,
-                        metadata={"citation_verification": verification},
-                        status=(
-                            "completed"
-                            if verification["passed"]
-                            else "failed"
-                        ),
-                        reason=(
-                            None
-                            if verification["passed"]
-                            else "引用核验失败：" + "；".join(verification["issues"])
-                        ),
+                        result=review_input,
+                        metadata={"citation_review_input": review_input},
+                        status="completed",
                     )
             citation_bound_run = any(
                 item.capability_key in {
@@ -3499,41 +3305,6 @@ class TaskService:
                         update={"knowledge_context": knowledge}
                     )
             execution_node = _with_citation_prompt(run, node)
-            if (
-                isinstance(protocol_repair, dict)
-                and isinstance(protocol_repair.get("body"), str)
-                and isinstance(execution_node.config, AgentStepConfig)
-            ):
-                repair_prompt = (
-                    execution_node.config.prompt.rstrip()
-                    + "\n\n"
-                    + (
-                        TASK_CLAIM_EVIDENCE_REPAIR_LOCKED_CITATIONS_PROMPT
-                        if "locked_citations" in protocol_repair
-                        else TASK_CLAIM_EVIDENCE_REPAIR_PROMPT
-                    )
-                )
-                repair_config = execution_node.config.model_copy(
-                    update={"prompt": repair_prompt}
-                )
-                execution_node = execution_node.model_copy(
-                    update={"prompt": repair_prompt, "config": repair_config}
-                )
-            if (
-                isinstance(targeted_content_repair, dict)
-                and isinstance(execution_node.config, AgentStepConfig)
-            ):
-                repair_prompt = (
-                    execution_node.config.prompt.rstrip()
-                    + "\n\n"
-                    + _S02_TARGETED_CONTENT_REPAIR_PROMPT
-                )
-                repair_config = execution_node.config.model_copy(
-                    update={"prompt": repair_prompt}
-                )
-                execution_node = execution_node.model_copy(
-                    update={"prompt": repair_prompt, "config": repair_config}
-                )
             result = _normalize_execution_result(
                 await self._select_executor(context).execute_node(
                     node=execution_node,
@@ -3612,536 +3383,25 @@ class TaskService:
                     result.text,
                     retrieval_report,
                 )
-                validation = validate_s02_lightweight_markdown(
-                    annotated_output
-                )
                 result_metadata = dict(result.metadata or {})
-                result_metadata["s02_lightweight_output_validation"] = {
-                    **validation,
-                    "status": "passed" if validation["passed"] else "failed",
-                }
                 result_metadata["s02_lightweight_source_validation"] = (
                     source_validation
                 )
                 result_metadata["s02_lightweight_retrieval"] = retrieval_report
                 result_metadata["s02_lightweight_delivery"] = {
-                    "passed": validation["passed"],
+                    "passed": False,
                     "delivery_profile": "s02_lightweight_draft",
-                    "status": (
-                        "draft_unverified"
-                        if validation["passed"]
-                        else "failed"
-                    ),
+                    "status": "awaiting_task_verifier",
+                    "acceptance_method": "task-verifier",
                     "evidence_ledger_status": "not_performed",
                     "semantic_support": "requires_human_review",
                     "human_review_required": True,
                     "retrieval_status": retrieval_report["status"],
                 }
-                if not validation["passed"]:
-                    detail = "S02 v5 轻量草稿结构校验失败：" + "；".join(
-                        str(item) for item in validation.get("issues", [])
-                    )
-                    result_metadata["s02_lightweight_delivery"]["error"] = (
-                        detail
-                    )
-                    return StepExecutionResult(
-                        text=annotated_output,
-                        result=result.result,
-                        metadata=result_metadata,
-                        status="failed",
-                        reason=detail,
-                    )
                 result = StepExecutionResult(
                     text=annotated_output,
                     result=result.result,
                     metadata=result_metadata,
-                    status=result.status,
-                    questions=result.questions,
-                    reason=result.reason,
-                )
-            is_s02_v3_final_agent = bool(
-                result.status == "completed"
-                and node.type is StepType.AGENT
-                and run.source_template_id == "s02_project_planning"
-                and run.source_template_version
-                in S02_STRUCTURED_OUTPUT_TEMPLATE_VERSIONS
-                and run.nodes
-                and node.id == run.nodes[-1].id
-            )
-            if is_s02_v3_final_agent:
-                output_contract = node.effective_output_contract
-                if (
-                    output_contract is None
-                    or output_contract.validation_mode != "json_schema"
-                    or output_contract.json_schema is None
-                ):
-                    detail = "S02 v3 最终节点缺少 JSON Schema 输出契约。"
-                    return StepExecutionResult(
-                        text=result.text,
-                        result=result.result,
-                        metadata={
-                            **(result.metadata or {}),
-                            "s02_v3_structured_output": {
-                                "passed": False,
-                                "error_code": "TASK_S02_V3_CONTRACT_MISSING",
-                                "error": detail,
-                            },
-                        },
-                        status="failed",
-                        reason=detail,
-                    )
-                current = await self._store.get_run(run.user_id, run.id)
-                evidence_result = (
-                    _retrieval_result_for_run(run, current, node.order)
-                    if current is not None
-                    else None
-                )
-                if evidence_result is None:
-                    detail = "S02 v3 最终输出缺少本次运行的授权 Evidence 快照。"
-                    return StepExecutionResult(
-                        text=result.text,
-                        result=result.result,
-                        metadata={
-                            **(result.metadata or {}),
-                            "s02_v3_structured_output": {
-                                "passed": False,
-                                "error_code": "TASK_S02_V3_EVIDENCE_MISSING",
-                                "error": detail,
-                            },
-                        },
-                        status="failed",
-                        reason=detail,
-                    )
-                template_version = run.source_template_version or "3.0.0"
-                if template_version == "4.0.0":
-                    assembled = assemble_s02_v4_output(
-                        result.text,
-                        output_contract.json_schema,
-                        evidence_result["evidence"],
-                        authorization_subject=run.user_id,
-                        delivery_mode=run.delivery_mode,
-                    )
-                elif template_version == "4.1.0":
-                    assembled = assemble_s02_v4_1_output(
-                        result.text,
-                        output_contract.json_schema,
-                        evidence_result["evidence"],
-                        authorization_subject=run.user_id,
-                        delivery_mode=run.delivery_mode,
-                    )
-                else:
-                    assembled = assemble_s02_v3_output(
-                        result.text,
-                        output_contract.json_schema,
-                        evidence_result["evidence"],
-                        authorization_subject=run.user_id,
-                        template_version=template_version,
-                    )
-                structured_metadata_key = (
-                    "s02_v4_delivery"
-                    if template_version in {"4.0.0", "4.1.0"}
-                    else "s02_v3_structured_output"
-                )
-                if not assembled.get("passed"):
-                    detail = str(
-                        assembled.get("error")
-                        or "S02 v3 结构化结果或来源候选校验失败。"
-                    )
-                    diagnostics = assembled.get("diagnostics")
-                    if isinstance(diagnostics, list) and diagnostics:
-                        visible_details = [
-                            item.get("message")
-                            for item in diagnostics[:3]
-                            if isinstance(item, dict)
-                            and isinstance(item.get("message"), str)
-                        ]
-                        if visible_details:
-                            detail += " 诊断：" + "；".join(visible_details)
-                    return StepExecutionResult(
-                        text=result.text,
-                        result=result.result,
-                        metadata={
-                            **(result.metadata or {}),
-                            structured_metadata_key: {
-                                key: value
-                                for key, value in assembled.items()
-                                if key not in {"document", "business_result"}
-                            },
-                        },
-                        status="failed",
-                        reason=detail,
-                    )
-                result_metadata = dict(result.metadata or {})
-                result_metadata[structured_metadata_key] = {
-                    "passed": True,
-                    "status": (
-                        assembled.get("delivery_report", {}).get("status")
-                        if template_version in {"4.0.0", "4.1.0"}
-                        else "assembled"
-                    ),
-                    "mode": (
-                        run.delivery_mode
-                        if template_version in {"4.0.0", "4.1.0"}
-                        else None
-                    ),
-                    "claim_count": assembled["claim_count"],
-                    "occurrence_count": assembled["occurrence_count"],
-                    "binding_count": assembled["binding_count"],
-                    "unverified_count": assembled["unverified_count"],
-                    "citation_count": assembled["citation_count"],
-                    "semantic_support": "requires_human_review",
-                    "raw_model_output": assembled["raw_model_output"],
-                    "normalization_changes": assembled[
-                        "normalization_changes"
-                    ],
-                    **(
-                        {"delivery_report": assembled["delivery_report"]}
-                        if template_version in {"4.0.0", "4.1.0"}
-                        else {}
-                    ),
-                }
-                if template_version in {"4.0.0", "4.1.0"}:
-                    result_metadata["output_contract_validation"] = {
-                        "contract_id": output_contract.contract_id,
-                        "contract_version": output_contract.contract_version,
-                        "status": "passed",
-                        "target": (
-                            "s02_v4_1_raw_agent_json"
-                            if template_version == "4.1.0"
-                            else "s02_v4_raw_agent_json"
-                        ),
-                        "issues": [],
-                    }
-                result = StepExecutionResult(
-                    text=assembled["document"],
-                    result=assembled["business_result"],
-                    metadata=result_metadata,
-                    status=result.status,
-                    questions=result.questions,
-                    reason=result.reason,
-                )
-            if (
-                isinstance(protocol_repair, dict)
-                and isinstance(protocol_repair.get("body"), str)
-            ):
-                materialization_diagnostics: list[dict[str, Any]] = []
-                repaired_text, repair_actions = (
-                    materialize_task_claim_evidence_protocol_repair(
-                        protocol_repair["body"],
-                        result.text,
-                        protocol_repair,
-                    )
-                )
-                if not repair_actions:
-                    materialization_diagnostics = (
-                        diagnose_task_claim_evidence_protocol_materialization(
-                            protocol_repair["body"],
-                            result.text,
-                            protocol_repair,
-                        )
-                    )
-                    repaired_text, repair_actions = (
-                        wrap_claim_evidence_repair_payload_for_validation(
-                            protocol_repair["body"],
-                            result.text,
-                            protocol_repair,
-                        )
-                    )
-                result = StepExecutionResult(
-                    text=repaired_text,
-                    result=result.result,
-                    metadata={
-                        **(result.metadata or {}),
-                        "task_protocol_repair": {
-                            "status": (
-                                "materialized"
-                                if "materialized_claim_evidence_from_compact_repair"
-                                in repair_actions
-                                else (
-                                    "wrapped_for_validation"
-                                    if (
-                                        "wrapped_unmaterialized_payload_for_full_validation"
-                                        in repair_actions
-                                    )
-                                    else "refused"
-                                )
-                            ),
-                            "actions": repair_actions,
-                            "materialization_passed": (
-                                "materialized_claim_evidence_from_compact_repair"
-                                in repair_actions
-                            ),
-                            "materialization_diagnostics": (
-                                materialization_diagnostics
-                            ),
-                            "verification_required": True,
-                        },
-                    },
-                    status=result.status,
-                    questions=result.questions,
-                    reason=result.reason,
-                )
-            normalized_text, normalization_actions = (
-                normalize_task_protocol_format(result.text)
-            )
-            if normalization_actions:
-                result = StepExecutionResult(
-                    text=normalized_text,
-                    result=result.result,
-                    metadata={
-                        **(result.metadata or {}),
-                        "task_protocol_normalization": {
-                            "status": "applied",
-                            "actions": normalization_actions,
-                        },
-                    },
-                    status=result.status,
-                    questions=result.questions,
-                    reason=result.reason,
-                )
-            if isinstance(targeted_content_repair, dict):
-                repaired_text, repair_check = (
-                    materialize_locked_claim_evidence_content_repair(
-                        result.text, targeted_content_repair
-                    )
-                )
-                result = StepExecutionResult(
-                    text=(
-                        repaired_text
-                        if repair_check.get("passed")
-                        else result.text
-                    ),
-                    result=result.result,
-                    metadata={
-                        **(result.metadata or {}),
-                        "task_s02_targeted_content_repair": repair_check,
-                    },
-                    status=result.status,
-                    questions=result.questions,
-                    reason=result.reason,
-                )
-            result_metadata = dict(result.metadata or {})
-            # This key is server-owned. Never accept an executor/model-supplied
-            # retry inventory as the authority for what must be preserved.
-            result_metadata.pop("_claim_evidence_retry_inventory", None)
-            result_metadata.pop("claim_evidence_retry_policy", None)
-            result_metadata.pop("task_retryable", None)
-            if retry_inventory is not None:
-                result_metadata["_claim_evidence_retry_inventory"] = (
-                    retry_inventory
-                )
-            result = StepExecutionResult(
-                text=result.text,
-                result=result.result,
-                metadata=result_metadata,
-                status=result.status,
-                questions=result.questions,
-                reason=result.reason,
-            )
-            output_contract = node.effective_output_contract
-            has_claim_evidence_contract = bool(
-                output_contract is not None
-                and output_contract.validation_mode == "claim_evidence"
-            )
-            is_final_agent = bool(
-                node.type is StepType.AGENT
-                and run.nodes
-                and node.id == run.nodes[-1].id
-            )
-            needs_claim_evidence_protocol = has_claim_evidence_contract or (
-                is_final_agent
-                and (
-                    (
-                        run.source_template_id == "s02_project_planning"
-                        and not _is_s02_lightweight_run(run)
-                    )
-                    or (
-                        run.source_template_id == "s07_report_generation"
-                        and run.source_template_version == "3.0.0"
-                    )
-                )
-            )
-            if (
-                result.status == "completed"
-                and node.type is StepType.AGENT
-                and needs_claim_evidence_protocol
-            ):
-                current = await self._store.get_run(run.user_id, run.id)
-                evidence_result = (
-                    _retrieval_result_for_run(run, current, node.order)
-                    if current is not None
-                    else None
-                )
-                if evidence_result is not None:
-                    finalized_text, materialization_actions = (
-                        materialize_task_citations_from_bindings(
-                            result.text,
-                            evidence_result["evidence"],
-                            authorization_subject=run.user_id,
-                            policy=get_scenario_evidence_policy(
-                                run.source_template_id,
-                                run.source_template_version,
-                            ),
-                        )
-                    )
-                    if materialization_actions:
-                        result_metadata = dict(result.metadata or {})
-                        result_metadata["task_protocol_materialization"] = {
-                            "status": "candidate_appended",
-                            "actions": materialization_actions,
-                            "verification_required": True,
-                        }
-                        result = StepExecutionResult(
-                            text=finalized_text,
-                            result=result.result,
-                            metadata=result_metadata,
-                            status=result.status,
-                            questions=result.questions,
-                            reason=result.reason,
-                        )
-            if (
-                run.source_template_id == "s02_project_planning"
-                and not _is_s02_lightweight_run(run)
-                and run.nodes
-                and node.id == run.nodes[-1].id
-            ):
-                current = await self._store.get_run(run.user_id, run.id)
-                evidence_result = (
-                    _retrieval_result_for_run(run, current, node.order)
-                    if current is not None
-                    else None
-                )
-                if evidence_result is None:
-                    detail = "最终策划输出缺少本次运行保存的授权来源证据。"
-                    return StepExecutionResult(
-                        text=result.text,
-                        result=result.result,
-                        metadata={
-                            **(result.metadata or {}),
-                            "evidence_ledger": {
-                                "passed": False,
-                                "error_code": "TASK_EVIDENCE_LEDGER_FAILED",
-                                "error": detail,
-                                "issues": [detail],
-                                "ledger": [],
-                            },
-                        },
-                        status="failed",
-                        reason=detail,
-                    )
-                ledger_result = materialize_s02_project_planning_ledger(
-                    result.text,
-                    evidence_result["evidence"],
-                    authorization_subject=run.user_id,
-                    template_version=(
-                        run.source_template_version or "1.0.0"
-                    ),
-                )
-                if not ledger_result["passed"]:
-                    diagnostic_counts = {
-                        key: len(value)
-                        for key, value in ledger_result.get(
-                            "diagnostics", {}
-                        ).items()
-                        if value
-                    }
-                    diagnostic_labels = {
-                        "structure": "结构异常",
-                        "source": "来源异常",
-                        "citation": "引用异常",
-                        "unverified": "待核实关联异常",
-                    }
-                    summary = (
-                        "、".join(
-                            f"{diagnostic_labels.get(key, key)}{count}项"
-                            for key, count in diagnostic_counts.items()
-                        )
-                        or f"{len(ledger_result['issues'])}项"
-                    )
-                    repair_metadata = (result.metadata or {}).get(
-                        "task_protocol_repair"
-                    )
-                    materialization_diagnostics = (
-                        repair_metadata.get("materialization_diagnostics", [])
-                        if isinstance(repair_metadata, dict)
-                        and repair_metadata.get("materialization_passed")
-                        is False
-                        else []
-                    )
-                    if materialization_diagnostics:
-                        detail = (
-                            "Claim–Evidence 协议修复无法安全生成完整结构；"
-                            "本次最终来源身份、权限、哈希和引用核验尚未开始："
-                            + "；".join(
-                                str(item.get("message"))
-                                for item in materialization_diagnostics
-                                if isinstance(item, dict)
-                                and item.get("message")
-                            )
-                            + "。完整结构诊断见节点 task_protocol_repair 元数据。"
-                        )
-                    else:
-                        detail = (
-                            "最终来源证据台账校验失败："
-                            + summary
-                            + "；完整诊断见节点 evidence_ledger 元数据。"
-                        )
-                    evidence_ledger_metadata = {
-                        "passed": False,
-                        "error_code": "TASK_EVIDENCE_LEDGER_FAILED",
-                        "error": detail,
-                        "issues": (
-                            [detail]
-                            if materialization_diagnostics
-                            else ledger_result["issues"]
-                        ),
-                        "diagnostics": ledger_result.get(
-                            "diagnostics", {}
-                        ),
-                        "all_diagnostics": ledger_result.get(
-                            "all_diagnostics", []
-                        ),
-                        "ledger": ledger_result["ledger"],
-                        "verification_scope": ledger_result.get(
-                            "verification_scope",
-                            {"protocol_parse": "not_evaluated"},
-                        ),
-                    }
-                    if materialization_diagnostics:
-                        evidence_ledger_metadata[
-                            "protocol_materialization_diagnostics"
-                        ] = materialization_diagnostics
-                    return StepExecutionResult(
-                        text=result.text,
-                        result=result.result,
-                        metadata={
-                            **(result.metadata or {}),
-                            "evidence_ledger": evidence_ledger_metadata,
-                        },
-                        status=result.status,
-                        questions=result.questions,
-                        reason=result.reason,
-                    )
-                return StepExecutionResult(
-                    text=ledger_result["document"],
-                    result=result.result,
-                    metadata={
-                        **(result.metadata or {}),
-                        "evidence_ledger": {
-                            "passed": True,
-                            "issues": [],
-                            "diagnostics": ledger_result.get(
-                                "diagnostics", {}
-                            ),
-                            "all_diagnostics": ledger_result.get(
-                                "all_diagnostics", []
-                            ),
-                            "ledger": ledger_result["ledger"],
-                            "verification_scope": ledger_result[
-                                "verification_scope"
-                            ],
-                        },
-                    },
                     status=result.status,
                     questions=result.questions,
                     reason=result.reason,
@@ -4151,954 +3411,32 @@ class TaskService:
         async def verify(
             node: TaskNode, output: str, state: TaskStepState
         ) -> StepVerdict:
+            """Use the shared AI verifier for every completed Task node."""
+
             if _is_s02_lightweight_final_node(run, node):
-                validation = state.metadata.get(
-                    "s02_lightweight_output_validation"
-                )
                 retrieval = state.metadata.get("s02_lightweight_retrieval")
-                if (
-                    not isinstance(validation, dict)
-                    or validation.get("passed") is not True
-                    or not isinstance(retrieval, dict)
-                ):
-                    return StepVerdict(
-                        passed=False,
-                        retryable=False,
-                        message=(
-                            "S02 v5 轻量草稿未通过服务端结构检查，"
-                            "或缺少本次授权检索状态；未生成 DOCX。"
-                        ),
-                    )
-                return StepVerdict(
-                    passed=True,
-                    retryable=False,
-                    message=(
-                        "八章 Markdown 草稿和本次授权检索记录已检查；"
-                        "逐条 Claim–Evidence 与语义支持未执行，需人工复核。"
-                    ),
-                )
-            previous_inventory = state.metadata.get(
-                "_claim_evidence_retry_inventory"
-            )
-            targeted_content_repair = (
-                previous_inventory.get("s02_targeted_content_repair")
-                if isinstance(previous_inventory, dict)
-                else None
-            )
-            protocol_repair = (
-                previous_inventory.get("protocol_repair")
-                if isinstance(previous_inventory, dict)
-                else None
-            )
-            previous_protocol_repair = protocol_repair
-            targeted_content_repair_attempted = False
-            if isinstance(targeted_content_repair, dict):
-                execution_check = state.metadata.get(
-                    "task_s02_targeted_content_repair", {}
-                )
-                # The S02 ledger materializer replaces the internal Claim
-                # protocol with its user-facing ledger. Check the locked
-                # protocol snapshot captured before that transformation; the
-                # materializer independently rechecks citations in its final
-                # document.
-                scope_check = (
-                    execution_check.get("protocol_lock_check")
-                    if isinstance(execution_check, dict)
-                    else None
+                source_validation = state.metadata.get(
+                    "s02_lightweight_source_validation"
                 )
                 if (
-                    not isinstance(execution_check, dict)
-                    or execution_check.get("passed") is not True
-                    or not isinstance(scope_check, dict)
-                    or scope_check.get("passed") is not True
+                    not isinstance(retrieval, dict)
+                    or not isinstance(source_validation, dict)
+                    or source_validation.get("passed") is not True
                 ):
-                    reason = (
-                        execution_check.get("reason")
-                        if isinstance(execution_check, dict)
-                        and execution_check.get("passed") is not True
-                        else (
-                            scope_check.get("reason")
-                            if isinstance(scope_check, dict)
-                            else "修订响应缺少服务端协议锁定校验"
-                        )
-                    )
-                    message = (
-                        "S02 局部内容修订已拒绝："
-                        + str(reason or "修订范围或引用锁定校验失败")
-                        + "。Task 保留失败状态，不会继续重试。"
-                    )
-                    state.metadata["task_s02_targeted_content_repair_check"] = {
-                        "passed": False,
-                        "reason": reason,
-                        "scope": scope_check,
-                    }
-                    state.metadata["claim_evidence_retry_policy"] = {
-                        "retryable": False,
-                        "inventory": previous_inventory,
-                    }
-                    state.metadata["evidence_ledger"] = {
-                        "passed": False,
-                        "error_code": "TASK_EVIDENCE_LEDGER_FAILED",
-                        "error": message,
-                        "issues": [message],
-                        "diagnostics": {
-                            "structure": [
-                                {
-                                    "error_code": "targeted_content_repair_refused",
-                                    "claim_id": targeted_content_repair.get(
-                                        "conflict", {}
-                                    ).get("claim_id"),
-                                    "unverified_id": None,
-                                    "location": targeted_content_repair.get(
-                                        "conflict", {}
-                                    ).get("occurrence_id"),
-                                    "error_type": "structure",
-                                    "evidence_ids": [],
-                                    "message": message,
-                                }
-                            ],
-                            "source": [],
-                            "citation": [],
-                            "unverified": [],
-                        },
-                    }
-                    return StepVerdict(
-                        passed=False,
-                        retryable=False,
-                        message=message,
-                    )
-                targeted_content_repair_attempted = True
-                state.metadata["task_s02_targeted_content_repair_check"] = {
-                    **execution_check.get("scope", {}),
-                    "passed": True,
-                    "protocol_lock_check": scope_check,
-                }
-                previous_inventory = None
-            elif isinstance(protocol_repair, dict):
-                if not claim_evidence_protocol_repair_body_matches(
-                    output, protocol_repair
-                ):
-                    repair_result = state.metadata.get(
-                        "task_protocol_repair"
-                    )
-                    if (
-                        isinstance(repair_result, dict)
-                        and repair_result.get("status") == "refused"
-                    ):
-                        message = (
-                            "协议修复已拒绝：修复响应无法在不改变正文的条件下"
-                            "安全封装。Task 保留原结果并停止重试。"
-                        )
-                    else:
-                        message = (
-                            "协议修复已拒绝：最终报告正文与前一轮失败输出不一致。"
-                            "Task 保留原结果并停止重试。"
-                        )
-                    state.metadata["claim_evidence_protocol_repair_check"] = {
-                        "passed": False,
-                        "reason": message,
-                    }
-                    state.metadata["claim_evidence_retry_policy"] = {
-                        "retryable": False,
-                        "inventory": previous_inventory,
-                    }
-                    state.metadata["evidence_ledger"] = {
-                        "passed": False,
-                        "error_code": "TASK_EVIDENCE_LEDGER_FAILED",
-                        "error": message,
-                        "issues": [message],
-                        "diagnostics": {
-                            "structure": [
-                                {
-                                    "error_code": "protocol_repair_body_changed",
-                                    "claim_id": None,
-                                    "unverified_id": None,
-                                    "location": None,
-                                    "error_type": "structure",
-                                    "evidence_ids": [],
-                                    "message": message,
-                                }
-                            ],
-                            "source": [],
-                            "citation": [],
-                            "unverified": [],
-                        },
-                    }
-                    return StepVerdict(
-                        passed=False,
-                        retryable=False,
-                        message=message,
-                    )
-                state.metadata["claim_evidence_protocol_repair_check"] = {
-                    "passed": True,
-                    "body_sha256": protocol_repair.get("body_sha256"),
-                }
-                # The original malformed envelope has no trustworthy Claim
-                # inventory. Exact body preservation plus the normal strict
-                # validators protect this bounded repair attempt.
-                previous_inventory = None
-            elif previous_inventory is not None:
-                current_inventory = extract_claim_evidence_inventory(output)
-                inventory_check = compare_claim_evidence_inventories(
-                    previous_inventory, current_inventory
-                )
-                state.metadata["claim_evidence_retry_inventory_check"] = (
-                    inventory_check
-                )
-                if not inventory_check["passed"]:
-                    message = (
-                        "受限结构修复已拒绝："
-                        + str(inventory_check["reason"])
-                        + " 清单差异："
-                        + json.dumps(
-                            inventory_check,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                        + "。Task 保留原失败结果并停止重试。"
-                    )
-                    state.metadata["claim_evidence_retry_policy"] = {
-                        "retryable": False,
-                        "inventory": previous_inventory,
-                    }
-                    state.metadata["evidence_ledger"] = {
-                        "passed": False,
-                        "error_code": "TASK_EVIDENCE_LEDGER_FAILED",
-                        "error": message,
-                        "issues": [message],
-                        "diagnostics": {
-                            "structure": [
-                                {
-                                    "error_code": "retry_inventory_lost",
-                                    "claim_id": None,
-                                    "unverified_id": None,
-                                    "location": None,
-                                    "error_type": "structure",
-                                    "evidence_ids": [],
-                                    "message": message,
-                                }
-                            ],
-                            "source": [],
-                            "citation": [],
-                            "unverified": [],
-                        },
-                    }
-                    return StepVerdict(
-                        passed=False,
-                        retryable=False,
-                        message=message,
-                    )
-            if (
-                run.source_template_id == "s02_project_planning"
-                and run.nodes
-                and node.id == run.nodes[-1].id
-            ):
-                ledger_status = state.metadata.get("evidence_ledger")
-                if (
-                    isinstance(ledger_status, dict)
-                    and ledger_status.get("passed") is False
-                ):
-                    if (
-                        run.source_template_version
-                        in S02_STRUCTURED_OUTPUT_TEMPLATE_VERSIONS
-                    ):
-                        state.metadata["claim_evidence_retry_policy"] = {
-                            "retryable": False,
-                            "inventory": None,
-                        }
-                        return StepVerdict(
-                            passed=False,
-                            retryable=False,
-                            message=(
-                                "S02 v3 最终来源证据台账校验失败；Task 已由服务端"
-                                "确定性组装结构化输出，不会自动要求模型重写协议。"
-                            ),
-                        )
-                    current_inventory = extract_claim_evidence_inventory(
-                        output
-                    )
-                    diagnostics = ledger_status.get("diagnostics")
-                    output_protocol_repair = (
-                        extract_claim_evidence_protocol_repair_inventory(
-                            output
-                        )
-                    )
-                    protocol_retryable = bool(
-                        output_protocol_repair is not None
-                        and claim_evidence_protocol_envelope_failure_is_retryable(
-                            diagnostics
-                        )
-                    )
-                    retryable = (
-                        False
-                        if targeted_content_repair_attempted
-                        else (
-                            protocol_retryable
-                            or (
-                                claim_evidence_failure_is_retryable(diagnostics)
-                                and current_inventory is not None
-                            )
-                        )
-                    )
-                    retry_inventory = current_inventory
-                    if protocol_retryable:
-                        retry_inventory = {
-                            "protocol_repair": output_protocol_repair
-                        }
-                    targeted_conflict = None
-                    if (
-                        run.source_template_version == "2.0.0"
-                        and isinstance(previous_protocol_repair, dict)
-                        and "locked_citations" in previous_protocol_repair
-                        and current_inventory is None
-                        and not protocol_retryable
-                        and isinstance(diagnostics, dict)
-                    ):
-                        diagnostic_codes = [
-                            str(item.get("error_code"))
-                            for category in (
-                                "structure",
-                                "source",
-                                "citation",
-                                "unverified",
-                            )
-                            for item in diagnostics.get(category, [])
-                            if isinstance(item, dict)
-                        ]
-                        if diagnostic_codes == ["invalid_top_level_fields"]:
-                            targeted_conflict = (
-                                extract_locked_claim_evidence_content_conflicts(
-                                    output, previous_protocol_repair
-                                )
-                            )
-                    if targeted_conflict is not None:
-                        retryable = True
-                        retry_inventory = {
-                            "s02_targeted_content_repair": targeted_conflict
-                        }
-                    state.metadata["claim_evidence_retry_policy"] = {
-                        "retryable": retryable,
-                        "inventory": retry_inventory,
-                    }
-                    retry_instruction = ""
-                    if protocol_retryable:
-                        retry_instruction = (
-                            " 原正文将通过服务端指纹锁定；只允许修复协议区块，"
-                            "修复后仍须通过全部来源和引用校验。"
-                        )
-                    elif targeted_content_repair_attempted:
-                        retry_instruction = (
-                            " 局部内容修订后完整校验仍未通过；本步骤只提供一次局部修订，"
-                            "当前结果停止重试并保持失败。"
-                        )
-                    elif targeted_conflict is not None:
-                        conflict = targeted_conflict["conflict"]
-                        retry_instruction = (
-                            " 检测到协议修复结果仅缺少服务端生成的 bindings，"
-                            "并发现 occurrence "
-                            + str(conflict["claim_id"])
-                            + ":"
-                            + str(conflict["occurrence_id"])
-                            + " 被声明为 unverified 却带有正文引用 "
-                            + ", ".join(conflict["citation_ids"])
-                            + "。仅可将该 occurrence 拆成保留原引用的来源支持陈述，"
-                            "以及相邻、无引用且沿用原待核实登记的独立陈述；"
-                            "其他正文、Claim、待核实登记和引用必须保持不变。"
-                        )
-                    elif retryable:
-                        retry_instruction = (
-                            " 保留全部既有 claim_id（"
-                            + ", ".join(current_inventory["claim_ids"])
-                            + "）及 unverified_id（"
-                            + ", ".join(
-                                current_inventory["unverified_ids"]
-                            )
-                            + "）；只能修复定位、occurrence 和关联结构，"
-                            "不得删除或弱化失败声明，不得修改来源 ID 或原文摘录。"
-                        )
-                    return StepVerdict(
-                        passed=False,
-                        retryable=retryable,
-                        message=str(
-                            ledger_status.get("error")
-                            or "最终来源证据台账校验失败。"
-                        )
-                        + retry_instruction,
-                    )
-                if (
-                    isinstance(ledger_status, dict)
-                    and ledger_status.get("passed") is True
-                ):
-                    current_inventory = extract_claim_evidence_inventory(
-                        output
-                    )
-                    if current_inventory is not None:
-                        state.metadata["claim_evidence_retry_policy"] = {
-                            "retryable": True,
-                            "inventory": current_inventory,
-                        }
-
-            if (
-                isinstance(node.config, ToolStepConfig)
-                and node.capability_key in {
-                    "document.citation_verify",
-                    "report.citation_check",
-                }
-            ):
-                verification = state.result
-                if not isinstance(verification, dict):
-                    return StepVerdict(
-                        passed=False,
-                        message="引用核验节点没有结构化校验结果。",
-                    )
-                return StepVerdict(
-                    passed=verification.get("passed") is True,
-                    message=(
-                        "引用编号、授权来源身份和逐字摘录已通过确定性核验；"
-                        "语义支持尚未自动判定。"
-                        if verification.get("passed") is True
-                        else "引用核验失败："
-                        + "；".join(
-                            str(item)
-                            for item in verification.get("issues", [])
-                        )
-                    ),
-                )
-
-            if (
-                isinstance(node.config, ToolStepConfig)
-                and node.capability_key != "planning.template_retrieve"
-                and (
-                    is_scenario_native_capability(node.capability_key)
-                    or node.capability_key in {
-                        "project.similar_search",
-                        "project.rule_check",
-                        "report.rag_retrieve",
-                    }
-                )
-            ):
-                if not isinstance(state.result, dict):
-                    return StepVerdict(
-                        passed=False,
-                        message="Task 原生能力未保存结构化执行结果。",
-                    )
-                return StepVerdict(
-                    passed=True,
-                    message=(
-                        "Task 原生能力已完成确定性输入/来源处理；"
-                        "业务语义及外部数据真实性仍按节点边界处理。"
-                    ),
-                )
-
-            if (
-                node.type is StepType.AGENT
-                and not (
-                    node.effective_output_contract is not None
-                    and node.effective_output_contract.validation_mode
-                    == "citations"
-                )
-                and any(
-                    item.capability_key in {
-                        "document.citation_verify",
-                        "report.citation_check",
-                    }
-                    and item.order < node.order
-                    for item in run.nodes
-                )
-            ):
-                current = await self._store.get_run(run.user_id, run.id)
-                evidence_result = (
-                    _retrieval_result_for_run(run, current, node.order)
-                    if current is not None
-                    else None
-                )
-                if evidence_result is None:
-                    return StepVerdict(
-                        passed=False,
-                        retryable=False,
-                        message="最终输出缺少本次运行的授权检索证据，不能生成文件。",
-                    )
-                verification = verify_task_citations(
-                    output,
-                    evidence_result["evidence"],
-                    authorization_subject=run.user_id,
-                )
-                state.metadata["final_citation_verification"] = verification
-                if not verification["passed"]:
-                    scope = verification.get("verification_scope", {})
-                    current_inventory = extract_claim_evidence_inventory(
-                        output
-                    )
-                    protocol_repair = (
-                        extract_claim_evidence_protocol_repair_inventory(
-                            output
-                        )
-                    )
-                    protocol_only_issue = (
-                        len(verification.get("issues", [])) == 1
-                        and str(verification["issues"][0]).startswith(
-                            (
-                                "文档必须包含且仅包含一个 task-citations JSON 区块",
-                                "task-citations 区块之后不能追加未核验内容。",
-                            )
-                        )
-                    )
-                    protocol_retryable = bool(
-                        protocol_only_issue and protocol_repair is not None
-                    )
-                    citation_structure_only = (
-                        protocol_retryable
-                        or (
-                            scope.get("citation_id_set") == "failed"
-                            and scope.get("source_identity_and_quote")
-                            in {"passed", "not_applicable"}
-                        )
-                    )
-                    retryable = (
-                        protocol_retryable
-                        or (
-                            citation_structure_only
-                            and current_inventory is not None
-                            and (
-                                node.effective_output_contract is not None
-                                and node.effective_output_contract.validation_mode
-                                == "claim_evidence"
-                                or run.source_template_id
-                                == "s07_report_generation"
-                            )
-                        )
-                    )
-                    if current_inventory is not None:
-                        retry_inventory = current_inventory
-                    elif protocol_retryable:
-                        retry_inventory = {
-                            "protocol_repair": protocol_repair
-                        }
-                    else:
-                        retry_inventory = None
-                    if retry_inventory is not None:
-                        state.metadata["claim_evidence_retry_policy"] = {
-                            "retryable": retryable,
-                            "inventory": retry_inventory,
-                        }
-                    return StepVerdict(
-                        passed=False,
-                        retryable=retryable,
-                        message=(
-                            "最终输出引用核验失败："
-                            + "；".join(verification["issues"])
-                        )
-                        + (
-                            (
-                                " 仅进行一次协议包络修复，且必须保留原正文。"
-                                if protocol_retryable
-                                else " 仅修复正文/引用编号结构并保留所有既有声明、"
-                                "occurrence_id 和 unverified_id。"
-                            )
-                            if retryable
-                            else "来源身份、原文摘录或失败类型不满足自动重试条件。"
-                        ),
-                    )
-
-            output_contract = node.effective_output_contract
-            if (
-                node.type is StepType.AGENT
-                and output_contract is not None
-                and output_contract.validation_mode == "citations"
-            ):
-                current = await self._store.get_run(run.user_id, run.id)
-                evidence_result = (
-                    _retrieval_result_for_run(run, current, node.order)
-                    if current is not None
-                    else None
-                )
-                if evidence_result is None:
-                    verification = {
-                        "passed": False,
-                        "issues": [
-                            "引用输出契约要求本次 TaskRun 的授权证据快照。"
-                        ],
-                        "verified_citations": [],
-                        "verification_scope": {
-                            "citation_id_set": "not_applicable",
-                            "source_identity_and_quote": "failed",
-                            "semantic_support": "not_automatically_evaluated",
-                        },
-                    }
-                else:
-                    verification = verify_task_citations(
-                        output,
-                        evidence_result["evidence"],
-                        authorization_subject=run.user_id,
-                    )
-                state.metadata["citation_output_validation"] = verification
-                state.metadata["output_contract_validation"] = {
-                    "contract_id": output_contract.contract_id,
-                    "contract_version": output_contract.contract_version,
-                    "status": (
-                        "passed"
-                        if verification.get("passed") is True
-                        else "failed"
-                    ),
-                    "target": "authorized_run_citations",
-                    "issues": list(verification.get("issues", [])),
-                }
-                if verification.get("passed") is not True:
                     return StepVerdict(
                         passed=False,
                         retryable=False,
                         message=(
-                            "Task 引用输出契约校验失败："
-                            + "；".join(
-                                str(item)
-                                for item in verification.get("issues", [])
-                            )
-                        )
-                        + " 来源、权限、哈希或逐字原文错误不会自动放宽。",
-                    )
-                state.metadata["semantic_review_required"] = True
-
-            if (
-                node.type is StepType.AGENT
-                and run.source_template_id == "s07_report_generation"
-                and run.source_template_version == "3.0.0"
-                and run.nodes
-                and node.id == run.nodes[-1].id
-            ):
-                current = await self._store.get_run(run.user_id, run.id)
-                evidence_result = (
-                    _retrieval_result_for_run(run, current, node.order)
-                    if current is not None
-                    else None
-                )
-                if evidence_result is None:
-                    return StepVerdict(
-                        passed=False,
-                        retryable=False,
-                        message="报告最终输出缺少本次 TaskRun 的授权来源快照。",
-                    )
-                policy = get_scenario_evidence_policy(
-                    run.source_template_id,
-                    run.source_template_version,
-                )
-                evidence_validation = validate_claim_evidence_document(
-                    output,
-                    evidence_result["evidence"],
-                    authorization_subject=run.user_id,
-                    policy=policy,
-                )
-                state.metadata["claim_evidence_validation"] = evidence_validation
-                if not evidence_validation.get("passed"):
-                    current_inventory = extract_claim_evidence_inventory(
-                        output
-                    )
-                    protocol_repair = (
-                        extract_claim_evidence_protocol_repair_inventory(
-                            output
-                        )
-                    )
-                    protocol_retryable = bool(
-                        protocol_repair is not None
-                        and claim_evidence_protocol_envelope_failure_is_retryable(
-                            evidence_validation.get("diagnostics")
-                        )
-                    )
-                    inventory_check = (
-                        compare_claim_evidence_inventories(
-                            previous_inventory, current_inventory
-                        )
-                        if previous_inventory is not None
-                        else {"passed": True}
-                    )
-                    retryable = (
-                        protocol_retryable
-                        or (
-                            claim_evidence_failure_is_retryable(
-                                evidence_validation.get("diagnostics")
-                            )
-                            and current_inventory is not None
-                        )
-                        and inventory_check.get("passed") is True
-                    )
-                    retry_inventory = current_inventory
-                    if protocol_retryable:
-                        retry_inventory = {
-                            "protocol_repair": protocol_repair
-                        }
-                    state.metadata["claim_evidence_retry_policy"] = {
-                        "retryable": retryable,
-                        "inventory": retry_inventory,
-                    }
-                    materialization_notice = (
-                        _task_protocol_materialization_notice(
-                            state.metadata
-                        )
-                    )
-                    return StepVerdict(
-                        passed=False,
-                        retryable=retryable,
-                        message=(
-                            "报告 Claim–Evidence 确定性校验失败："
-                            + "；".join(evidence_validation.get("issues", []))
-                        )
-                        + (
-                            " " + materialization_notice
-                            if materialization_notice
-                            else ""
-                        )
-                        + (
-                            (
-                                " 仅进行一次协议包络修复，且必须保留原正文。"
-                                if protocol_retryable
-                                else " 保留全部既有 claim_id、occurrence_id 和 "
-                                "unverified_id；仅修复已识别的定位/关联结构。"
-                            )
-                            if retryable
-                            else " 来源、声明清单或失败诊断不可自动修复；Task 停止重试。"
+                            "S02 轻量草稿缺少本次运行的授权检索或来源完整性记录；"
+                            "未生成 DOCX。"
                         ),
                     )
-                state.metadata["semantic_review_required"] = True
-                retry_inventory = extract_claim_evidence_inventory(output)
-                if retry_inventory is not None:
-                    state.metadata["claim_evidence_retry_policy"] = {
-                        "retryable": True,
-                        "inventory": retry_inventory,
-                    }
-
-            output_contract = node.effective_output_contract
-            if (
-                output_contract is not None
-                and output_contract.validation_mode == "claim_evidence"
-            ):
-                current = await self._store.get_run(run.user_id, run.id)
-                evidence_result = (
-                    _retrieval_result_for_run(run, current, node.order)
-                    if current is not None
-                    else None
-                )
-                if evidence_result is None:
-                    validation_result = {
-                        "passed": False,
-                        "issues": [
-                            "节点输出契约要求本次 TaskRun 的授权证据快照。"
-                        ],
-                        "all_diagnostics": [],
-                    }
-                else:
-                    validation_result = validate_claim_evidence_document(
-                        output,
-                        evidence_result["evidence"],
-                        authorization_subject=run.user_id,
-                        policy=get_scenario_evidence_policy(
-                            run.source_template_id,
-                            run.source_template_version,
-                        ),
-                    )
-                state.metadata["claim_evidence_validation"] = (
-                    validation_result
-                )
-                state.metadata["output_contract_validation"] = {
-                    "contract_id": output_contract.contract_id,
-                    "contract_version": output_contract.contract_version,
-                    "status": (
-                        "passed"
-                        if validation_result.get("passed") is True
-                        else "failed"
-                    ),
-                    "target": "claim_evidence_document",
-                    "issues": list(validation_result.get("issues", [])),
-                }
-                if validation_result.get("passed") is not True:
-                    current_inventory = extract_claim_evidence_inventory(
-                        output
-                    )
-                    protocol_repair = (
-                        extract_claim_evidence_protocol_repair_inventory(
-                            output
-                        )
-                    )
-                    protocol_retryable = bool(
-                        protocol_repair is not None
-                        and claim_evidence_protocol_envelope_failure_is_retryable(
-                            validation_result.get("diagnostics")
-                        )
-                    )
-                    inventory_check = (
-                        compare_claim_evidence_inventories(
-                            previous_inventory, current_inventory
-                        )
-                        if previous_inventory is not None
-                        else {"passed": True}
-                    )
-                    retryable = (
-                        protocol_retryable
-                        or (
-                            claim_evidence_failure_is_retryable(
-                                validation_result.get("diagnostics")
-                            )
-                            and current_inventory is not None
-                        )
-                        and inventory_check.get("passed") is True
-                    )
-                    retry_inventory = current_inventory
-                    if protocol_retryable:
-                        retry_inventory = {
-                            "protocol_repair": protocol_repair
-                        }
-                    state.metadata["claim_evidence_retry_policy"] = {
-                        "retryable": retryable,
-                        "inventory": retry_inventory,
-                    }
-                    materialization_notice = (
-                        _task_protocol_materialization_notice(
-                            state.metadata
-                        )
-                    )
-                    return StepVerdict(
-                        passed=False,
-                        retryable=retryable,
-                        message=(
-                            "Claim–Evidence 输出契约校验失败："
-                            + "；".join(validation_result.get("issues", []))
-                        )
-                        + (
-                            " " + materialization_notice
-                            if materialization_notice
-                            else ""
-                        )
-                        + (
-                            (
-                                " 仅进行一次协议包络修复，且必须保留原正文。"
-                                if protocol_retryable
-                                else " 保留全部既有 claim_id、occurrence_id 和 "
-                                "unverified_id；不得删除、弱化声明或改变来源/原文。"
-                            )
-                            if retryable
-                            else " 来源、声明清单或诊断不满足自动修复条件，Task 停止重试。"
-                        ),
-                    )
-                state.metadata["semantic_review_required"] = True
-                retry_inventory = extract_claim_evidence_inventory(output)
-                if retry_inventory is not None:
-                    state.metadata["claim_evidence_retry_policy"] = {
-                        "retryable": True,
-                        "inventory": retry_inventory,
-                    }
-
-            schema = (
-                output_contract.json_schema
-                if output_contract is not None
-                else None
-            )
-            s02_v4_adapter_validated = bool(
-                run.source_template_id == "s02_project_planning"
-                and run.source_template_version in {"4.0.0", "4.1.0"}
-                and run.nodes
-                and node.id == run.nodes[-1].id
-                and isinstance(
-                    state.metadata.get("s02_v4_delivery"), dict
-                )
-                and state.metadata["s02_v4_delivery"].get("passed")
-                is True
-                and state.metadata.get("output_contract_validation", {}).get(
-                    "target"
-                )
-                == (
-                    "s02_v4_1_raw_agent_json"
-                    if run.source_template_version == "4.1.0"
-                    else "s02_v4_raw_agent_json"
-                )
-            )
-            if schema is None:
-                schema = node.output_schema
-            if (
-                schema is not None
-                and (
-                    output_contract is None
-                    or output_contract.validation_mode == "json_schema"
-                )
-                and not s02_v4_adapter_validated
-            ):
-                if node.type is StepType.TOOL and node.capability_key:
-                    validation = validate_capability_output(
-                        node.capability_key,
-                        schema,
-                        state.result,
-                        output,
-                    )
-                else:
-                    validation = validate_structured_result(
-                        schema,
-                        state.result,
-                        agent_output_json=node.type is StepType.AGENT,
-                        tool_output_text=(
-                            output if node.type is StepType.TOOL else None
-                        ),
-                    )
-                validation_key = (
-                    "capability_output_validation"
-                    if node.type is StepType.TOOL and node.capability_key
-                    else "output_schema_validation"
-                )
-                state.metadata[validation_key] = {
-                    "status": "passed" if validation.passed else "failed",
-                    "target": validation.target,
-                    "issues": list(validation.issues),
-                }
-                state.metadata["output_contract_validation"] = {
-                    "contract_id": (
-                        output_contract.contract_id
-                        if output_contract is not None
-                        else "task.output-schema"
-                    ),
-                    "contract_version": (
-                        output_contract.contract_version
-                        if output_contract is not None
-                        else 1
-                    ),
-                    "status": "passed" if validation.passed else "failed",
-                    "target": validation.target,
-                    "issues": list(validation.issues),
-                }
-                if not validation.passed:
-                    detail = "；".join(validation.issues)
-                    return StepVerdict(
-                        passed=False,
-                        message=f"结构化结果校验失败：{detail}",
-                    )
-                state.result = validation.value
-            elif s02_v4_adapter_validated:
-                state.metadata["output_contract_validation"] = {
-                    **state.metadata["output_contract_validation"],
-                    "status": "passed",
-                    "target": (
-                        "s02_v4_1_raw_agent_json"
-                        if run.source_template_version == "4.1.0"
-                        else "s02_v4_raw_agent_json"
-                    ),
-                    "issues": [],
-                }
-            elif output_contract is not None and output_contract.validation_mode not in {
-                "citations",
-                "claim_evidence",
-            }:
-                state.metadata["output_contract_validation"] = {
-                    "contract_id": output_contract.contract_id,
-                    "contract_version": output_contract.contract_version,
-                    "status": "not_required",
-                    "target": output_contract.output_type,
-                    "issues": [],
-                }
 
             executor = self._select_executor(self._step_context(run, node))
             method = getattr(executor, "verify_node", None)
-            if not node.acceptance_criteria.strip() and (
-                not callable(method) or node.type is not StepType.AGENT
-            ):
-                return StepVerdict(passed=True)
             if not callable(method):
                 raise RuntimeError(
-                    "当前执行器不支持步骤验收，请使用已配置模型的会话。"
+                    "当前执行器不支持 AI 步骤验收，请使用已配置模型的会话。"
                 )
             current = await self._store.get_run(run.user_id, run.id)
             context = ExecutionContext(
@@ -5120,10 +3458,33 @@ class TaskService:
                     for answer in step.get("answers", [])
                 ],
             )
-            return StepVerdict.model_validate(
-                await method(node=node, output=output, context=context)
+            verdict = StepVerdict.model_validate(
+                await method(
+                    node=_with_citation_prompt(run, node),
+                    output=output,
+                    context=context,
+                )
             )
-
+            state.metadata["task_ai_verification"] = {
+                "method": "task-verifier",
+                "passed": verdict.passed,
+                "message": verdict.message,
+                "retryable": verdict.retryable,
+            }
+            if _is_s02_lightweight_final_node(run, node):
+                delivery = state.metadata.get("s02_lightweight_delivery", {})
+                state.metadata["s02_lightweight_ai_verification"] = {
+                    **state.metadata["task_ai_verification"],
+                }
+                state.metadata["s02_lightweight_delivery"] = {
+                    **(delivery if isinstance(delivery, dict) else {}),
+                    "passed": verdict.passed,
+                    "status": (
+                        "draft_unverified" if verdict.passed else "failed"
+                    ),
+                    "acceptance_method": "task-verifier",
+                }
+            return verdict
         steps = []
         for node in run.nodes:
             output_contract = node.effective_output_contract
@@ -5557,6 +3918,15 @@ def _history_text(value: str, limit: int = 12_000) -> str:
 
     text = str(value)
     return text if len(text) <= limit else f"{text[:limit]}…"
+
+
+def _task_output_value(value: str) -> Any:
+    """Decode JSON for downstream use without deciding whether it is valid."""
+
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+        return value
 
 
 def _normalize_execution_result(

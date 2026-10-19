@@ -610,24 +610,22 @@ def _meeting_materials(
 def _meeting_material_check(
     values: dict[str, str], prior_results: dict[str, Any]
 ) -> StepExecutionResult:
+    del values
     materials = prior_results.get("meeting.material_generate")
     costs = prior_results.get("meeting.cost_calculate")
     if not isinstance(materials, dict) or not isinstance(costs, dict):
         raise ScenarioInputError("缺少可检查的会前材料或费用核算结果。")
-    required = ("topic", "date", "participant_count")
-    missing = [key for key in required if not materials.get("meeting", {}).get(key)]
-    passed = not missing and bool(materials.get("agenda")) and costs.get("rule_id")
     result = {
-        "status": "passed" if passed else "needs_correction",
-        "missing_fields": missing,
-        "agenda_item_count": len(materials.get("agenda", [])),
-        "cost_total": costs.get("total"),
+        "status": "ready_for_ai_review",
+        "meeting_materials": materials,
+        "cost_calculation": costs,
         "fee_policy_verified": False,
         "notification_sent": False,
-        "message": "结构完整性检查通过，费用规则和通知仍须人工确认。" if passed else "会前材料缺少必填字段。",
+        "review_instruction": (
+            "Task 通用 task-verifier 将按本节点验收标准审阅会前材料与费用结果；"
+            "本适配器不作完整性通过/失败判断。"
+        ),
     }
-    if not passed:
-        return _failure(result["message"], code="TASK_MEETING_MATERIALS_INCOMPLETE", result=result)
     return _success(result)
 
 

@@ -23,6 +23,7 @@ TEMPLATE_VERSION_FILES: tuple[tuple[str, str, str], ...] = (
     ("s02_project_planning", "4.0.0", "s02_project_planning.v4.json"),
     ("s02_project_planning", "4.1.0", "s02_project_planning.v4_1.json"),
     ("s02_project_planning", "5.0.0", "s02_project_planning.v5.json"),
+    ("s02_project_planning", "5.1.0", "s02_project_planning.v5_1.json"),
     ("s03_expert_matching", "1.0.0", "s03_expert_matching.v1.json"),
     ("s03_expert_matching", "2.0.0", "s03_expert_matching.v2.json"),
     ("s03_expert_matching", "3.0.0", "s03_expert_matching.v3.json"),
@@ -39,6 +40,7 @@ TEMPLATE_VERSION_FILES: tuple[tuple[str, str, str], ...] = (
     ("s07_report_generation", "2.0.0", "s07_report_generation.v2.json"),
     ("s07_report_generation", "3.0.0", "s07_report_generation.v3.json"),
     ("s07_report_generation", "4.0.0", "s07_report_generation.v4.json"),
+    ("s07_report_generation", "5.0.0", "s07_report_generation.v5.json"),
     ("s08_archive_transfer", "1.0.0", "s08_archive_transfer.v1.json"),
     ("s08_archive_transfer", "2.0.0", "s08_archive_transfer.v2.json"),
     ("s08_archive_transfer", "3.0.0", "s08_archive_transfer.v3.json"),
@@ -55,12 +57,12 @@ TEMPLATE_VERSION_FILES: tuple[tuple[str, str, str], ...] = (
 # definition through get_template_version().
 CURRENT_TEMPLATE_VERSIONS: tuple[tuple[str, str], ...] = (
     ("s01_project_init", "2.0.0"),
-    ("s02_project_planning", "5.0.0"),
+    ("s02_project_planning", "5.1.0"),
     ("s03_expert_matching", "3.0.0"),
     ("s04_meeting_preparation", "3.0.0"),
     ("s05_meeting_minutes", "3.0.0"),
     ("s06_opinion_processing", "3.0.0"),
-    ("s07_report_generation", "4.0.0"),
+    ("s07_report_generation", "5.0.0"),
     ("s08_archive_transfer", "3.0.0"),
     ("s09_expense_settlement", "3.0.0"),
 )

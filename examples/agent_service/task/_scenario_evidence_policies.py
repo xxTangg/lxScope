@@ -108,7 +108,7 @@ SCENARIO_EVIDENCE_POLICIES: dict[tuple[str, str], EvidencePolicy] = {
     )
     for template_id, (allowed_types, required_kinds) in _POLICY_SPECS.items()
     for version in (
-        ("1.0.0", "2.0.0", "3.0.0", "4.0.0")
+        ("1.0.0", "2.0.0", "3.0.0", "4.0.0", "5.0.0")
         if template_id == "s07_report_generation"
         else (
             (
@@ -120,6 +120,7 @@ SCENARIO_EVIDENCE_POLICIES: dict[tuple[str, str], EvidencePolicy] = {
                 "4.0.0",
                 "4.1.0",
                 "5.0.0",
+                "5.1.0",
             )
             if template_id == "s02_project_planning"
             else ("1.0.0", "2.0.0", "3.0.0")
