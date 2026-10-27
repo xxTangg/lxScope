@@ -433,6 +433,7 @@ class RechargeRequestView(BaseModel):
     amount: str
     status: Literal["pending", "approved", "rejected", "unknown"]
     delivery_status: Literal["not_delivered", "delivered"] = "not_delivered"
+    decision_reason: str | None = None
     created_at: str
     request_id: str = ""
 
@@ -443,7 +444,7 @@ class RechargeRequestListResponse(BaseModel):
     request_id: str
 
 
-class RechargePollItem(BaseModel):
+class RechargePollApprovedItem(BaseModel):
     order_id: str
     system_id: str
     amount: str = Field(pattern=_MONEY_PATTERN)
@@ -454,22 +455,30 @@ class RechargePollItem(BaseModel):
     expires_at: str | None = None
 
 
+class RechargePollRejectedItem(BaseModel):
+    order_id: str
+    system_id: str
+    status: Literal["rejected"] = "rejected"
+    delivery_status: Literal["not_delivered"] = "not_delivered"
+    decision_reason: str | None = None
+
+
 class RechargePollResponse(BaseModel):
-    orders: list[RechargePollItem]
+    orders: list[RechargePollApprovedItem | RechargePollRejectedItem]
     request_id: str
 
 
 class RechargeAckRequest(BaseModel):
     operation_id: str = Field(min_length=1, max_length=128)
     system_id: str = Field(min_length=1, max_length=128)
-    redemption_operation_id: str = Field(min_length=1, max_length=128)
-    ledger_id: str = Field(min_length=1, max_length=128)
+    redemption_operation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    ledger_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class RechargeAckResponse(BaseModel):
     order_id: str = Field(min_length=1, max_length=128)
-    status: Literal["approved"]
-    delivery_status: Literal["delivered"]
+    status: Literal["approved", "rejected"]
+    delivery_status: Literal["not_delivered", "delivered"]
     request_id: str = Field(min_length=1, max_length=128)
 
 
@@ -2064,7 +2073,10 @@ class AdminService:
                 "/api/v1/integration/recharge-requests/poll",
                 request_id=request_id,
                 idempotency_key=idempotency_key or operation_id,
-                params={"system_id": (await self._system())["system_id"]},
+                params={
+                    "system_id": system_id,
+                    "include_rejected": "true",
+                },
             )
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {
@@ -2136,6 +2148,76 @@ class AdminService:
             local = await self._read_json(self._order_key(item.order_id))
             if local is not None and local.get("delivery_status") == "delivered":
                 continue
+            if item.status == "rejected":
+                if local is None:
+                    failures.append(
+                        {
+                            "order_id": item.order_id,
+                            "code": "recharge_order_not_found",
+                            "message": "The Sales Hub order does not match a local recharge request.",
+                        },
+                    )
+                    continue
+                if local.get("status") not in {"pending", "rejected"}:
+                    failures.append(
+                        {
+                            "order_id": item.order_id,
+                            "code": "recharge_status_conflict",
+                            "message": "The local recharge request is already in another terminal state.",
+                        },
+                    )
+                    continue
+                local["status"] = "rejected"
+                local["delivery_status"] = "not_delivered"
+                if item.decision_reason:
+                    local["decision_reason"] = item.decision_reason
+                await self._write_json(self._order_key(item.order_id), local)
+                try:
+                    ack_remote = await self._hub_request(
+                        "POST",
+                        f"/api/v1/integration/recharge-requests/{item.order_id}/ack",
+                        request_id=request_id,
+                        idempotency_key=f"{idempotency_key or operation_id}:decision:{item.order_id}",
+                        json_body=RechargeAckRequest(
+                            operation_id=operation_id,
+                            system_id=system_id,
+                        ).model_dump(exclude_none=True),
+                    )
+                    ack = RechargeAckResponse.model_validate(ack_remote)
+                    if (
+                        ack.order_id != item.order_id
+                        or ack.request_id != request_id
+                        or ack.status != "rejected"
+                    ):
+                        raise _error(
+                            "ack_invalid_response",
+                            "Sales Hub returned an ACK for another request or order.",
+                            502,
+                        )
+                except HTTPException as exc:
+                    detail = exc.detail if isinstance(exc.detail, dict) else {
+                        "code": "ack_failed",
+                        "message": str(exc.detail),
+                    }
+                    failures.append({"order_id": item.order_id, **detail})
+                    continue
+                except ValueError:
+                    failures.append(
+                        {
+                            "order_id": item.order_id,
+                            "code": "ack_invalid_response",
+                            "message": "Sales Hub returned an invalid ACK response.",
+                        },
+                    )
+                    continue
+                completed.append(
+                    {
+                        "order_id": item.order_id,
+                        "status": "rejected",
+                        "delivery_status": "not_delivered",
+                    },
+                )
+                continue
             if local is not None:
                 try:
                     local_amount = _format_money(str(local.get("amount")), require_positive=True)
@@ -2205,7 +2287,7 @@ class AdminService:
                         system_id=system_id,
                         redemption_operation_id=redemption_operation_id,
                         ledger_id=ledger_id,
-                    ).model_dump(),
+                    ).model_dump(exclude_none=True),
                 )
                 ack = RechargeAckResponse.model_validate(ack_remote)
                 if ack.order_id != item.order_id or ack.request_id != request_id:

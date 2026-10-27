@@ -205,22 +205,24 @@ export function RechargeMethodsCard() {
 				) : (
 					<div className="space-y-2">
 						{visibleRechargeItems.map((item) => {
-			const isDelivered = item.delivery_status === 'delivered';
-			const approvalLabel =
-				item.status === 'pending'
-					? t('admin.waitingApproval')
-					: item.status === 'approved'
-						? t('admin.approved')
-						: item.status === 'rejected'
-							? t('admin.rejected')
-							: t('admin.unknownStatus');
-			const statusLabel = isDelivered
+							const isDelivered = item.delivery_status === 'delivered';
+							const approvalLabel =
+								item.status === 'pending'
+									? t('admin.waitingApproval')
+									: item.status === 'approved'
+										? t('admin.approved')
+										: item.status === 'rejected'
+											? t('admin.rejected')
+											: t('admin.unknownStatus');
+							const statusLabel = isDelivered
 								? t('admin.delivered')
 								: item.status === 'pending'
 									? t('admin.sentAwaitingApproval')
 									: item.status === 'approved'
 										? t('admin.approvedAwaitingSync')
-										: t('admin.waitingDelivery');
+										: item.status === 'rejected'
+											? t('admin.rejected')
+											: t('admin.waitingDelivery');
 							return (
 								<div
 									key={item.order_id}
@@ -228,16 +230,27 @@ export function RechargeMethodsCard() {
 								>
 									<div className="min-w-0">
 										<div className="truncate font-mono">{item.order_id}</div>
-									<div className="text-muted-foreground">
-										{item.amount} - {approvalLabel}
-									</div>
+										<div className="text-muted-foreground">
+											{item.amount} - {approvalLabel}
+										</div>
+										{item.decision_reason && (
+											<div className="text-muted-foreground">{item.decision_reason}</div>
+										)}
 										{item.request_id && (
 											<div className="truncate font-mono text-[10px] text-muted-foreground">
 												request_id: {item.request_id}
 											</div>
 										)}
 									</div>
-									<Badge variant={isDelivered ? 'default' : 'outline'}>
+									<Badge
+										variant={
+											item.status === 'rejected'
+												? 'destructive'
+												: isDelivered
+													? 'default'
+													: 'outline'
+										}
+									>
 										{statusLabel}
 									</Badge>
 								</div>

@@ -50,6 +50,7 @@ export interface RechargeOrder {
   expiresAt?: number;
   decisionReason?: string;
   delivered?: boolean;
+  decisionAcknowledged?: boolean;
   deliveredAt?: number;
   deliveryAttempts?: number;
   lastDeliveryAt?: number;

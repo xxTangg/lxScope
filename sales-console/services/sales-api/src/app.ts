@@ -429,10 +429,12 @@ function canonicalResponseFor(
   }
   if (/^\/api\/v1\/integration\/recharge-requests\/[^/]+\/ack$/.test(canonicalPath)) {
     const match = /^\/api\/v1\/integration\/recharge-requests\/([^/]+)\/ack$/.exec(canonicalPath);
+    const result = asRecord(body) ?? {};
+    const status = result.status === 'rejected' ? 'rejected' : 'approved';
     return {
       order_id: match?.[1],
-      status: 'approved',
-      delivery_status: 'delivered',
+      status,
+      delivery_status: status === 'approved' ? 'delivered' : 'not_delivered',
       request_id: id,
     };
   }
@@ -1279,6 +1281,8 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const strictContract = req.headers['x-canonical-api'] === '1';
+      const includeRejected =
+        strictContract && String(req.query.include_rejected ?? '').toLowerCase() === 'true';
       if (strictContract) {
         requiredRequestID(req);
         requiredSystemQuery(req, customer);
@@ -1290,7 +1294,15 @@ export async function createApp(): Promise<express.Express> {
           (item) =>
             item.customerID === customer.id && item.status === 'approved' && !item.delivered,
         );
-        const found = strictContract
+        const rejectedUnacknowledged = includeRejected
+          ? items.filter(
+              (item) =>
+                item.customerID === customer.id &&
+                item.status === 'rejected' &&
+                !item.decisionAcknowledged,
+            )
+          : [];
+        const approvedFound = strictContract
           ? approvedUndelivered.filter((item) => {
               const hasValidRechargeValues =
                 typeof item.amount === 'number' &&
@@ -1304,9 +1316,11 @@ export async function createApp(): Promise<express.Express> {
               return Boolean(item.code && item.expiresAt && item.expiresAt > now);
             })
           : approvedUndelivered.slice(0, 1);
+        const found = [...approvedFound, ...rejectedUnacknowledged];
         if (found.length) {
           const now = Date.now();
           for (const item of found) {
+            if (item.status === 'rejected') continue;
             const hasValidRechargeValues =
               typeof item.amount === 'number' &&
               Number.isFinite(item.amount) &&
@@ -1342,7 +1356,7 @@ export async function createApp(): Promise<express.Express> {
             item.deliveryAttempts = (item.deliveryAttempts ?? 0) + 1;
             item.lastDeliveryAt = now;
           }
-          await writeJson(db.files.orders, items);
+          if (approvedFound.length) await writeJson(db.files.orders, items);
         }
         return found;
       });
@@ -1352,16 +1366,26 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       res.json({
-        orders: ready.map((order) => ({
-          id: order.id,
-          systemId: customer.systemId,
-          amount: order.amount,
-          tokens: order.tokens,
-          status: order.status,
-          deliveryStatus: order.delivered ? 'delivered' : 'not_delivered',
-          code: order.code,
-          expiresAt: order.expiresAt,
-        })),
+        orders: ready.map((order) =>
+          order.status === 'rejected'
+            ? {
+                id: order.id,
+                systemId: customer.systemId,
+                status: order.status,
+                deliveryStatus: 'not_delivered',
+                decisionReason: order.decisionReason,
+              }
+            : {
+                id: order.id,
+                systemId: customer.systemId,
+                amount: order.amount,
+                tokens: order.tokens,
+                status: order.status,
+                deliveryStatus: order.delivered ? 'delivered' : 'not_delivered',
+                code: order.code,
+                expiresAt: order.expiresAt,
+              },
+        ),
       });
     } catch (error) {
       next(error);
@@ -1420,13 +1444,14 @@ export async function createApp(): Promise<express.Express> {
         ? requiredText(req.body.systemId, 'system_id')
         : String(req.body.systemId ?? '').trim();
       const redemptionOperationID = strictContract
-        ? requiredText(
+        ? optionalContractText(
             req.body.redemptionOperationID ?? req.body.redemptionOperationId,
             'redemption_operation_id',
+            128,
           )
         : String(req.body.redemptionOperationID ?? '').trim();
       const ledgerID = strictContract
-        ? requiredText(req.body.ledgerID ?? req.body.ledgerId, 'ledger_id')
+        ? optionalContractText(req.body.ledgerID ?? req.body.ledgerId, 'ledger_id', 128)
         : String(req.body.ledgerID ?? '').trim();
       if (
         (strictContract && (!customer.systemId || systemID !== customer.systemId)) ||
@@ -1436,14 +1461,23 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       let found = false;
+      let acknowledgedStatus: 'approved' | 'rejected' | undefined;
       await updateJson(db.files.orders, [], (items: RechargeOrder[]) =>
         items.map((item) => {
-          if (
-            item.id === req.params.id &&
-            item.customerID === customer.id &&
-            item.status === 'approved'
-          ) {
+          if (item.id !== req.params.id || item.customerID !== customer.id) return item;
+          if (item.status === 'rejected') {
             found = true;
+            acknowledgedStatus = 'rejected';
+            return item.decisionAcknowledged ? item : { ...item, decisionAcknowledged: true };
+          }
+          if (item.status === 'approved') {
+            if (strictContract && (!redemptionOperationID || !ledgerID)) {
+              throw Object.assign(new Error('批准订单 ACK 缺少兑换或账本信息'), {
+                status: 400,
+              });
+            }
+            found = true;
+            acknowledgedStatus = 'approved';
             return {
               ...item,
               delivered: true,
@@ -1461,7 +1495,11 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ error: '充值订单不存在' });
         return;
       }
-      res.json({ ok: true });
+      res.json({
+        ok: true,
+        status: acknowledgedStatus,
+        deliveryStatus: acknowledgedStatus === 'approved' ? 'delivered' : 'not_delivered',
+      });
     } catch (error) {
       next(error);
     }

@@ -223,12 +223,17 @@ paths:
                   request_id: { type: string, maxLength: 128 }
   /api/v1/integration/recharge-requests/poll:
     get:
-      summary: 客户轮询已审批充值码
+      summary: 客户轮询审批通过的充值码和待确认的拒绝结果
       security: [{ customerBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/SystemIdQuery' }
         - { $ref: '#/components/parameters/RequestID' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
+        - in: query
+          name: include_rejected
+          required: false
+          description: 新版管理系统设置 true 后，附带未确认的拒绝结果；省略时维持旧版仅返回批准订单的行为
+          schema: { type: boolean, default: false }
       responses:
         '200':
           description: '{orders, request_id}；每个订单只返回对接方规定字段'
@@ -243,27 +248,36 @@ paths:
                     type: array
                     items:
                       type: object
-                      additionalProperties: false
-                      required:
-                        [
-                          order_id,
-                          system_id,
-                          amount,
-                          tokens,
-                          status,
-                          delivery_status,
-                          recharge_code,
-                          expires_at,
-                        ]
-                      properties:
-                        order_id: { type: string }
-                        system_id: { type: string }
-                        amount: { type: string, pattern: '^\d+\.\d{2}$' }
-                        tokens: { type: integer, minimum: 1 }
-                        status: { type: string, enum: [approved] }
-                        delivery_status: { type: string, enum: [not_delivered] }
-                        recharge_code: { type: string, pattern: '^LXRC2\.[^.]+\.[^.]+$' }
-                        expires_at: { type: string, format: date-time }
+                      oneOf:
+                        - additionalProperties: false
+                          required:
+                            [
+                              order_id,
+                              system_id,
+                              amount,
+                              tokens,
+                              status,
+                              delivery_status,
+                              recharge_code,
+                              expires_at,
+                            ]
+                          properties:
+                            order_id: { type: string }
+                            system_id: { type: string }
+                            amount: { type: string, pattern: '^\d+\.\d{2}$' }
+                            tokens: { type: integer, minimum: 1 }
+                            status: { type: string, enum: [approved] }
+                            delivery_status: { type: string, enum: [not_delivered] }
+                            recharge_code: { type: string, pattern: '^LXRC2\.[^.]+\.[^.]+$' }
+                            expires_at: { type: string, format: date-time }
+                        - additionalProperties: false
+                          required: [order_id, system_id, status, delivery_status]
+                          properties:
+                            order_id: { type: string }
+                            system_id: { type: string }
+                            status: { type: string, enum: [rejected] }
+                            delivery_status: { type: string, enum: [not_delivered] }
+                            decision_reason: { type: string, maxLength: 500 }
                   request_id: { type: string, maxLength: 128 }
   /api/v1/integration/recharge-codes/legacy:
     get:
@@ -273,7 +287,7 @@ paths:
         '200': { description: system_id、nonces、request_id }
   /api/v1/integration/recharge-requests/{order_id}/ack:
     post:
-      summary: 客户确认充值码已兑换
+      summary: 客户确认充值码已兑换或已收到拒绝结果
       security: [{ customerBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrderId' }
@@ -285,7 +299,7 @@ paths:
           application/json: { schema: { $ref: '#/components/schemas/RechargeAckRequest' } }
       responses:
         '200':
-          description: 已确认并将 delivery_status 更新为 delivered
+          description: 批准订单确认入账；拒绝订单确认收到审批结果
           content:
             application/json:
               schema:
@@ -294,8 +308,8 @@ paths:
                 required: [order_id, status, delivery_status, request_id]
                 properties:
                   order_id: { type: string }
-                  status: { type: string, enum: [approved] }
-                  delivery_status: { type: string, enum: [delivered] }
+                  status: { type: string, enum: [approved, rejected] }
+                  delivery_status: { type: string, enum: [delivered, not_delivered] }
                   request_id: { type: string, maxLength: 128 }
   /api/v1/integration/usage-reports:
     post:
@@ -545,12 +559,12 @@ components:
         requested_at: { type: string, format: date-time }
     RechargeAckRequest:
       type: object
-      required: [operation_id, system_id, redemption_operation_id, ledger_id]
+      required: [operation_id, system_id]
       properties:
         operation_id: { type: string, minLength: 1, maxLength: 128 }
         system_id: { type: string, minLength: 1, maxLength: 128 }
-        redemption_operation_id: { type: string, minLength: 1, maxLength: 128 }
-        ledger_id: { type: string, minLength: 1, maxLength: 128 }
+        redemption_operation_id: { type: string, minLength: 1, maxLength: 128, description: 批准订单必填；拒绝结果确认时省略 }
+        ledger_id: { type: string, minLength: 1, maxLength: 128, description: 批准订单必填；拒绝结果确认时省略 }
     UsageReport:
       type: object
       required: [system_id, pool_tokens, total_recharged, app_version, client_reported_at]

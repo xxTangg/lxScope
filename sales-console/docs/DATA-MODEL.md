@@ -32,6 +32,7 @@
 - `code`：审批通过后生成的 `LXRC2.<payload>.<signature>` 签名充值码，并在客户轮询响应中返回
 - `expiresAt`：充值码过期时间，默认自审批签发起 1 小时
 - `decisionReason`：销售人员批准或拒绝时填写的原因
+- `decisionAcknowledged`：客户管理系统是否已确认收到拒绝结果，避免轮询重复返回
 - `delivered`、`deliveryAttempts`、`lastDeliveryAt`：客户系统轮询和确认状态
 - `ackOperationID`、`redemptionOperationID`、`ledgerID`：客户系统 ACK 的本地操作和账本标识
 - `createdAt`、`processedAt`、`deliveredAt`：订单时间线

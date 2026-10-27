@@ -404,6 +404,7 @@ export interface RechargeRequest {
 	amount: string;
 	status: 'pending' | 'approved' | 'rejected' | 'unknown';
 	delivery_status: 'not_delivered' | 'delivered';
+	decision_reason?: string | null;
 	created_at: string;
 	request_id: string;
 }
