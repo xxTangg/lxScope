@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from ._clarification import (
     EXECUTION_POLICY,
+    EffectiveRequirement,
     REQUIREMENTS_POLICY,
     EffectiveRequirements,
     clarification_metadata,
@@ -40,12 +41,10 @@ from ._information_contract import (
 from ._models import (
     AgentStepConfig,
     AgentStepOutcome,
-    AgentStepOutcomeCandidate,
     ExecutionContext,
     PythonStepConfig,
     StepType,
     TaskInputQuestion,
-    TaskInputRequest,
     TaskNode,
     TaskToolSchema,
     StepVerdict,
@@ -61,62 +60,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_INFO_REQUEST_MARKERS = (
-    "请补充",
-    "请提供",
-    "请说明",
-    "请填写",
-    "请上传",
-    "需要补充",
-    "需要提供",
-    "缺少",
-    "尚缺",
-    "未提供",
-    "信息不足",
-    "资料不足",
-    "补充信息",
-    "补充资料",
-    "please provide",
-    "please share",
-    "please supply",
-    "need additional information",
-    "missing information",
+_OUTCOME_SCHEMA_FIELDS = frozenset(
+    {"status", "output", "reason", "questions", "key", "label", "required", "options"}
 )
-_HARD_FAILURE_MARKERS = (
-    "权限不足",
-    "无权限",
-    "拒绝访问",
-    "未授权",
-    "未经授权",
-    "审批未通过",
-    "审批被拒",
-    "未获批准",
-    "违反政策",
-    "违反规定",
-    "不合规",
-    "禁止执行",
-    "工具调用失败",
-    "接口调用失败",
-    "请求超时",
-    "连接超时",
-    "服务不可用",
-    "工具不可用",
-    "执行异常",
-    "执行失败",
-    "运行时错误",
-    "permission denied",
-    "forbidden",
-    "unauthorized",
-    "approval denied",
-    "approval not granted",
-    "policy violation",
-    "tool call failed",
-    "execution failed",
-    "connection error",
-    "service unavailable",
-    "timeout",
-)
-_QUESTION_FIELDS = {"key", "label", "required", "options"}
+_MISSING = object()
 
 
 def _protocol_failure(
@@ -124,243 +71,431 @@ def _protocol_failure(
     *,
     code: str,
     question_count: int = 0,
+    validation: dict[str, Any] | None = None,
 ) -> tuple[AgentStepOutcome, dict[str, Any]]:
     """Return a safe Task failure without retaining raw model response data."""
 
     reason = f"AgentStepOutcome 结构化输出协议错误：{message}"
     outcome = AgentStepOutcome(status="failed", reason=reason)
-    return outcome, {
+    metadata = {
         "status": "rejected",
         "code": code,
         "question_count": question_count,
     }
+    if validation:
+        metadata["validation"] = validation
+    return outcome, metadata
 
 
-def _append_protocol_note(cause: str, note: str) -> str:
-    suffix = f" AgentStepOutcome 结构化输出协议错误：{note}"
-    return cause[: max(0, 2_000 - len(suffix))] + suffix
+def _safe_schema_path(location: Any) -> str:
+    """Keep only schema field names and bounded array indexes in diagnostics."""
+
+    if not isinstance(location, (tuple, list)) or not location:
+        return "$"
+    safe_parts: list[str] = []
+    for part in location:
+        if isinstance(part, int):
+            safe_parts.append(str(part) if 0 <= part < 16 else "*")
+        elif isinstance(part, str) and part in _OUTCOME_SCHEMA_FIELDS:
+            safe_parts.append(part)
+        else:
+            # Extra field names may themselves contain user data.
+            safe_parts.append("<extra>")
+    return ".".join(safe_parts)
 
 
-def _validate_candidate_questions(
-    values: list[Any],
-) -> list[TaskInputQuestion]:
-    """Validate question shape strictly while preserving all supported fields."""
+def _safe_value_type(value: Any) -> str:
+    if value is _MISSING:
+        return "absent"
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "other"
 
-    questions: list[TaskInputQuestion] = []
-    for value in values:
-        if not isinstance(value, dict) or set(value) - _QUESTION_FIELDS:
-            raise ValueError("questions must contain only supported fields")
-        if not isinstance(value.get("key"), str) or not isinstance(
-            value.get("label"), str
+
+def _validation_errors(error: BaseException) -> list[dict[str, Any]]:
+    """Find Pydantic errors in AgentScope's bounded exception chain."""
+
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ValidationError):
+            try:
+                return current.errors(
+                    include_input=True,
+                    include_context=False,
+                    include_url=False,
+                )
+            except TypeError:  # Compatibility with older Pydantic 2 releases.
+                return current.errors()
+        current = current.__cause__ or current.__context__
+    return []
+
+
+def _safe_validation_diagnostics(errors: list[dict[str, Any]]) -> dict[str, Any]:
+    fields: list[dict[str, str]] = []
+    missing: list[str] = []
+    paths: list[str] = []
+    for error in errors[:16]:
+        path = _safe_schema_path(error.get("loc"))
+        error_type = str(error.get("type") or "validation_error")[:80]
+        value_type = _safe_value_type(error.get("input", _MISSING))
+        fields.append(
+            {"path": path, "error_type": error_type, "value_type": value_type}
+        )
+        paths.append(path)
+        if error_type == "missing":
+            missing.append(path)
+    return {
+        "validation_paths": list(dict.fromkeys(paths)),
+        "missing_fields": list(dict.fromkeys(missing)),
+        "field_types": fields,
+    }
+
+
+def _protocol_issue(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    status = payload.get("status")
+    questions = payload.get("questions")
+    if status in {"succeeded", "failed"} and isinstance(questions, list) and questions:
+        return f"{status}_with_questions"
+    if status == "needs_input" and isinstance(questions, list) and not questions:
+        return "needs_input_without_questions"
+    return None
+
+
+def _question_count(payload: Any) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    questions = payload.get("questions")
+    return min(len(questions), 16) if isinstance(questions, list) else 0
+
+
+def _repair_canonical_question_booleans(
+    content: Any,
+) -> tuple[AgentStepOutcome, list[str]] | None:
+    """Normalize only quoted JSON boolean literals, then validate the full model."""
+
+    if not isinstance(content, dict):
+        return None
+    questions = content.get("questions")
+    if not isinstance(questions, list) or len(questions) > 16:
+        return None
+
+    repaired_questions: list[Any] = []
+    repaired_paths: list[str] = []
+    for index, question in enumerate(questions):
+        if (
+            isinstance(question, dict)
+            and type(question.get("required")) is str
+            and question["required"] in {"true", "false"}
         ):
-            raise ValueError("each question needs a string key and label")
-        if "required" in value and type(value["required"]) is not bool:
-            raise ValueError("question.required must be a boolean")
-        if "options" in value and (
-            not isinstance(value["options"], list)
-            or any(not isinstance(option, str) for option in value["options"])
-        ):
-            raise ValueError("question.options must be a list of strings")
-        questions.append(TaskInputQuestion.model_validate(value))
-    if questions:
-        TaskInputRequest.unique_keys(questions)
-    return questions
+            repaired_question = dict(question)
+            repaired_question["required"] = question["required"] == "true"
+            repaired_questions.append(repaired_question)
+            repaired_paths.append(f"questions.{index}.required")
+        else:
+            repaired_questions.append(question)
+    if not repaired_paths:
+        return None
+
+    candidate = dict(content)
+    candidate["questions"] = repaired_questions
+    try:
+        outcome = AgentStepOutcome.model_validate(candidate)
+    except ValidationError:
+        return None
+    return outcome, repaired_paths
 
 
-def _has_hard_failure_signal(text: str) -> bool:
-    normalized = text.casefold()
-    return any(marker.casefold() in normalized for marker in _HARD_FAILURE_MARKERS)
-
-
-def _is_clear_information_request(
+def _emit_protocol_diagnostic(
     *,
-    reason: str,
-    output: str,
-    questions: list[TaskInputQuestion],
-) -> bool:
-    text = "\n".join(
-        [reason, output, *(question.label for question in questions)]
-    ).casefold()
-    return any(marker.casefold() in text for marker in _INFO_REQUEST_MARKERS)
-
-
-def _questions_are_new(
-    questions: list[TaskInputQuestion], context: ExecutionContext
-) -> bool:
-    answered = {
-        key
-        for reply in context.user_answers
-        for key in reply.answers
-    }
-    previously_asked = {
-        str(key)
-        for item in context.clarification_state.get("asked_fields", [])
-        if isinstance(item, dict)
-        for key in [item.get("key"), *(item.get("aliases") or [])]
-        if isinstance(key, str)
-    }
-    previously_asked_labels = {
-        re.sub(r"[^\w]+", "", str(item.get("label", ""))).casefold()
-        for item in context.clarification_state.get("asked_fields", [])
-        if isinstance(item, dict) and item.get("label")
-    }
-    keys = {question.key for question in questions}
-    labels = {
-        re.sub(r"[^\w]+", "", question.label).casefold()
-        for question in questions
-    }
-    return (
-        not keys.intersection(answered | previously_asked)
-        and not labels.intersection(previously_asked_labels)
+    context: ExecutionContext | None,
+    node_id: str | None,
+    code: str,
+    diagnostics: dict[str, Any],
+    issue: str | None = None,
+) -> None:
+    # Do not log Pydantic's message or input: both may include task content.
+    safe = dict(diagnostics)
+    if issue:
+        safe["protocol_issue"] = issue
+    logger.warning(
+        "Task AgentStepOutcome rejected run_id=%s node_id=%s code=%s diagnostics=%s",
+        context.run_id if context else "unknown",
+        node_id or "unknown",
+        code,
+        json.dumps(safe, ensure_ascii=False, separators=(",", ":")),
     )
 
 
-def _can_park_for_model_questions(
+def _protocol_failure_from_error(
+    error: BaseException,
     *,
-    reason: str,
-    output: str,
-    questions: list[TaskInputQuestion],
-    requirements: EffectiveRequirements,
-    context: ExecutionContext,
-    stop_reason: str,
-) -> bool:
-    """Accept only clear, new information requests with no active blocker."""
+    context: ExecutionContext | None = None,
+    node_id: str | None = None,
+    payload: Any = None,
+) -> tuple[AgentStepOutcome, dict[str, Any]]:
+    """Reject invalid output with a safe, path-specific diagnostic."""
 
-    if (
-        not questions
-        or requirements.blockers
-        or stop_reason
-        or not _questions_are_new(questions, context)
-        or not _is_clear_information_request(
-            reason=reason,
-            output=output,
-            questions=questions,
+    errors = _validation_errors(error)
+    diagnostics = _safe_validation_diagnostics(errors)
+    issue = _protocol_issue(payload)
+    if issue is None:
+        for item in errors[:16]:
+            issue = _protocol_issue(item.get("input"))
+            if issue:
+                break
+    count = _question_count(payload)
+    if not count:
+        for item in errors[:16]:
+            count = _question_count(item.get("input"))
+            if count:
+                break
+    code = "outcome_schema_invalid" if errors else "structured_output_unavailable"
+    if errors:
+        _emit_protocol_diagnostic(
+            context=context,
+            node_id=node_id,
+            code=code,
+            diagnostics=diagnostics,
+            issue=issue,
         )
-    ):
-        return False
-    return not _has_hard_failure_signal(
-        "\n".join([reason, output, *(question.label for question in questions)])
+        message = "模型响应未通过 AgentStepOutcome 完整校验，已拒绝该节点结果。"
+    else:
+        message = "模型未返回可校验的 AgentStepOutcome，已停止本次节点输出。"
+    if issue:
+        diagnostics["protocol_issue"] = issue
+    return _protocol_failure(
+        message,
+        code=code,
+        question_count=count,
+        validation=diagnostics if errors else None,
     )
 
 
 def _parse_agent_step_outcome(
     content: Any,
     *,
-    requirements: EffectiveRequirements,
-    context: ExecutionContext,
-    stop_reason: str = "",
+    context: ExecutionContext | None = None,
+    node_id: str | None = None,
 ) -> tuple[AgentStepOutcome, dict[str, Any]]:
-    """Inspect permissive wire output, repair once deterministically, revalidate."""
-
+    """Validate a response directly against the single authoritative model."""
     try:
-        candidate = AgentStepOutcomeCandidate.model_validate(content)
-    except ValidationError:
-        return _protocol_failure(
-            "模型响应未满足 Task 要求的字段和类型约束，已停止本次节点输出。",
-            code="candidate_shape_invalid",
-        )
-
-    question_count = len(candidate.questions)
-    try:
-        questions = _validate_candidate_questions(candidate.questions)
-    except (TypeError, ValueError, ValidationError):
-        if candidate.status == "failed" and candidate.questions:
-            cause = candidate.reason.strip() or candidate.output.strip() or "模型报告执行失败。"
-            outcome = AgentStepOutcome(
-                status="failed",
-                output=candidate.output,
-                reason=_append_protocol_note(
-                    cause,
-                    "questions 结构非法；未转为用户补充输入。",
-                ),
-            )
+        outcome = AgentStepOutcome.model_validate(content)
+    except ValidationError as error:
+        repaired = _repair_canonical_question_booleans(content)
+        if repaired is not None:
+            outcome, repaired_paths = repaired
             return outcome, {
-                "status": "rejected",
-                "code": "invalid_questions",
-                "question_count": question_count,
+                "status": "valid",
+                "model_status": outcome.status,
+                "question_count": len(outcome.questions),
+                "format_repair": {
+                    "kind": "canonical_question_boolean",
+                    "paths": repaired_paths,
+                },
             }
-        return _protocol_failure(
-            "questions 结构非法，已拒绝该节点结果。",
-            code="invalid_questions",
-            question_count=question_count,
-        )
-
-    if candidate.status == "failed" and questions:
-        information_request = _can_park_for_model_questions(
-            reason=candidate.reason,
-            output=candidate.output,
-            questions=questions,
-            requirements=requirements,
+        return _protocol_failure_from_error(
+            error,
             context=context,
-            stop_reason=stop_reason,
-        )
-        if information_request:
-            try:
-                repaired = AgentStepOutcome.model_validate(
-                    {
-                        "status": "needs_input",
-                        "output": candidate.output,
-                        "reason": candidate.reason,
-                        "questions": [question.model_dump() for question in questions],
-                    }
-                )
-            except ValidationError:
-                return _protocol_failure(
-                    "failed + questions 无法安全修复为合法 needs_input。",
-                    code="safe_repair_revalidation_failed",
-                    question_count=question_count,
-                )
-            return repaired, {
-                "status": "repaired",
-                "code": "failed_with_questions_to_needs_input",
-                "model_status": "failed",
-                "effective_status": "needs_input",
-                "repair": "status_only",
-                "question_count": question_count,
-            }
-
-        cause = candidate.reason.strip() or candidate.output.strip() or "模型报告执行失败。"
-        outcome = AgentStepOutcome(
-            status="failed",
-            output=candidate.output,
-            reason=_append_protocol_note(
-                cause,
-                "failed 不得携带 questions；未将其转换为用户补充输入。",
-            ),
-        )
-        return outcome, {
-            "status": "rejected",
-            "code": "failed_with_questions_not_safe_to_repair",
-            "question_count": question_count,
-        }
-
-    if candidate.status == "succeeded" and questions:
-        return _protocol_failure(
-            "succeeded 不得携带 questions，已拒绝将该响应视为成功。",
-            code="succeeded_with_questions",
-            question_count=question_count,
-        )
-
-    try:
-        outcome = AgentStepOutcome.model_validate(
-            {
-                "status": candidate.status,
-                "output": candidate.output,
-                "reason": candidate.reason,
-                "questions": [question.model_dump() for question in questions],
-            }
-        )
-    except ValidationError:
-        return _protocol_failure(
-            "模型响应不符合 AgentStepOutcome 状态约束，已拒绝该节点结果。",
-            code="outcome_validation_failed",
-            question_count=question_count,
+            node_id=node_id,
+            payload=content,
         )
     return outcome, {
         "status": "valid",
-        "model_status": candidate.status,
-        "question_count": question_count,
+        "model_status": outcome.status,
+        "question_count": len(outcome.questions),
     }
+
+
+def _admit_agent_input_questions(
+    questions: list[TaskInputQuestion],
+    *,
+    reason: str,
+    requirements: EffectiveRequirements,
+    context: ExecutionContext,
+    max_rounds: int,
+    max_questions: int,
+) -> tuple[list[TaskInputQuestion], str, int]:
+    """Admit only new required questions that do not contradict a frozen rule."""
+
+    if context.clarification_rounds >= max_rounds:
+        return [], "round_limit", 0
+
+    optional_count = 0
+    candidates: list[tuple[TaskInputQuestion, EffectiveRequirement, bool]] = []
+    for question in questions:
+        if not question.required:
+            optional_count += 1
+            continue
+        question_label = re.sub(r"[^\w]+", "", question.label).casefold()
+        related = next(
+            (
+                field
+                for field in requirements.fields
+                if question.key in {field.key, *field.aliases}
+                or question_label
+                == re.sub(r"[^\w]+", "", field.label).casefold()
+            ),
+            None,
+        )
+        aliases = set(related.aliases) if related else set()
+        if related and related.key != question.key:
+            aliases.add(related.key)
+        candidates.append(
+            (
+                question,
+                EffectiveRequirement(
+                    key=question.key,
+                    label=question.label,
+                    status="unknown",
+                    blocking=True,
+                    blocking_reason=(reason.strip() or question.label)[:1_000],
+                    aliases=sorted(aliases)[:16],
+                    classification="required",
+                ),
+                related is not None and related.status != "unknown",
+            )
+        )
+    if not candidates:
+        return [], "optional_only", optional_count
+
+    candidate_requirements = EffectiveRequirements(
+        effective_goal=requirements.effective_goal,
+        fields=[field for _, field, _ in candidates],
+    )
+    resolved = arbitrate_requirements(
+        candidate_requirements,
+        information_contract=context.information_contract,
+        user_answers=context.user_answers,
+        initial_input=context.initial_input,
+        named_inputs=context.named_inputs,
+        prior_results=context.history,
+        previous_result=context.previous_result,
+    )
+    eligible: list[EffectiveRequirement] = []
+    admitted_source_questions: dict[str, TaskInputQuestion] = {}
+    already_available = 0
+    contract_non_blockers = 0
+    for (question, candidate, known_value), resolved_field in zip(
+        candidates, resolved.fields, strict=True
+    ):
+        if known_value or resolved_field.status != "unknown":
+            already_available += 1
+            continue
+        if resolved_field.source_path is not None and not resolved_field.blocking:
+            # Explicit optional, inactive, or pending-verification contract
+            # fields cannot be elevated by a model-generated question.
+            contract_non_blockers += 1
+            continue
+        eligible.append(
+            resolved_field.model_copy(
+                update={
+                    "blocking": True,
+                    "blocking_reason": candidate.blocking_reason,
+                }
+            )
+        )
+        admitted_source_questions[question.key] = question
+
+    if not eligible:
+        if optional_count or contract_non_blockers:
+            return [], "optional_only", optional_count + contract_non_blockers
+        if already_available:
+            return [], "already_provided", already_available
+        return [], "repeated_blockers", 0
+
+    planned, stop_reason = plan_clarification(
+        EffectiveRequirements(
+            effective_goal=requirements.effective_goal,
+            fields=eligible,
+        ),
+        context,
+        max_rounds=max_rounds,
+        max_questions=max_questions,
+    )
+    if stop_reason:
+        return [], stop_reason, optional_count + contract_non_blockers
+    planned_keys = {question.key for question in planned}
+    admitted = [
+        question
+        for question in questions
+        if question.key in planned_keys
+        and question.key in admitted_source_questions
+    ][:max_questions]
+    if not admitted:
+        return [], "repeated_blockers", optional_count + contract_non_blockers
+    return admitted, "", optional_count + contract_non_blockers
+
+
+def _agent_input_limit_failure(
+    *,
+    questions: list[TaskInputQuestion],
+    stop_reason: str,
+    max_rounds: int,
+) -> tuple[AgentStepOutcome, dict[str, Any]]:
+    labels = "、".join(question.label for question in questions[:16])
+    if stop_reason == "round_limit":
+        reason = (
+            f"缺少必填输入：{labels}。当前 Run 已达到最多 {max_rounds} 轮补充上限，"
+            "执行器已停止重复调用模型。请修正已有回答后重试失败节点，或新建 Run。"
+        )
+        code = "agent_input_round_limit"
+    elif stop_reason == "already_provided":
+        reason = (
+            f"模型仍请求已存在于本次输入中的信息：{labels}。"
+            "执行器已停止重复追问；请检查输入与节点 Prompt 后重试失败节点，或新建 Run。"
+        )
+        code = "agent_input_already_provided"
+    elif stop_reason == "optional_only":
+        reason = (
+            f"模型只请求了可选或待核实信息：{labels}，且未能在一次有界纠正后产出草稿。"
+            "执行器没有把这些字段升级为必填；请重试失败节点，或新建 Run。"
+        )
+        code = "agent_optional_input_not_actionable"
+    else:
+        reason = (
+            f"缺少必填输入：{labels}。这些信息已被询问或回答，执行器已停止重复追问；"
+            "请修正已有回答后重试失败节点，或新建 Run。"
+        )
+        code = "agent_input_repeated"
+    return (
+        AgentStepOutcome(status="failed", output=reason, reason=reason),
+        {
+            "status": "limited",
+            "code": code,
+            "question_count": min(len(questions), 16),
+        },
+    )
+
+
+def _with_admitted_questions(
+    outcome: AgentStepOutcome,
+    questions: list[TaskInputQuestion],
+) -> AgentStepOutcome:
+    reason = outcome.reason.strip() or (
+        "当前步骤缺少以下必需信息，无法在不虚构事实的前提下继续："
+        + "、".join(question.label for question in questions)
+        + "。"
+    )
+    payload = outcome.model_dump(mode="python")
+    payload["reason"] = reason[:2_000]
+    payload["questions"] = questions
+    return AgentStepOutcome.model_validate(payload)
 
 
 @dataclass(slots=True)
@@ -703,20 +838,56 @@ class AgentScopeTaskExecutor:
         config = node.config
         if not isinstance(config, AgentStepConfig):
             raise RuntimeError("AgentStep is missing its AgentStepConfig.")
-        model = await get_model(
-            context.user_id,
-            session.config.chat_model_config,
-            self._access,
+        previous_requirements = context.clarification_state.get(
+            "requirements", {}
         )
-        requirements, requirement_response = await self._resolve_requirements(
-            model, node, previous_output, context
+        effective_goal = (
+            previous_requirements.get("effective_goal")
+            if isinstance(previous_requirements, dict)
+            else None
+        )
+        preflight_requirements = arbitrate_requirements(
+            EffectiveRequirements(
+                effective_goal=(
+                    effective_goal
+                    if isinstance(effective_goal, str) and effective_goal.strip()
+                    else context.initial_input.strip() or node.name
+                )[:4_000],
+                fields=[],
+            ),
+            information_contract=context.information_contract,
+            user_answers=context.user_answers,
+            initial_input=context.initial_input,
+            named_inputs=context.named_inputs,
+            prior_results=context.history,
+            previous_result=context.previous_result,
         )
         questions, stop_reason = plan_clarification(
-            requirements,
+            preflight_requirements,
             context,
             max_rounds=self._max_clarification_rounds,
             max_questions=self._max_clarification_questions,
         )
+        requirement_response = None
+        requirements = preflight_requirements
+        if not questions and not stop_reason:
+            # Contract-only required fields are checked before any model call.
+            # Natural-language normalization still runs when no deterministic
+            # input request is pending.
+            model = await get_model(
+                context.user_id,
+                session.config.chat_model_config,
+                self._access,
+            )
+            requirements, requirement_response = await self._resolve_requirements(
+                model, node, previous_output, context
+            )
+            questions, stop_reason = plan_clarification(
+                requirements,
+                context,
+                max_rounds=self._max_clarification_rounds,
+                max_questions=self._max_clarification_questions,
+            )
         prompt = _render_task_value(config.prompt, previous_output, context)
         output_contract = node.effective_output_contract
         if (
@@ -808,7 +979,9 @@ class AgentScopeTaskExecutor:
             len(model_messages) - 1,
             SystemMsg(name="task-executor", content=EXECUTION_POLICY),
         )
-        responses = [requirement_response]
+        responses = (
+            [requirement_response] if requirement_response is not None else []
+        )
         generation_retry_reason = ""
         if questions:
             outcome = AgentStepOutcome(
@@ -840,81 +1013,118 @@ class AgentScopeTaskExecutor:
             try:
                 response = await model.generate_structured_output(
                     messages=model_messages,
-                    structured_model=AgentStepOutcomeCandidate,
+                    structured_model=AgentStepOutcome,
                 )
-            except StructuredOutputError:
-                outcome, outcome_protocol = _protocol_failure(
-                    "模型未返回可校验的结构化节点结果；Task 已停止本次输出，未保存原始响应。",
-                    code="structured_output_unavailable",
+            except StructuredOutputError as error:
+                outcome, outcome_protocol = _protocol_failure_from_error(
+                    error,
+                    context=context,
+                    node_id=node.id,
                 )
             else:
                 responses.append(response)
                 outcome, outcome_protocol = _parse_agent_step_outcome(
                     response.content,
-                    requirements=requirements,
                     context=context,
-                    stop_reason=stop_reason,
+                    node_id=node.id,
                 )
 
-            legitimate_input_request = outcome.status == "needs_input" and (
-                outcome_protocol.get("status") == "repaired"
-                or _can_park_for_model_questions(
-                    reason=outcome.reason,
-                    output=outcome.output,
-                    questions=outcome.questions,
-                    requirements=requirements,
-                    context=context,
-                    stop_reason=stop_reason,
-                )
-            )
-            if outcome.status == "needs_input" and not legitimate_input_request:
-                # A model cannot reopen collection for optional or answered
-                # fields. Give it one bounded chance to produce real work.
-                try:
-                    response = await model.generate_structured_output(
-                        messages=[
-                            *model_messages,
-                            AssistantMsg(
-                                name="task-executor",
-                                content=outcome.model_dump_json(),
-                            ),
-                            UserMsg(
-                                name="task-policy",
-                                content=(
-                                    "当前有效需求没有未解决的必要字段。你提出的问题已回答、"
-                                    "属于可选项或超出当前范围，执行器不会再次询问。"
-                                    "请基于已有信息完成当前步骤；若确实无法完成，返回 failed "
-                                    "并说明具体能力或数据限制。不得返回 needs_input。"
-                                ),
-                            ),
-                        ],
-                        structured_model=AgentStepOutcomeCandidate,
-                    )
-                except StructuredOutputError:
-                    outcome, outcome_protocol = _protocol_failure(
-                        "一次有界协议纠正后仍未返回可校验的结构化节点结果。",
-                        code="structured_output_unavailable_after_retry",
-                    )
-                else:
-                    responses.append(response)
-                    outcome, outcome_protocol = _parse_agent_step_outcome(
-                        response.content,
+            if (
+                outcome.status == "needs_input"
+                and outcome_protocol.get("status") != "task_policy"
+            ):
+                admitted, request_issue, filtered_count = (
+                    _admit_agent_input_questions(
+                        outcome.questions,
+                        reason=outcome.reason,
                         requirements=requirements,
                         context=context,
-                        stop_reason=stop_reason,
+                        max_rounds=self._max_clarification_rounds,
+                        max_questions=self._max_clarification_questions,
                     )
-                if outcome.status == "needs_input":
-                    rejected_question_count = len(outcome.questions or [])
-                    stop_reason = "model_repeated_question"
-                    reason = "执行器已停止无进展的追问，模型未能基于当前有效需求产出结果。"
-                    outcome = AgentStepOutcome(
-                        status="failed", output=reason, reason=reason
-                    )
+                )
+                if admitted:
+                    questions = admitted
+                    outcome = _with_admitted_questions(outcome, admitted)
                     outcome_protocol = {
-                        "status": "rejected",
-                        "code": "needs_input_after_bounded_policy_retry",
-                        "question_count": rejected_question_count,
+                        "status": "accepted",
+                        "code": "agent_needs_input_accepted",
+                        "source": "agent_step",
+                        "question_count": len(admitted),
+                        "filtered_nonblocking_count": filtered_count,
                     }
+                elif request_issue in {"optional_only", "already_provided"}:
+                    # Correct one non-progressing request once. A genuine new
+                    # required question may still be admitted after the retry.
+                    generation_retry_reason = request_issue
+                    correction = (
+                        "你刚才请求的信息已被执行器判定为可选、契约待核实，或已存在于当前输入中。"
+                        "不要重复请求这些字段；若当前节点允许草稿，请继续完成并明确待核实事项。"
+                        "如果仍缺少另一项真实、不可省略且无法安全草拟的输入，可以返回 needs_input，"
+                        "提出具体的新问题并说明缺失原因。不得虚构事实，也不得把可选项升级为必填。"
+                    )
+                    try:
+                        response = await model.generate_structured_output(
+                            messages=[
+                                *model_messages,
+                                AssistantMsg(
+                                    name="task-executor",
+                                    content=outcome.model_dump_json(),
+                                ),
+                                UserMsg(name="task-policy", content=correction),
+                            ],
+                            structured_model=AgentStepOutcome,
+                        )
+                    except StructuredOutputError as error:
+                        outcome, outcome_protocol = _protocol_failure_from_error(
+                            error,
+                            context=context,
+                            node_id=node.id,
+                        )
+                    else:
+                        responses.append(response)
+                        outcome, outcome_protocol = _parse_agent_step_outcome(
+                            response.content,
+                            context=context,
+                            node_id=node.id,
+                        )
+                    if outcome.status == "needs_input":
+                        admitted, retry_issue, retry_filtered_count = (
+                            _admit_agent_input_questions(
+                                outcome.questions,
+                                reason=outcome.reason,
+                                requirements=requirements,
+                                context=context,
+                                max_rounds=self._max_clarification_rounds,
+                                max_questions=self._max_clarification_questions,
+                            )
+                        )
+                        if admitted:
+                            questions = admitted
+                            outcome = _with_admitted_questions(
+                                outcome, admitted
+                            )
+                            outcome_protocol = {
+                                "status": "accepted",
+                                "code": "agent_needs_input_accepted_after_bounded_correction",
+                                "source": "agent_step",
+                                "question_count": len(admitted),
+                                "filtered_nonblocking_count": retry_filtered_count,
+                            }
+                        else:
+                            stop_reason = retry_issue
+                            outcome, outcome_protocol = _agent_input_limit_failure(
+                                questions=outcome.questions,
+                                stop_reason=retry_issue,
+                                max_rounds=self._max_clarification_rounds,
+                            )
+                else:
+                    stop_reason = request_issue
+                    outcome, outcome_protocol = _agent_input_limit_failure(
+                        questions=outcome.questions,
+                        stop_reason=request_issue,
+                        max_rounds=self._max_clarification_rounds,
+                    )
         output = outcome.output
         display = output or outcome.reason
         if outcome.questions:

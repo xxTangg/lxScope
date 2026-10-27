@@ -208,6 +208,8 @@ class TaskArtifactRecord(BaseModel):
 class TaskInputQuestion(BaseModel):
     """A business-data question; options are suggestions, free text is allowed."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     key: str = Field(min_length=1, max_length=80, pattern=r"^[\w.-]+$")
     label: str = Field(min_length=1, max_length=500)
     required: bool = True
@@ -354,24 +356,6 @@ class AgentStepOutcome(BaseModel):
         if self.status == "failed" and not (self.output.strip() or self.reason.strip()):
             raise ValueError("failed requires a concrete failure reason.")
         return self
-
-
-class AgentStepOutcomeCandidate(BaseModel):
-    """Bounded wire shape that lets Task inspect status/question mismatches.
-
-    AgentScope validates structured output before returning it to Task. The
-    wire shape permits status/question mismatches and malformed question
-    contents to reach Task, where they can be rejected without losing a real
-    failure reason. The outer list and question count remain bounded. Every
-    candidate is revalidated against ``AgentStepOutcome`` before use.
-    """
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    status: Literal["succeeded", "needs_input", "failed"]
-    output: str = Field(default="", max_length=100_000)
-    reason: str = Field(default="", max_length=2_000)
-    questions: list[Any] = Field(default_factory=list, max_length=16)
 
 
 class StepVerificationIssue(BaseModel):

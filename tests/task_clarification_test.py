@@ -18,7 +18,7 @@ from examples.agent_service.task._clarification import (
 )
 from examples.agent_service.task._models import (
     AgentStepConfig,
-    AgentStepOutcomeCandidate,
+    AgentStepOutcome,
     CreateTaskRequest,
     ExecutionContext,
     RunStatus,
@@ -62,6 +62,22 @@ def _required_contract(key):
                 "reason": "该字段由当前 Task 合同明确声明为必填。",
                 "condition": None,
                 "condition_state": "active",
+                "source_path": f"test.frozen_contract.{key}",
+            },
+        ],
+    }
+
+
+def _optional_contract(key):
+    return {
+        "requirements": [
+            {
+                "key": key,
+                "label": key,
+                "classification": "optional",
+                "reason": "",
+                "condition": None,
+                "condition_state": "inactive",
                 "source_path": f"test.frozen_contract.{key}",
             },
         ],
@@ -305,7 +321,7 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.status, "needs_input")
         self.assertEqual([q.key for q in result.questions], ["date"])
-        self.assertEqual(self.model.generate_structured_output.call_count, 1)
+        self.assertEqual(self.model.generate_structured_output.call_count, 0)
         self.assertEqual(
             result.metadata["clarification"]["asked_fields"][0]["key"], "date"
         )
@@ -323,34 +339,103 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
             ),
             _response({"status": "succeeded", "output": "已整理有效交通需求"}),
         ]
-        result = await self._execute()
+        result = await self._execute(
+            _context(information_contract=_optional_contract("budget"))
+        )
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.questions, [])
         self.assertEqual(self.model.generate_structured_output.call_count, 3)
 
-    async def test_model_insisting_on_questions_stops_without_fake_completion(
+    async def test_new_uncontracted_required_input_is_accepted(self):
+        self.model.generate_structured_output.side_effect = [
+            _response(_requirements(_field("project_brief"))),
+            _response(
+                {
+                    "status": "needs_input",
+                    "reason": "没有项目背景原文，无法从操作指令中提取真实目标。",
+                    "questions": [
+                        {
+                            "key": "project_brief",
+                            "label": "请粘贴项目背景原文",
+                        }
+                    ],
+                }
+            ),
+        ]
+
+        result = await self._execute()
+
+        self.assertEqual(result.status, "needs_input")
+        self.assertEqual(result.questions[0].key, "project_brief")
+        self.assertEqual(
+            result.metadata["agent_outcome_protocol"]["status"], "accepted"
+        )
+        self.assertEqual(
+            result.metadata["clarification"]["asked_fields"][0]["key"],
+            "project_brief",
+        )
+        self.assertEqual(self.model.generate_structured_output.call_count, 2)
+
+    async def test_repeated_question_is_stopped_without_another_model_call(
         self,
     ):
         self.model.generate_structured_output.side_effect = [
             _response(_requirements(_field("date", "2026-10-09"))),
-            *[
-                _response(
-                    {
-                        "status": "needs_input",
-                        "questions": [{"key": "date", "label": "日期？"}],
-                    }
-                )
-                for _ in range(2)
-            ],
+            _response(
+                {
+                    "status": "needs_input",
+                    "questions": [{"key": "date", "label": "日期？"}],
+                }
+            ),
         ]
-        result = await self._execute()
+        result = await self._execute(
+            _context(
+                clarification_state={
+                    "asked_fields": [{"key": "date", "label": "日期"}]
+                }
+            )
+        )
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.questions, [])
         self.assertEqual(
             result.metadata["clarification"]["stop_reason"],
-            "model_repeated_question",
+            "repeated_blockers",
         )
-        self.assertEqual(self.model.generate_structured_output.call_count, 3)
+        self.assertEqual(
+            result.metadata["agent_outcome_protocol"]["code"],
+            "agent_input_repeated",
+        )
+        self.assertEqual(self.model.generate_structured_output.call_count, 2)
+
+    async def test_uncontracted_question_respects_round_limit_without_retry(self):
+        self.model.generate_structured_output.side_effect = [
+            _response(_requirements(_field("project_brief"))),
+            _response(
+                {
+                    "status": "needs_input",
+                    "questions": [
+                        {
+                            "key": "project_brief",
+                            "label": "请粘贴项目背景原文",
+                        }
+                    ],
+                }
+            ),
+        ]
+
+        result = await self._execute(_context(clarification_rounds=3))
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.questions, [])
+        self.assertEqual(
+            result.metadata["agent_outcome_protocol"]["code"],
+            "agent_input_round_limit",
+        )
+        self.assertEqual(
+            result.metadata["clarification"]["stop_reason"], "round_limit"
+        )
+        self.assertIn("最多 3 轮补充上限", result.reason)
+        self.assertEqual(self.model.generate_structured_output.call_count, 2)
 
     async def test_repeat_or_round_limit_stops_before_execution(self):
         for context, reason in (
@@ -383,9 +468,7 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
                 self.assertEqual(
                     result.metadata["clarification"]["stop_reason"], reason
                 )
-                self.assertEqual(
-                    self.model.generate_structured_output.call_count, 1
-                )
+                self.assertEqual(self.model.generate_structured_output.call_count, 0)
 
     async def test_verifier_uses_same_effective_scope_without_old_answers(
         self,
@@ -433,9 +516,6 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
             }
         )
         self.model.generate_structured_output.side_effect = [
-            _response(
-                _requirements(_field("date", blocking=True), _field("budget"))
-            ),
             _response(requirements),
             _response({"status": "succeeded", "output": "已整理有效交通需求"}),
             _response({"passed": True}),
@@ -486,7 +566,7 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
             self.assertEqual(fields["budget"].classification, "pending_verification")
             calls = self.model.generate_structured_output.call_args_list
             normalization = json.loads(
-                calls[1].kwargs["messages"][-1].get_text_content()
+                calls[0].kwargs["messages"][-1].get_text_content()
             )
             self.assertEqual(
                 normalization["previous_effective_requirements"]["fields"][0][
@@ -495,9 +575,9 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
                 "date",
             )
             self.assertIs(
-                calls[2].kwargs["structured_model"], AgentStepOutcomeCandidate
+                calls[1].kwargs["structured_model"], AgentStepOutcome
             )
-            self.assertIs(calls[3].kwargs["structured_model"], StepVerdict)
+            self.assertIs(calls[2].kwargs["structured_model"], StepVerdict)
         finally:
             await original.shutdown()
             await resumed.shutdown()

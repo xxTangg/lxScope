@@ -25,6 +25,7 @@ from examples.agent_service.task._models import (
     InputStepConfig,
     TaskInputQuestion,
     TaskInputReply,
+    TaskContext,
     TaskNode,
     TaskPlanDraft,
     TaskPlanNode,
@@ -148,7 +149,7 @@ class TaskInputModelTest(TestCase):
 
 
 class TaskAgentProtocolTest(IsolatedAsyncioTestCase):
-    async def test_model_uses_structured_status_and_real_input(self) -> None:
+    async def test_frozen_required_input_is_requested_before_model_call(self) -> None:
         storage = AsyncMock()
         storage.get_session.return_value = SimpleNamespace(
             config=SimpleNamespace(chat_model_config=object())
@@ -208,12 +209,10 @@ class TaskAgentProtocolTest(IsolatedAsyncioTestCase):
             )
         self.assertEqual(result.status, "needs_input")
         self.assertEqual(result.questions[0].key, "date")
-        arguments = model.generate_structured_output.call_args.kwargs
-        self.assertIs(arguments["structured_model"], EffectiveRequirements)
-        prompt = arguments["messages"][-1].get_text_content()
-        self.assertIn("从上海出发", prompt)
-        self.assertIn("answers_in_chronological_order", prompt)
+        self.assertEqual(model.generate_structured_output.call_count, 0)
         stored_prompt = storage.upsert_message.call_args_list[0].args[-1]
+        prompt = stored_prompt.get_text_content()
+        self.assertIn("从上海出发", prompt)
         self.assertNotIn("{{user_input}}", stored_prompt.get_text_content())
         self.assertIn("当前有效需求", stored_prompt.get_text_content())
         self.assertIn("资料中的 {{unknown}} 是原文", prompt)
@@ -308,6 +307,153 @@ class TaskInputAPITest(IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(forbidden.status_code, 404)
         finally:
+            await service.shutdown()
+
+    async def test_agent_dynamic_needs_input_is_returned_by_api_and_resumes_same_run(
+        self,
+    ) -> None:
+        storage = AsyncMock()
+        storage.get_session.return_value = SimpleNamespace(
+            config=SimpleNamespace(chat_model_config=object())
+        )
+        storage.get_agent.return_value = SimpleNamespace(
+            data=SimpleNamespace(system_prompt="Task test agent", name="助手")
+        )
+        model = AsyncMock()
+        model.generate_structured_output.side_effect = [
+            SimpleNamespace(
+                content={"effective_goal": "整理项目目标", "fields": []},
+                usage=None,
+            ),
+            SimpleNamespace(
+                content={
+                    "status": "needs_input",
+                    "reason": "缺少项目背景原文，无法据此提取真实目标。",
+                    "questions": [
+                        {
+                            "key": "project_brief",
+                            "label": "请粘贴项目背景原文",
+                        }
+                    ],
+                },
+                usage=None,
+            ),
+            SimpleNamespace(
+                content={
+                    "effective_goal": "整理项目目标",
+                    "fields": [
+                        {
+                            "key": "project_brief",
+                            "label": "项目背景原文",
+                            "status": "unknown",
+                            "blocking": False,
+                            "aliases": [],
+                        }
+                    ],
+                },
+                usage=None,
+            ),
+            SimpleNamespace(
+                content={"status": "succeeded", "output": "项目目标草稿"},
+                usage=None,
+            ),
+            SimpleNamespace(
+                content={"passed": True, "message": "交付符合节点要求。"},
+                usage=None,
+            ),
+        ]
+        executor = AgentScopeTaskExecutor(
+            storage=storage, resource_access_service=AsyncMock()
+        )
+        model_patch = patch(
+            "agentscope.app._service._model.get_model", return_value=model
+        )
+        model_patch.start()
+        service = TaskService(TaskStore(), agentscope_executor=executor)
+        app = FastAPI()
+        app.state.task_service = service
+        app.dependency_overrides[get_current_user_id] = lambda: "owner"
+        app.include_router(task_router)
+        try:
+            task = await service.create_task(
+                "owner",
+                CreateTaskRequest(
+                    goal="整理项目主要目标",
+                    nodes=[
+                        TaskNode(
+                            id="n1",
+                            name="整理项目主要目标",
+                            config=AgentStepConfig(prompt="依据真实背景整理项目目标"),
+                        )
+                    ],
+                    source_context=TaskContext(
+                        agent_id="agent", session_id="session"
+                    ),
+                ),
+            )
+            run = await service.create_run(
+                "owner",
+                task.id,
+                TaskRunRequest(input="整理项目目标"),
+            )
+            await service._active_runs[run.id]
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                waiting = await client.get(f"/tasks/runs/{run.id}")
+                self.assertEqual(waiting.status_code, 200)
+                waiting_data = waiting.json()
+                self.assertEqual(waiting_data["status"], "awaiting_input")
+                self.assertEqual(
+                    waiting_data["pending_input"]["questions"][0]["key"],
+                    "project_brief",
+                )
+                self.assertEqual(
+                    waiting_data["pending_input"]["questions"][0]["label"],
+                    "请粘贴项目背景原文",
+                )
+                self.assertIn(
+                    "input.requested",
+                    (await client.get(f"/tasks/runs/{run.id}/events")).text,
+                )
+
+                accepted = await client.post(
+                    f"/tasks/runs/{run.id}/input",
+                    json={
+                        "request_id": waiting_data["pending_input"]["id"],
+                        "answers": {
+                            "project_brief": "原始背景：新建一套客户管理项目"
+                        },
+                    },
+                )
+                self.assertEqual(accepted.status_code, 202)
+                self.assertEqual(accepted.json()["id"], run.id)
+                await service._active_runs[run.id]
+                completed = await client.get(f"/tasks/runs/{run.id}")
+                self.assertEqual(completed.json()["status"], "succeeded")
+                self.assertEqual(completed.json()["id"], run.id)
+
+            requirement_payload = model.generate_structured_output.call_args_list[
+                2
+            ].kwargs["messages"][-1].get_text_content()
+            self.assertIn("原始背景：新建一套客户管理项目", requirement_payload)
+            generation_prompt = model.generate_structured_output.call_args_list[
+                3
+            ].kwargs["messages"][-1].get_text_content()
+            self.assertIn("整理项目目标", generation_prompt)
+            self.assertIn("原始背景：新建一套客户管理项目", generation_prompt)
+            stored = await service.get_run("owner", run.id)
+            self.assertEqual(stored.id, run.id)
+            self.assertEqual(
+                stored.sop_state["steps"][0]["answers"][0]["answers"][
+                    "project_brief"
+                ],
+                "原始背景：新建一套客户管理项目",
+            )
+        finally:
+            model_patch.stop()
+            app.dependency_overrides.pop(get_current_user_id, None)
             await service.shutdown()
 
     async def test_redis_round_trip_resumes_after_rebuilding_service(
