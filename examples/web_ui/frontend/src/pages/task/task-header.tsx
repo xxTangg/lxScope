@@ -23,6 +23,7 @@ interface TaskHeaderProps {
 	onSave: () => void;
 	onRerun: () => void;
 	onRun: () => void;
+	runDisabledReason?: string | null;
 }
 
 export function TaskHeader({
@@ -42,6 +43,7 @@ export function TaskHeader({
 	onSave,
 	onRerun,
 	onRun,
+	runDisabledReason = null,
 }: TaskHeaderProps) {
 	return (
 		<header className="flex flex-wrap items-center justify-between gap-4 px-5 pb-4 pt-4 xl:px-6">
@@ -86,8 +88,8 @@ export function TaskHeader({
 				<Button variant="outline" size="sm" onClick={onRerun} disabled={!canRerun || isSaving || isRunning || isGenerating} className="border-slate-200">
 					<RefreshCw />重新执行
 				</Button>
-				<Button size="sm" onClick={onRun} disabled={isSaving || isRunning || isGenerating} className="bg-blue-600 text-white shadow-sm hover:bg-blue-700">
-					{isRunning && !isAwaitingInput ? <Loader2 className="animate-spin" /> : <Play />}{isAwaitingInput ? '等待补充信息' : isRunning ? '执行中…' : '执行任务'}
+				<Button size="sm" onClick={onRun} disabled={isSaving || isRunning || isGenerating || Boolean(runDisabledReason)} title={runDisabledReason ?? undefined} className="bg-blue-600 text-white shadow-sm hover:bg-blue-700">
+					{isRunning && !isAwaitingInput ? <Loader2 className="animate-spin" /> : <Play />}{runDisabledReason ? '暂不可运行' : isAwaitingInput ? '等待补充信息' : isRunning ? '执行中…' : '执行任务'}
 				</Button>
 			</div>
 		</header>

@@ -387,7 +387,7 @@ class S07CitationOutputContractTest(IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 executor.verification_calls,
-                ["采集报告资料", "生成章节草稿"],
+                ["检索引用证据", "生成章节草稿"],
             )
             self.assertEqual(executor.artifact_writes, 0)
         finally:
@@ -445,7 +445,9 @@ class S07TaskPreflightTest(IsolatedAsyncioTestCase):
             agentscope_executor=self.executor,
         )
         registry = TemplateRegistry()
-        template = registry.get_current_template("s07_report_generation")
+        template = registry.get_template_version(
+            "s07_report_generation", "4.0.0"
+        )
         self.assertIsNotNone(template)
         assert template is not None
         self.assertEqual(template.template_version, "4.0.0")

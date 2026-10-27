@@ -490,6 +490,23 @@ class TaskTemplateValidator:
         except TemplateRegistryError:
             return None
 
+    def template_for_source(
+        self,
+        template_id: str | None,
+        template_version: str | None,
+    ) -> Any | None:
+        """Resolve one exact immutable template version for a frozen Run."""
+
+        if not template_id or not template_version:
+            return None
+        try:
+            return self._registry.get_template_version(
+                template_id,
+                template_version,
+            )
+        except TemplateRegistryError:
+            return None
+
     def runtime_nodes(
         self,
         task: TaskRecord,
@@ -508,7 +525,14 @@ class TaskTemplateValidator:
             except TemplateCapabilityMappingError:
                 return nodes
         try:
-            compiled = compiler.compile_nodes(template, tool_schemas)
+            # Runtime contract restoration must not depend on live external
+            # Tool availability. Run preflight enforces the Tool binding; this
+            # call only reads the frozen Task template's server-owned metadata.
+            compiled = compiler.compile_nodes(
+                template,
+                tool_schemas,
+                require_tool_bindings=False,
+            )
         except TemplateCompileError:
             return nodes
 
@@ -521,13 +545,23 @@ class TaskTemplateValidator:
         for step_key, node_id in task.template_step_bindings.items():
             node = node_by_id.get(node_id)
             expected = canonical.get(step_key)
-            if node is None or expected is None or expected.capability_key is None:
+            if node is None or expected is None:
                 continue
-            update: dict[str, Any] = {
-                "capability_key": expected.capability_key,
-            }
-            if node.output_schema is None and expected.output_schema is not None:
-                update["output_schema"] = expected.output_schema
+            update: dict[str, Any] = {}
+            if expected.capability_key is not None:
+                update["capability_key"] = expected.capability_key
+            expected_schema = expected.output_schema or (
+                expected.output_contract.json_schema
+                if expected.output_contract is not None
+                else None
+            )
+            if node.output_schema is None and expected_schema is not None:
+                update["output_schema"] = expected_schema
+            if (
+                node.output_contract is None
+                and expected.output_contract is not None
+            ):
+                update["output_contract"] = expected.output_contract
             enriched[node_id] = node.model_copy(update=update)
         return [enriched.get(node.id, node) for node in nodes]
 
@@ -776,8 +810,12 @@ def _validate_edit_policy(
     # not have these additive fields and remain readable without migration.
     actual_dump.pop("capability_key", None)
     canonical_dump.pop("capability_key", None)
-    if node.type.value == "tool" and node.output_schema is None:
+    if node.output_schema is None and canonical.output_schema is not None:
         actual_dump["output_schema"] = canonical_dump.get("output_schema")
+    if node.output_contract is None and canonical.output_contract is not None:
+        actual_dump["output_contract"] = canonical_dump.get(
+            "output_contract"
+        )
     if not editable:
         actual_dump.pop("artifact", None)
         canonical_dump.pop("artifact", None)
@@ -794,6 +832,8 @@ def _validate_edit_policy(
         "type",
         "acceptance_criteria",
         "output_schema",
+        "output_contract",
+        "information_requirements",
         "knowledge_graph_enabled",
         "knowledge_base_mode",
         "knowledge_base_ids",

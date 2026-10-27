@@ -1,5 +1,5 @@
 import type { NVL, Node as NvlNode, Relationship as NvlRelationship } from '@neo4j-nvl/base';
-import { InteractiveNvlWrapper } from '@neo4j-nvl/react';
+import { InteractiveNvlWrapper, type MouseEventCallbacks } from '@neo4j-nvl/react';
 import {
 	AlertCircle,
 	Database,
@@ -7,7 +7,10 @@ import {
 	Maximize2,
 	Network,
 	RefreshCw,
+	RotateCcw,
 	Search,
+	ZoomIn,
+	ZoomOut,
 } from 'lucide-react';
 import * as React from 'react';
 
@@ -49,6 +52,52 @@ function compactLabel(value: string, maxLength: number): string {
 		: normalized;
 }
 
+const ENTITY_TYPE_GROUPS = [
+	{ id: 'project', label: '项目', color: '#3B82F6', types: ['项目', 'project'] },
+	{ id: 'person', label: '专家 / 人物', color: '#14B8A6', types: ['专家', '人物', '专家/人物', '人员', '人', 'expert', 'person', 'individual'] },
+	{ id: 'domain', label: '专业领域', color: '#8B5CF6', types: ['专业领域', '领域', '专业', 'professional domain', 'domain', 'discipline', 'specialty'] },
+	{ id: 'document', label: '文档资料', color: '#64748B', types: ['文档资料', '文档', '资料', 'document', 'file', 'source'] },
+	{ id: 'policy', label: '规范制度', color: '#F59E0B', types: ['规范制度', '规范', '制度', '标准', 'policy', 'regulation', 'standard', 'rule'] },
+	{ id: 'risk', label: '风险 / 待确认', color: '#EF6464', types: ['风险', '待确认', '待核实', 'risk', 'unconfirmed'] },
+] as const;
+
+const UNKNOWN_ENTITY_COLOR = '#94A3B8';
+
+function entityTypeGroup(type: string): (typeof ENTITY_TYPE_GROUPS)[number]['id'] | 'other' {
+	const normalizedType = type.trim().toLowerCase();
+	return ENTITY_TYPE_GROUPS.find((group) =>
+		(group.types as readonly string[]).includes(normalizedType),
+	)?.id ?? 'other';
+}
+
+function entityTypeColor(type: string): string {
+	const groupId = entityTypeGroup(type);
+	return groupId === 'other'
+		? UNKNOWN_ENTITY_COLOR
+		: ENTITY_TYPE_GROUPS.find((group) => group.id === groupId)?.color ?? UNKNOWN_ENTITY_COLOR;
+}
+
+function softenColor(color: string, whiteness: number): string {
+	const channels = color.slice(1).match(/.{2}/g);
+	if (!channels) return color;
+	return `#${channels
+		.map((channel) => {
+			const value = Number.parseInt(channel, 16);
+			return Math.round(value + (255 - value) * whiteness)
+				.toString(16)
+				.padStart(2, '0');
+		})
+		.join('')}`;
+}
+
+interface GraphHover {
+	id: string;
+	kind: 'node' | 'relationship';
+	label: string;
+	x: number;
+	y: number;
+}
+
 function sourceLabel(source: TaskKnowledgeGraphNode['source_refs'][number]): string {
 	const parts = [source.filename || source.document_id];
 	if (source.chunk_index !== null && source.chunk_index !== undefined) {
@@ -77,6 +126,7 @@ export function TaskKnowledgeGraph({
 	const [submittedQuery, setSubmittedQuery] = React.useState(initialQuery.trim());
 	const [selected, setSelected] = React.useState<TaskKnowledgeGraphNode | null>(null);
 	const [selectedEdge, setSelectedEdge] = React.useState<TaskKnowledgeGraphEdge | null>(null);
+	const [hoveredElement, setHoveredElement] = React.useState<GraphHover | null>(null);
 	const [loading, setLoading] = React.useState(false);
 	const [rebuilding, setRebuilding] = React.useState(false);
 	// Both the task-wide graph and the step graph are opt-in. This keeps the
@@ -84,6 +134,8 @@ export function TaskKnowledgeGraph({
 	const [requested, setRequested] = React.useState(preview);
 	const [error, setError] = React.useState<string | null>(null);
 	const nvlRef = React.useRef<NVL | null>(null);
+	const graphViewportRef = React.useRef<HTMLDivElement | null>(null);
+	const hoveredElementKeyRef = React.useRef<string | null>(null);
 	const needsInitialFitRef = React.useRef(false);
 
 	const load = React.useCallback(async () => {
@@ -127,72 +179,162 @@ export function TaskKnowledgeGraph({
 		setSubmittedQuery(initialQuery.trim());
 		setSelected(null);
 		setSelectedEdge(null);
+		setHoveredElement(null);
+		hoveredElementKeyRef.current = null;
 	}, [initialQuery, nodeId, preview, runId, stepScoped, taskId]);
+
+	React.useEffect(() => {
+		hoveredElementKeyRef.current = null;
+		setHoveredElement(null);
+	}, [graph?.edges, graph?.nodes]);
 
 	React.useEffect(() => {
 		if (!requested || (!stepScoped && !selectedIds.length)) return;
 		void load();
 	}, [load, requested, selectedIds.length, stepScoped]);
 
+	const graphNodes = graph?.nodes;
+	const graphEdges = graph?.edges;
 	const nodeDegrees = React.useMemo(() => {
 		const degrees = new Map<string, number>();
-		for (const edge of graph?.edges ?? []) {
+		for (const edge of graphEdges ?? []) {
 			degrees.set(edge.source, (degrees.get(edge.source) ?? 0) + 1);
 			degrees.set(edge.target, (degrees.get(edge.target) ?? 0) + 1);
 		}
 		return degrees;
-	}, [graph?.edges]);
+	}, [graphEdges]);
+
+	const centerNodeId = React.useMemo(() => {
+		if (!graphNodes?.length) return null;
+		return graphNodes.reduce((current, candidate) =>
+			(nodeDegrees.get(candidate.id) ?? 0) > (nodeDegrees.get(current.id) ?? 0)
+				? candidate
+				: current,
+		).id;
+	}, [graphNodes, nodeDegrees]);
+
+	const centerNeighbors = React.useMemo(() => {
+		const neighbors = new Set<string>();
+		if (!centerNodeId) return neighbors;
+		for (const edge of graphEdges ?? []) {
+			if (edge.source === centerNodeId) neighbors.add(edge.target);
+			if (edge.target === centerNodeId) neighbors.add(edge.source);
+		}
+		return neighbors;
+	}, [centerNodeId, graphEdges]);
+
+	const focusNodeId = hoveredElement?.kind === 'node'
+		? hoveredElement.id
+		: hoveredElement
+			? null
+			: selected?.id ?? null;
+	const focusEdgeId = hoveredElement?.kind === 'relationship'
+		? hoveredElement.id
+		: hoveredElement
+			? null
+			: selectedEdge?.id ?? null;
+	const focusEdge = React.useMemo(
+		() => focusEdgeId ? graphEdges?.find((edge) => edge.id === focusEdgeId) ?? null : null,
+		[focusEdgeId, graphEdges],
+	);
+	const focusEdgeNodeIds = React.useMemo(
+		() => new Set(focusEdge ? [focusEdge.source, focusEdge.target] : []),
+		[focusEdge],
+	);
+	const focusRelatedNodeIds = React.useMemo(() => {
+		const related = new Set(focusEdgeNodeIds);
+		if (focusNodeId) {
+			related.add(focusNodeId);
+			for (const edge of graphEdges ?? []) {
+				if (edge.source === focusNodeId) related.add(edge.target);
+				if (edge.target === focusNodeId) related.add(edge.source);
+			}
+		}
+		return related;
+	}, [focusEdgeNodeIds, focusNodeId, graphEdges]);
+	const hasGraphFocus = Boolean(focusNodeId || focusEdgeId);
+	const sizeScale = (graph?.nodes.length ?? 0) > 80 ? 0.74 : (graph?.nodes.length ?? 0) > 40 ? 0.86 : 1;
+	const legendGroups = React.useMemo(() => {
+		const presentGroups = new Set((graphNodes ?? []).map((node) => entityTypeGroup(node.type)));
+		return [
+			...ENTITY_TYPE_GROUPS.filter((group) => presentGroups.has(group.id)),
+			...(presentGroups.has('other') ? [{ id: 'other', label: '其他', color: UNKNOWN_ENTITY_COLOR }] : []),
+		];
+	}, [graphNodes]);
 
 	const nvlNodes = React.useMemo<NvlNode[]>(
 		() =>
-			(graph?.nodes ?? []).map((node) => {
-				const degree = nodeDegrees.get(node.id) ?? 0;
-				// Keep the graph airy: the second-level nodes stay small while
-				// highly connected entities remain visibly more important.
-				const baseSize = 11 + Math.min(10, Math.round(Math.sqrt(degree) * 2.8));
-				const size = selected?.id === node.id ? Math.max(24, baseSize + 6) : baseSize;
-				const color =
-					degree >= 6 ? '#3b82f6' : degree >= 3 ? '#60a5fa' : '#93c5fd';
+			(graphNodes ?? []).map((node) => {
+				const isCenter = node.id === centerNodeId;
+				const isCenterNeighbor = centerNeighbors.has(node.id);
+				const isFocusRelated = focusRelatedNodeIds.has(node.id);
+				const color = entityTypeColor(node.type);
+				const shouldShowCaption = hasGraphFocus
+					? isFocusRelated
+					: (graphNodes?.length ?? 0) <= 70 || isCenter || isCenterNeighbor;
 				return {
 					id: node.id,
-					caption: compactLabel(node.label, 14),
-					// Keep the label scale tied to the node scale so dense and
-					// selected nodes remain readable without oversized captions.
+					caption: shouldShowCaption ? compactLabel(node.label, (graphNodes?.length ?? 0) > 70 ? 10 : 14) : '',
 					captionAlign: 'bottom',
-					captionSize: Math.max(8, Math.min(13, Math.round(size * 0.52))),
-					color: selected?.id === node.id ? '#1d4ed8' : color,
-					size,
+					captionSize: 11,
+					color: softenColor(color, hasGraphFocus && !isFocusRelated ? 0.9 : 0.56),
+					size: (isCenter ? 28 : isCenterNeighbor ? 22 : 18) * sizeScale,
 					selected: selected?.id === node.id,
+					hovered: hoveredElement?.kind === 'node' && hoveredElement.id === node.id,
 				};
 			}),
-		[nodeDegrees, graph?.nodes, selected?.id],
+		[
+			centerNeighbors,
+			centerNodeId,
+			focusRelatedNodeIds,
+			graphNodes,
+			hasGraphFocus,
+			hoveredElement,
+			selected?.id,
+			sizeScale,
+		],
 	);
 
 	const nvlRelationships = React.useMemo<NvlRelationship[]>(
 		() =>
-			(graph?.edges ?? []).map((edge) => ({
+			(graphEdges ?? []).map((edge) => ({
 				id: edge.id,
 				from: edge.source,
 				to: edge.target,
-				caption: compactLabel(edge.label || '关系', 8),
-				captionSize: selectedEdge?.id === edge.id ? 7 : 6,
-				color: selectedEdge?.id === edge.id ? '#2563eb' : '#d5deeb',
-				width: selectedEdge?.id === edge.id ? 2 : 1,
+				caption: ((focusNodeId && (edge.source === focusNodeId || edge.target === focusNodeId)) ||
+					focusEdgeId === edge.id)
+					? compactLabel(edge.label || '关系', 14)
+					: '',
+				captionAlign: 'top',
+				captionSize: hoveredElement?.kind === 'relationship' && hoveredElement.id === edge.id ? 10 : 9,
+				color: focusEdgeId === edge.id
+					? '#2563EB'
+					: focusNodeId && (edge.source === focusNodeId || edge.target === focusNodeId)
+						? '#94A3B8'
+						: hasGraphFocus
+							? '#E2E8F0'
+							: '#CBD5E1',
+				width: focusEdgeId === edge.id
+					? 1.75
+					: focusNodeId && (edge.source === focusNodeId || edge.target === focusNodeId)
+						? 1.4
+						: 1,
+				hovered: hoveredElement?.kind === 'relationship' && hoveredElement.id === edge.id,
 			})),
-		[selectedEdge?.id, graph?.edges],
+		[focusEdgeId, focusNodeId, graphEdges, hasGraphFocus, hoveredElement],
 	);
 
-	const mouseEventCallbacks = React.useMemo(
+	const mouseEventCallbacks = React.useMemo<MouseEventCallbacks>(
 		() => ({
 			onNodeClick: (node: NvlNode) => {
-				const candidate = graph?.nodes.find((item) => item.id === node.id);
+				const candidate = graphNodes?.find((item) => item.id === node.id);
 				if (candidate) {
 					setSelected(candidate);
 					setSelectedEdge(null);
 				}
 			},
 			onRelationshipClick: (relationship: NvlRelationship) => {
-				const candidate = graph?.edges.find((item) => item.id === relationship.id);
+				const candidate = graphEdges?.find((item) => item.id === relationship.id);
 				if (candidate) {
 					setSelectedEdge(candidate);
 					setSelected(null);
@@ -201,21 +343,62 @@ export function TaskKnowledgeGraph({
 			onCanvasClick: () => {
 				setSelected(null);
 				setSelectedEdge(null);
+				setHoveredElement(null);
+				hoveredElementKeyRef.current = null;
+			},
+			onHover: (element: NvlNode | NvlRelationship | undefined, _hitElements, event) => {
+				const kind = element && 'from' in element ? 'relationship' : 'node';
+				const key = element ? `${kind}:${element.id}` : null;
+				if (key === hoveredElementKeyRef.current) return;
+				hoveredElementKeyRef.current = key;
+				if (!element) {
+					setHoveredElement(null);
+					return;
+				}
+				const isRelationship = kind === 'relationship';
+				const label = isRelationship
+					? graphEdges?.find((item) => item.id === element.id)?.label
+					: graphNodes?.find((item) => item.id === element.id)?.label;
+				const bounds = graphViewportRef.current?.getBoundingClientRect();
+				if (!label || !bounds) {
+					setHoveredElement(null);
+					return;
+				}
+				const tooltipWidth = Math.min(320, bounds.width - 16);
+				setHoveredElement({
+					id: element.id,
+					kind,
+					label,
+					x: Math.max(8, Math.min(bounds.width - tooltipWidth - 8, event.clientX - bounds.left + 12)),
+					y: Math.max(8, Math.min(bounds.height - 44, event.clientY - bounds.top + 12)),
+				});
 			},
 			// NVL enables an interaction when its callback is present. These three
 			// flags provide node dragging, canvas panning and wheel zooming.
 			onDrag: true,
 			onPan: true,
 			onZoomAndPan: true,
-			onHover: true,
 		}),
-		[graph?.edges, graph?.nodes],
+		[graphEdges, graphNodes],
 	);
 
 	const fitGraph = React.useCallback(() => {
 		if (!nvlRef.current || !graph?.nodes.length) return;
-		nvlRef.current.fit(graph.nodes.map((node) => node.id));
+		nvlRef.current.fit(graph.nodes.map((node) => node.id), { animated: true });
 	}, [graph]);
+
+	const zoomGraph = React.useCallback((factor: number) => {
+		if (!nvlRef.current) return;
+		const { minZoom = 0.075, maxZoom = 10 } = nvlRef.current.getCurrentOptions();
+		const nextZoom = nvlRef.current.getScale() * factor;
+		nvlRef.current.setZoom(Math.min(maxZoom, Math.max(minZoom, nextZoom)));
+	}, []);
+
+	const resetLayout = React.useCallback(() => {
+		if (!nvlRef.current) return;
+		needsInitialFitRef.current = true;
+		nvlRef.current.restart({ layout: 'd3Force' }, false);
+	}, []);
 
 	React.useEffect(() => {
 		if (!graph?.nodes.length) return undefined;
@@ -348,16 +531,21 @@ export function TaskKnowledgeGraph({
 							</>
 						)}
 						{requested && (
-							<Button
-								type="button"
-								size="sm"
-								variant="outline"
-								disabled={!graph?.nodes.length}
-								onClick={fitGraph}
-							>
-								<Maximize2 className="size-3.5" />
-								适配视图
-							</Button>
+							<div className="flex items-center gap-1" aria-label="图谱视图控制">
+								<Button type="button" size="sm" variant="outline" className="size-7 px-0" aria-label="放大图谱" title="放大" disabled={!graph?.nodes.length} onClick={() => zoomGraph(1.2)}>
+									<ZoomIn className="size-3.5" />
+								</Button>
+								<Button type="button" size="sm" variant="outline" className="size-7 px-0" aria-label="缩小图谱" title="缩小" disabled={!graph?.nodes.length} onClick={() => zoomGraph(1 / 1.2)}>
+									<ZoomOut className="size-3.5" />
+								</Button>
+								<Button type="button" size="sm" variant="outline" className="size-7 px-0" aria-label="重置图谱布局" title="重置布局" disabled={!graph?.nodes.length} onClick={resetLayout}>
+									<RotateCcw className="size-3.5" />
+								</Button>
+								<Button type="button" size="sm" variant="outline" disabled={!graph?.nodes.length} onClick={fitGraph}>
+									<Maximize2 className="size-3.5" />
+									适配视图
+								</Button>
+							</div>
 						)}
 					</div>
 				</div>
@@ -415,15 +603,20 @@ export function TaskKnowledgeGraph({
 								: 'grid gap-4 lg:grid-cols-[minmax(0,1fr)_270px]'
 						}
 					>
-						<div className="min-w-0 overflow-hidden rounded-lg border bg-background">
+						<div className="min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
 							<div
-								className={`relative w-full min-w-0 ${compact ? 'h-[340px] min-h-[280px]' : 'h-[500px] min-h-[360px]'}`}
+								ref={graphViewportRef}
+								onMouseLeave={() => {
+									hoveredElementKeyRef.current = null;
+									setHoveredElement(null);
+								}}
+								className={`relative w-full min-w-0 bg-white ${compact ? 'h-[340px] min-h-[280px]' : 'h-[500px] min-h-[360px]'}`}
 							>
 								<InteractiveNvlWrapper
 									ref={nvlRef}
 									nodes={nvlNodes}
 									rels={nvlRelationships}
-										nvlOptions={{
+									nvlOptions={{
 										renderer: 'canvas',
 										// d3-force gives compact task graphs a stable 2D spread
 										// instead of collapsing many nodes into one visual cluster.
@@ -433,18 +626,41 @@ export function TaskKnowledgeGraph({
 										maxZoom: 4,
 										allowDynamicMinZoom: true,
 										styling: {
-											defaultNodeColor: '#60a5fa',
-											defaultRelationshipColor: '#cbd5e1',
-											selectedBorderColor: '#bfdbfe',
-											selectedInnerBorderColor: '#eff6ff',
-											dropShadowColor: '#bfdbfe',
+											defaultNodeColor: softenColor(UNKNOWN_ENTITY_COLOR, 0.56),
+											defaultRelationshipColor: '#CBD5E1',
+											nodeDefaultBorderColor: '#FFFFFF',
+											selectedBorderColor: '#2563EB',
+											selectedInnerBorderColor: '#FFFFFF',
+											dropShadowColor: '#93C5FD',
 										},
 									}}
 									mouseEventCallbacks={mouseEventCallbacks}
+									interactionOptions={{ drawShadowOnHover: true }}
 									nvlCallbacks={nvlCallbacks}
 									className="h-full w-full select-none"
 								/>
-								<div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-background/85 px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
+								{legendGroups.length > 0 && (
+									<div className="pointer-events-none absolute left-2 top-2 flex max-w-[90%] flex-wrap gap-x-3 gap-y-1 rounded-md border border-slate-200/80 bg-white/90 px-2 py-1.5 text-[10px] text-slate-600 shadow-sm">
+										{legendGroups.map((group) => (
+											<div key={group.id} className="flex items-center gap-1.5 whitespace-nowrap">
+												<span className="size-2 rounded-full" style={{ backgroundColor: softenColor(group.color, 0.56) }} />
+												{group.label}
+											</div>
+										))}
+									</div>
+								)}
+								{hoveredElement && (
+									<div
+										className="pointer-events-none absolute z-10 rounded-md border border-slate-200 bg-white/95 px-2.5 py-1.5 text-xs text-slate-700 shadow-md"
+										style={{ left: hoveredElement.x, top: hoveredElement.y, maxWidth: 'min(320px, calc(100% - 16px))' }}
+									>
+										<span className="mr-1.5 text-[10px] text-slate-400">
+											{hoveredElement.kind === 'node' ? '实体' : '关系'}
+										</span>
+										<span className="break-words">{hoveredElement.label}</span>
+									</div>
+								)}
+								<div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-white/90 px-2 py-1 text-[11px] text-slate-500 shadow-sm">
 									拖动节点 · 拖动画布 · 滚轮缩放 · 点击查看详情
 								</div>
 							</div>

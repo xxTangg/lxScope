@@ -18,15 +18,15 @@ from examples.agent_service.task._clarification import (
 )
 from examples.agent_service.task._models import (
     AgentStepConfig,
-    AgentStepOutcome,
+    AgentStepOutcomeCandidate,
     CreateTaskRequest,
     ExecutionContext,
     RunStatus,
     StepVerdict,
     TaskContext,
     TaskInputReply,
+    TaskInformationRequirement,
     TaskNode,
-    TaskRunRecord,
     TaskRunRequest,
 )
 from examples.agent_service.task._service import TaskService
@@ -49,6 +49,22 @@ def _field(key, value="", *, blocking=False, status=None, aliases=()):
         "blocking": blocking,
         "blocking_reason": "筛选交通候选需要此参数" if blocking else "",
         "aliases": list(aliases),
+    }
+
+
+def _required_contract(key):
+    return {
+        "requirements": [
+            {
+                "key": key,
+                "label": key,
+                "classification": "required",
+                "reason": "该字段由当前 Task 合同明确声明为必填。",
+                "condition": None,
+                "condition_state": "active",
+                "source_path": f"test.frozen_contract.{key}",
+            },
+        ],
     }
 
 
@@ -254,7 +270,7 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
         )
         self.model.generate_structured_output.side_effect = [
             _response(requirements),
-            _response({"status": "completed", "output": "已整理有效交通需求"}),
+            _response({"status": "succeeded", "output": "已整理有效交通需求"}),
         ]
         result = await self._execute(_context(user_answers=replies))
         self.assertEqual(result.status, "completed")
@@ -269,17 +285,24 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
         self.assertEqual(normalization["timezone"], "Asia/Shanghai")
         self.assertIn("current_time", normalization)
         execution_prompt = calls[1].kwargs["messages"][-1].get_text_content()
-        self.assertIn("2026-10-09", execution_prompt)
+        self.assertIn("2026-10-9", execution_prompt)
         self.assertNotIn("越早越好", execution_prompt)
-        self.assertEqual(
-            result.metadata["clarification"]["requirements"], requirements
+        effective = EffectiveRequirements.model_validate(
+            result.metadata["clarification"]["requirements"]
         )
+        fields = {field.key: field for field in effective.fields}
+        self.assertEqual(fields["date"].value, "2026-10-9")
+        self.assertEqual(fields["date"].classification, "pending_verification")
+        self.assertEqual(fields["budget"].status, "unknown")
+        self.assertEqual(fields["hotel"].status, "unknown")
 
     async def test_only_missing_necessary_field_is_requested(self):
         self.model.generate_structured_output.return_value = _response(
             _requirements(_field("date", blocking=True), _field("budget"))
         )
-        result = await self._execute()
+        result = await self._execute(
+            _context(information_contract=_required_contract("date"))
+        )
         self.assertEqual(result.status, "needs_input")
         self.assertEqual([q.key for q in result.questions], ["date"])
         self.assertEqual(self.model.generate_structured_output.call_count, 1)
@@ -298,7 +321,7 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
                     "questions": [{"key": "budget", "label": "预算金额？"}],
                 }
             ),
-            _response({"status": "completed", "output": "已整理有效交通需求"}),
+            _response({"status": "succeeded", "output": "已整理有效交通需求"}),
         ]
         result = await self._execute()
         self.assertEqual(result.status, "completed")
@@ -337,11 +360,18 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
                         TaskInputReply(
                             request_id="old", answers={"date": "不知道"}
                         )
-                    ]
+                    ],
+                    information_contract=_required_contract("date"),
                 ),
                 "repeated_blockers",
             ),
-            (_context(clarification_rounds=3), "round_limit"),
+            (
+                _context(
+                    clarification_rounds=3,
+                    information_contract=_required_contract("date"),
+                ),
+                "round_limit",
+            ),
         ):
             with self.subTest(reason=reason):
                 self.model.generate_structured_output.reset_mock()
@@ -390,12 +420,24 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
         requirements = _requirements(
             _field("date", "2026-10-09"), _field("budget")
         )
+        required_node = self.node.model_copy(
+            update={
+                "information_requirements": [
+                    TaskInformationRequirement(
+                        key="date",
+                        label="出行日期",
+                        classification="required",
+                        reason="执行查询需要日期。",
+                    ),
+                ],
+            }
+        )
         self.model.generate_structured_output.side_effect = [
             _response(
                 _requirements(_field("date", blocking=True), _field("budget"))
             ),
             _response(requirements),
-            _response({"status": "completed", "output": "已整理有效交通需求"}),
+            _response({"status": "succeeded", "output": "已整理有效交通需求"}),
             _response({"passed": True}),
         ]
         try:
@@ -403,7 +445,7 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
                 "owner",
                 CreateTaskRequest(
                     goal="交通规划",
-                    nodes=[self.node],
+                    nodes=[required_node],
                     source_context=TaskContext(
                         agent_id="agent", session_id="session"
                     ),
@@ -413,9 +455,10 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
             await original._active_runs[run.id]
             parked = await store.get_run("owner", run.id)
             self.assertEqual(parked.status, RunStatus.AWAITING_INPUT)
-            await store.save_run(
-                TaskRunRecord.model_validate_json(parked.model_dump_json())
-            )
+            # Durable Run snapshots may not be replaced outside CAS. Validate
+            # the persisted JSON shape while the rebuilt service reads it.
+            self.assertEqual(parked.id, run.id)
+            self.assertTrue(parked.sop_state["steps"])
             await original.shutdown()
             await resumed.answer_run(
                 "owner",
@@ -433,7 +476,14 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
             ]
             self.assertEqual(metadata["answered_rounds"], 1)
             self.assertEqual(metadata["asked_fields"][0]["key"], "date")
-            self.assertEqual(metadata["requirements"], requirements)
+            effective = EffectiveRequirements.model_validate(
+                metadata["requirements"]
+            )
+            fields = {field.key: field for field in effective.fields}
+            self.assertEqual(fields["date"].value, "2026-10-09")
+            self.assertEqual(fields["date"].classification, "required")
+            self.assertFalse(fields["date"].blocking)
+            self.assertEqual(fields["budget"].classification, "pending_verification")
             calls = self.model.generate_structured_output.call_args_list
             normalization = json.loads(
                 calls[1].kwargs["messages"][-1].get_text_content()
@@ -445,7 +495,7 @@ class ClarificationExecutorTest(IsolatedAsyncioTestCase):
                 "date",
             )
             self.assertIs(
-                calls[2].kwargs["structured_model"], AgentStepOutcome
+                calls[2].kwargs["structured_model"], AgentStepOutcomeCandidate
             )
             self.assertIs(calls[3].kwargs["structured_model"], StepVerdict)
         finally:

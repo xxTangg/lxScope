@@ -15,7 +15,11 @@ from pydantic import (
     model_validator,
 )
 
-from ._models import NodeOutputContract, TaskContext
+from ._models import (
+    NodeOutputContract,
+    TaskContext,
+    TaskInformationRequirement,
+)
 from ._output_validation import validate_output_schema_definition
 
 
@@ -123,6 +127,10 @@ class TemplateStep(_TemplateModel):
     artifact: TemplateArtifactConfig | None = None
     output_schema: dict[str, Any] | None = None
     output_contract: NodeOutputContract | None = None
+    information_requirements: list[TaskInformationRequirement] = Field(
+        default_factory=list,
+        max_length=32,
+    )
 
     @model_validator(mode="after")
     def validate_kind_and_capability(self) -> "TemplateStep":
@@ -271,6 +279,14 @@ class TaskTemplateDefinition(_TemplateModel):
         step_keys = [step.step_key for step in self.steps]
         if len(step_keys) != len(set(step_keys)):
             raise ValueError("Template step_key values must be unique.")
+        for step in self.steps:
+            requirement_keys = [
+                item.key for item in step.information_requirements
+            ]
+            if len(requirement_keys) != len(set(requirement_keys)):
+                raise ValueError(
+                    f"Step {step.step_key!r} has duplicate information requirements."
+                )
         for index, step in enumerate(self.steps):
             if step.artifact is not None and (
                 index != len(self.steps) - 1 or step.kind == "input"

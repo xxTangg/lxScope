@@ -190,7 +190,10 @@ class TaskP7R1OutputContractTest(TestCase):
 
         self.assertIn("八章正文各写一次", prompted.prompt)
         self.assertIn("不要分别重印完整大纲、完整初稿", prompted.prompt)
-        self.assertIn("Task 服务端会从协议区块生成来源证据台账", prompted.prompt)
+        self.assertIn(
+            "Task 服务端会依据通过校验的协议区块和授权快照生成来源证据台账",
+            prompted.prompt,
+        )
         self.assertIn("task-claim-evidence", prompted.prompt)
         self.assertIn("task-citations", prompted.prompt)
         self.assertIn("每个 binding 的 quote 必须是本次运行授权证据", prompted.prompt)
@@ -1754,6 +1757,9 @@ class _ProtocolRunExecutor:
             return StepExecutionResult(text=output)
         raise AssertionError(f"unexpected Agent node: {node.name}")
 
+    async def verify_node(self, **_kwargs):
+        return StepVerdict(passed=True, message="protocol fixture accepted")
+
 
 class TaskP7R1ServiceOutputContractTest(IsolatedAsyncioTestCase):
     async def test_sop_finalizer_builds_citation_index_then_runs_full_validation(self):
@@ -1988,7 +1994,26 @@ class TaskP7R1ServiceOutputContractTest(IsolatedAsyncioTestCase):
                 parked = await service.get_run(_OWNER, run.id)
                 self.assertIsNotNone(parked)
                 assert parked is not None
-                self.assertIsNotNone(parked.pending_input)
+                self.assertIsNotNone(
+                    parked.pending_input,
+                    json.dumps(
+                        {
+                            "status": parked.status.value,
+                            "error": parked.error,
+                            "nodes": [
+                                {
+                                    "name": item.name,
+                                    "status": item.status.value,
+                                    "error": item.error,
+                                    "metadata": item.metadata,
+                                }
+                                for item in parked.node_runs
+                            ],
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                )
                 accepted = await service.answer_run(
                     _OWNER,
                     run.id,
@@ -2345,7 +2370,7 @@ class TaskP7R1ServiceOutputContractTest(IsolatedAsyncioTestCase):
                 {"project_code": "P-1001"},
             )
             self.assertEqual(
-                executor.contexts[-1].history[0]["structured_result"],
+                executor.contexts[-1].history[0]["ai_verified_result"],
                 {"project_code": "P-1001"},
             )
         finally:
@@ -2424,3 +2449,6 @@ class _StructuredFlowExecutor:
                 },
             )
         return StepExecutionResult(text="下游完成", result={"status": "completed"})
+
+    async def verify_node(self, **_kwargs):
+        return StepVerdict(passed=True, message="structured-flow fixture accepted")

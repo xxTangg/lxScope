@@ -643,6 +643,12 @@ async def _structured_schema_failure_is_persisted_and_fails_run(
             "target": "result",
             "issues": ["$.accepted: type"],
         }
+        assert last_node.metadata["attempts"] == 2
+        assert len(last_node.metadata["verifications"]) == 2
+        assert all(
+            attempt["verifier"] == "task-output-contract"
+            for attempt in last_node.metadata["verifications"]
+        )
         assert executor.artifact_writes == []
     finally:
         await service.shutdown()

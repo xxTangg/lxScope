@@ -60,6 +60,24 @@ _RULE_KEYWORDS = (
     "政策",
 )
 
+
+def _knowledge_runtime_security_review(status: str, message: str) -> dict[str, str]:
+    """Persist the result of the Task Gateway's current-attempt scope check.
+
+    This record is deliberately limited to authorization and availability at
+    the knowledge boundary. It does not describe evidence quality, business
+    rule validation, or the Agent's semantic verification.
+    """
+
+    return {
+        "check_id": "task_knowledge_scope_authorization",
+        "check_type": "Task 知识库运行时权限范围",
+        "status": status,
+        "source": "TaskKnowledgeGateway 当前 Attempt 授权检索",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "message": message,
+    }
+
 _ARCHIVE_FIELD_LABELS = {
     "file_name": "文件名",
     "category": "归档类别",
@@ -151,6 +169,14 @@ async def retrieve_scenario_evidence(
         return _failure(
             "Task 输入缺少可用于授权知识库检索的主题或资料范围。",
             code="TASK_SCENARIO_QUERY_MISSING",
+            metadata={
+                "task_security_review_checks": [
+                    _knowledge_runtime_security_review(
+                        "not_performed",
+                        "当前 Attempt 缺少检索主题，未调用知识库授权检索。",
+                    ),
+                ],
+            },
         )
     try:
         result = await gateway.retrieve_task_evidence(
@@ -183,11 +209,23 @@ async def retrieve_scenario_evidence(
                         "status": "not_found",
                         "query": query,
                         "evidence_count": 0,
+                        "source_scope": "authorized_task_knowledge_bases",
                     },
+                    "task_security_review_checks": [
+                        _knowledge_runtime_security_review(
+                            "passed",
+                            "当前 Attempt 已通过 TaskKnowledgeGateway 的用户知识库访问范围校验；未命中证据不代表规则或业务结论已核验。",
+                        ),
+                    ],
                 },
             )
         message = getattr(error, "message", None) or "授权知识库检索失败，Task 已停止。"
         code = getattr(error, "code", "retrieval_failed")
+        permission_denied = code in {
+            "knowledge_base_unavailable",
+            "permission_denied",
+        }
+        authorization_confirmed = code == "no_matching_evidence"
         return StepExecutionResult(
             text=str(message),
             status="failed",
@@ -195,6 +233,24 @@ async def retrieve_scenario_evidence(
             metadata={
                 "knowledge_error_code": str(code),
                 "scenario_retrieval": {"capability_key": capability_key},
+                "task_security_review_checks": [
+                    _knowledge_runtime_security_review(
+                        (
+                            "failed"
+                            if permission_denied
+                            else "passed"
+                            if authorization_confirmed
+                            else "pending"
+                        ),
+                        (
+                            "TaskKnowledgeGateway 在当前 Attempt 中明确拒绝了所选知识库或资料访问。"
+                            if permission_denied
+                            else "当前 Attempt 已通过知识库访问范围校验，但检索没有匹配证据。"
+                            if authorization_confirmed
+                            else "当前 Attempt 未能完成知识库授权范围确认；不能据此判定授权通过。"
+                        ),
+                    ),
+                ],
             },
         )
 
@@ -240,6 +296,12 @@ async def retrieve_scenario_evidence(
                         "evidence_count": 0,
                         "source_scope": "authorized_task_knowledge_bases",
                     },
+                    "task_security_review_checks": [
+                        _knowledge_runtime_security_review(
+                            "passed",
+                            "当前 Attempt 已通过 TaskKnowledgeGateway 的用户知识库访问范围校验；本次检索没有返回匹配证据。",
+                        ),
+                    ],
                 },
             )
     else:
@@ -299,6 +361,12 @@ async def retrieve_scenario_evidence(
                 "knowledge_bases": result.get("knowledge_bases", []),
                 "source_scope": "authorized_task_knowledge_bases",
             },
+            "task_security_review_checks": [
+                _knowledge_runtime_security_review(
+                    "passed",
+                    "当前 Attempt 已通过 TaskKnowledgeGateway 的用户知识库访问范围校验并完成本次检索；该记录不表示规则适用性、业务事实或引用语义已通过验收。",
+                ),
+            ],
         },
     )
 
@@ -1136,6 +1204,7 @@ def _failure(
     *,
     code: str,
     result: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> StepExecutionResult:
     return StepExecutionResult(
         text=json.dumps(result, ensure_ascii=False, separators=(",", ":"))
@@ -1144,7 +1213,10 @@ def _failure(
         result=result,
         status="failed",
         reason=message,
-        metadata={"scenario_capability_error": {"code": code, "message": message}},
+        metadata={
+            **(metadata or {}),
+            "scenario_capability_error": {"code": code, "message": message},
+        },
     )
 
 

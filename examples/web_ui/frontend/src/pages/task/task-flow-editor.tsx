@@ -25,6 +25,7 @@ interface TaskFlowEditorProps {
 	disabled?: boolean;
 	templateMode?: boolean;
 	customFlowMode?: boolean;
+	dagMode?: boolean;
 	template?: TaskTemplateDefinition | null;
 	templateStepBindings?: Record<string, string>;
 }
@@ -131,6 +132,7 @@ export function TaskFlowEditor({
 	disabled = false,
 	templateMode = false,
 	customFlowMode = false,
+	dagMode = false,
 	template = null,
 	templateStepBindings = {},
 }: TaskFlowEditorProps) {
@@ -323,9 +325,11 @@ export function TaskFlowEditor({
 		<section>
 			<div className="mb-3 flex items-center justify-between">
 				<div>
-					<div className="text-base font-semibold">任务流程</div>
+					<div className="text-base font-semibold">{dagMode ? 'DAG 节点配置' : '任务流程'}</div>
 					<div className="mt-1 text-xs text-muted-foreground">
-						按顺序执行，每一步的输出会自动传给下一步
+						{dagMode
+							? '编辑节点内容与类型；节点前驱关系和调度顺序由上方 DAG 图定义。'
+							: '按顺序执行，每一步的输出会自动传给下一步'}
 					</div>
 					{nodes.length >= 8 && (
 						<div className="mt-1 text-[11px] text-amber-700">
@@ -433,7 +437,7 @@ export function TaskFlowEditor({
 							</div>
 							<div className="rounded-2xl border border-border bg-background/70 p-4 transition-colors focus-within:border-primary/30">
 								<div className="flex items-start gap-3">
-									<GripVertical className="mt-1 size-4 shrink-0 text-muted-foreground/60" />
+										{!dagMode && <GripVertical className="mt-1 size-4 shrink-0 text-muted-foreground/60" />}
 									<div className="min-w-0 flex-1 space-y-3">
 										<div className="flex items-center gap-2">
 											{stepIcon(node.type)}
@@ -819,7 +823,9 @@ export function TaskFlowEditor({
 											</div>
 										)}
 									</div>
-									<div className="flex shrink-0 items-center gap-1">
+					<div className="flex shrink-0 items-center gap-1">
+						{!dagMode && (
+							<>
 										<Button
 											variant="ghost"
 											size="icon-xs"
@@ -886,6 +892,8 @@ export function TaskFlowEditor({
 										>
 											<ArrowDown />
 										</Button>
+							</>
+						)}
 										<Button
 											variant="ghost"
 											size="icon-xs"

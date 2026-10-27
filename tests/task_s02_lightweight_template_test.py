@@ -361,7 +361,7 @@ def test_s02_v5_taskservice_sop_generates_run_linked_draft_docx() -> None:
     assert docx_bytes.startswith(b"PK")
     document = Document(io.BytesIO(docx_bytes))
     all_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
-    label = "项目策划初稿 · 尚未完成正式核验"
+    label = "DEMO/SYNTHETIC · 演示草稿 · 未完成完整证据核验"
     assert label in all_text
     assert any(
         label in paragraph.text

@@ -15,6 +15,7 @@ from ._template_models import TaskTemplateDefinition
 TEMPLATE_VERSION_FILES: tuple[tuple[str, str, str], ...] = (
     ("s01_project_init", "1.0.0", "s01_project_init.v1.json"),
     ("s01_project_init", "2.0.0", "s01_project_init.v2.json"),
+    ("s01_project_init", "3.0.0", "s01_project_init.v3.json"),
     ("s02_project_planning", "1.0.0", "s02_project_planning.v1.json"),
     ("s02_project_planning", "2.0.0", "s02_project_planning.v2.json"),
     ("s02_project_planning", "3.0.0", "s02_project_planning.v3.json"),
@@ -56,7 +57,7 @@ TEMPLATE_VERSION_FILES: tuple[tuple[str, str, str], ...] = (
 # explicitly request an exact published version can resolve its immutable
 # definition through get_template_version().
 CURRENT_TEMPLATE_VERSIONS: tuple[tuple[str, str], ...] = (
-    ("s01_project_init", "2.0.0"),
+    ("s01_project_init", "3.0.0"),
     ("s02_project_planning", "5.1.0"),
     ("s03_expert_matching", "3.0.0"),
     ("s04_meeting_preparation", "3.0.0"),

@@ -1,10 +1,12 @@
-import { AlertCircle, ChevronDown, Copy, Loader2, Plus, RefreshCw } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Copy, Info, Loader2, Plus, RefreshCw, Sparkles } from 'lucide-react';
 import './task-page.css';
 import * as React from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { NewTaskDialog } from './new-task-dialog';
+import { TaskDagCanvas } from './task-dag-canvas';
+import { getDagDescendants, reconcileDagNodes } from './task-dag-utils';
 import { TaskFlowEditor } from './task-flow-editor';
 import { TaskHeader } from './task-header';
 import { TaskKnowledgeGraph } from './task-knowledge-graph';
@@ -12,6 +14,15 @@ import { TaskKnowledgeSelector } from './task-knowledge-selector';
 import { TaskMetrics } from './task-metrics';
 import { TaskOverview } from './task-overview';
 import { TaskRunPanel } from './task-run-panel';
+import { TaskS01Results } from './task-s01-results';
+import { TaskS02Results } from './task-s02-results';
+import { TaskS03Results } from './task-s03-results';
+import { TaskS04Results } from './task-s04-results';
+import { TaskS05Results } from './task-s05-results';
+import { TaskS06Results } from './task-s06-results';
+import { TaskS07Results } from './task-s07-results';
+import { TaskS08Results } from './task-s08-results';
+import { TaskS09Results } from './task-s09-results';
 import { TaskSidebar } from './task-sidebar';
 import { TaskTemplateCreateDialog } from './task-template-create-dialog';
 import { TaskTemplateGallery } from './task-template-gallery';
@@ -26,13 +37,27 @@ import type {
 import { taskApi } from '@/api';
 import { ApiError } from '@/api/client';
 import type {
-	TaskErrorCategory,
 	TaskDeliveryMode,
+	TaskDagCapabilitiesResponse,
+	TaskCustomFlowCopyMode,
+	TaskCapabilityCheck,
+	TaskGraph,
 	TaskPreflightResponse,
+	TaskPlanningDecision,
+	TaskRunControlRequest,
 	TaskTemplateDefinition,
+	TaskValidationIssue,
 } from '@/api/task';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { useAgents } from '@/hooks/useAgents';
 import { useSessions } from '@/hooks/useSessions';
@@ -40,8 +65,10 @@ import { useSessions } from '@/hooks/useSessions';
 interface TaskDraft {
 	id: string;
 	title: string;
+	title_source: TaskRecord['title_source'];
 	goal: string;
 	nodes: TaskNode[];
+	graph: TaskGraph | null;
 	knowledge_base_ids: string[];
 	generation_status: TaskRecord['generation_status'];
 	generation_error?: string | null;
@@ -51,44 +78,53 @@ interface TaskDraft {
 	workflow_mode?: TaskRecord['workflow_mode'];
 	source_task_id?: string | null;
 	source_task_revision?: number | null;
+	planning_decision?: TaskPlanningDecision | null;
+	planning_version?: number;
+	planning_goal_snapshot?: string | null;
+	planning_confirmed_id?: string | null;
+	planning_confirmed_version?: number | null;
+}
+
+function getDagExecutionBlockReasons(
+	task: Pick<TaskDraft, 'source_template_id' | 'source_template_version'> | null | undefined,
+	capabilities: TaskDagCapabilitiesResponse | null,
+): string[] {
+	if (!task) return [];
+	if (!capabilities) {
+		return ['无法读取服务端 DAG 执行能力；为避免绕过权限校验，当前不能启动 DAG Run。'];
+	}
+	const reasons: string[] = [];
+	if (!capabilities.execution_enabled) {
+		reasons.push('DAG 执行总开关关闭；图仍可编辑、保存和预检，但服务端会拒绝启动 Run。');
+	}
+	if (
+		task.source_template_id &&
+		!capabilities.scenario_execution_allowlist.some(
+			(scope) =>
+				scope.template_id === task.source_template_id &&
+				scope.template_version === task.source_template_version,
+		)
+	) {
+		reasons.push('该版本化场景未获当前 TaskService 的精确模板版本执行授权；服务端会拒绝启动 Run。');
+	}
+	return reasons;
 }
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'timed_out']);
-const CAPABILITY_STATUS_LABELS: Record<string, string> = {
-	available: '可用',
-	missing: '缺少工具',
-	incompatible: '接口不兼容',
-	permission_denied: '权限不足',
-	unsupported: '当前不支持',
-	unverified: '尚未验证',
-};
-const PERMISSION_STATUS_LABELS: Record<string, string> = {
-	allowed: '已通过',
-	denied: '拒绝',
-	requires_runtime_check: '运行时复核',
-	requires_confirmation: '需要交互确认',
-	not_applicable: '不适用',
-	unavailable: '无法检查',
-};
-const TASK_ERROR_CATEGORY_LABELS: Record<TaskErrorCategory, string> = {
-	configuration_error: '配置错误',
-	missing_tool: '缺少工具',
-	permission_denied: '权限不足',
-	data_source_not_ready: '数据源未就绪',
-	schema_mismatch: 'Schema 不匹配',
-	input_incomplete: '输入不足',
-	citation_verification_failed: '引用校验失败',
-	external_interface_failed: '外部接口失败',
-	artifact_generation_failed: '文件生成失败',
-	execution_failed: '节点执行失败',
-};
-
 function toDraft(task: TaskRecord): TaskDraft {
+	const templateInputMarker = '\n\n模板输入参数（JSON）：';
+	const templateInputIndex = task.goal.indexOf(templateInputMarker);
+	const goal =
+		task.source_template_id && templateInputIndex >= 0
+			? `${task.goal.slice(0, templateInputIndex).trim()}\n\n${task.source_template_id === 's01_project_init' ? '执行时补充项目名称、背景、目标与范围。' : '执行时请按流程提示补充本场景所需信息。'}`
+			: task.goal;
 	return {
 		id: task.id,
 		title: task.title,
-		goal: task.goal,
+		title_source: task.title_source,
+		goal,
 		nodes: task.nodes.map((node) => ({ ...node })),
+		graph: task.graph ?? null,
 		knowledge_base_ids: Array.isArray(task.knowledge_base_ids)
 			? [...task.knowledge_base_ids]
 			: [],
@@ -100,6 +136,11 @@ function toDraft(task: TaskRecord): TaskDraft {
 		workflow_mode: task.workflow_mode,
 		source_task_id: task.source_task_id,
 		source_task_revision: task.source_task_revision,
+		planning_decision: task.planning_decision ?? null,
+		planning_version: task.planning_version ?? 0,
+		planning_goal_snapshot: task.planning_goal_snapshot,
+		planning_confirmed_id: task.planning_confirmed_id,
+		planning_confirmed_version: task.planning_confirmed_version,
 	};
 }
 
@@ -162,142 +203,348 @@ function getResultWidthLimit(): number {
 	return Math.min(MAX_RESULT_WIDTH, Math.max(360, Math.floor(viewportWidth * 0.38)));
 }
 
+const CAPABILITY_BUSINESS_NAMES: Record<string, string> = {
+	'project.similar_search': '相似项目检索',
+	'project.rule_check': '立项规则核对',
+	'project.authorization.read': '授权项目资料读取',
+	'planning.template_retrieve': '策划资料检索',
+	'document.render': '文档生成与导出',
+	'expert.user_data_lookup': '候选专家数据读取',
+	'expert.user_conflict_check': '专家回避声明整理',
+	'expert.user_rank': '专家候选排序',
+	'meeting.cost_calculate': '会议费用核算',
+	'meeting.material_generate': '会议物料生成',
+	'meeting.material_check': '会前材料检查',
+	'meeting.transcript_import': '会议转写文本导入',
+	'opinion.text_import': '意见文本导入',
+	'opinion.classify': '意见分类整理',
+	'report.rag_retrieve': '授权报告资料检索',
+	'archive.document_metadata': '归档文件信息整理',
+	'archive.completeness_check': '归档完整性检查',
+	'expense.invoice_import': '结构化票据信息导入',
+	'expense.invoice_verify_dedupe': '票据重复核对',
+	'expense.rule_check': '报销规则核对',
+};
+
+function isExplicitlyBlocked(check: TaskCapabilityCheck): boolean {
+	const status = String(check.status).toLowerCase();
+	return (
+		['blocked', 'unsupported', 'missing', 'incompatible', 'permission_denied'].includes(status) ||
+		check.tool_available === false ||
+		check.interface_compatible === false ||
+		check.permission_status === 'denied'
+	);
+}
+
+function isCapabilityUsable(check: TaskCapabilityCheck): boolean {
+	if (check.capability_key === 'document.render' || check.capability_key === 'meeting.minutes_export') {
+		return (
+			!isExplicitlyBlocked(check) &&
+			check.status === 'available' &&
+			(check.permission_status === 'allowed' || check.permission_status === 'not_applicable')
+		);
+	}
+	return (
+		!isExplicitlyBlocked(check) &&
+		check.tool_available === true &&
+		check.interface_compatible === true &&
+		(check.permission_status === 'allowed' || check.permission_status === 'not_applicable')
+	);
+}
+
+function getCapabilityFailureReason(checks: TaskCapabilityCheck[]): string {
+	if (checks.some((check) => String(check.status).toLowerCase() === 'unsupported')) {
+		return '当前环境不支持此工具。';
+	}
+	if (checks.some((check) => check.status === 'permission_denied' || check.permission_status === 'denied')) {
+		return '当前用户没有调用权限。';
+	}
+	if (checks.some((check) => check.interface_compatible === false || check.status === 'incompatible')) {
+		return '工具接口不兼容。';
+	}
+	if (checks.some((check) => check.tool_available === false || check.status === 'missing')) {
+		return '当前会话未发现对应工具。';
+	}
+	if (checks.some((check) => check.permission_status !== 'allowed' && check.permission_status !== 'not_applicable')) {
+		return '当前会话尚未确认调用权限。';
+	}
+	return '工具、接口或权限检查未通过。';
+}
+
+function getShortPreflightIssueReason(message: string): string {
+	const normalized = message.toLowerCase();
+	if (normalized.includes('permission') || normalized.includes('权限') || normalized.includes('授权')) {
+		return '当前用户或会话缺少所需权限。';
+	}
+	if (normalized.includes('unsupported') || normalized.includes('不支持')) {
+		return '当前环境不支持此能力。';
+	}
+	if (normalized.includes('tool') || normalized.includes('工具')) {
+		return '当前会话未发现可用的对应工具。';
+	}
+	if (normalized.includes('schema') || normalized.includes('interface') || normalized.includes('接口')) {
+		return '工具接口或参数与任务配置不兼容。';
+	}
+	return '任务配置或输入未通过运行前检查。';
+}
+
 function CapabilityPreflightPanel({
 	result,
 	isChecking,
+	requiredCapabilities = [],
+	className = 'mx-5 mb-3 xl:mx-6',
 }: {
 	result: TaskPreflightResponse | null;
 	isChecking: boolean;
+	requiredCapabilities?: string[];
+	className?: string;
 }) {
-	const [open, setOpen] = React.useState(() => Boolean(result && result.ready !== true));
 	const checks = result?.capability_checks ?? [];
-	const issues = result?.issues ?? [];
-	const availableCount = checks.filter((check) => check.status === 'available').length;
-	const unavailableCount = checks.filter((check) => check.status !== 'available').length;
-	const failureCount = unavailableCount || issues.length;
-	const hasDetails = checks.length > 0 || issues.length > 0;
-	const passed = result?.ready === true;
-	const panelClass = isChecking
-		? 'border-amber-200 bg-amber-50/70 text-amber-950'
-		: result
-			? passed
-				? 'border-emerald-200 bg-emerald-50/70 text-emerald-950'
-				: 'border-red-200 bg-red-50/70 text-red-950'
-			: 'border-slate-200 bg-slate-50/80 text-slate-800';
+	const groupedChecks = Array.from(
+		checks.reduce((groups, check) => {
+			const group = groups.get(check.capability_key) ?? [];
+			group.push(check);
+			groups.set(check.capability_key, group);
+			return groups;
+		}, new Map<string, TaskCapabilityCheck[]>()).entries(),
+	).map(([capabilityKey, group]) => ({
+		capabilityKey,
+		checks: group,
+		name: CAPABILITY_BUSINESS_NAMES[capabilityKey] ?? group[0]?.step_name ?? '业务工具',
+		available: group.every(isCapabilityUsable),
+	}));
+	const groupsByCapability = new Map(groupedChecks.map((group) => [group.capabilityKey, group]));
+	const displayedCapabilities = Array.from(
+		new Set([...requiredCapabilities, ...groupedChecks.map((group) => group.capabilityKey)]),
+	).map((capabilityKey) => {
+		const group = groupsByCapability.get(capabilityKey);
+		return {
+			capabilityKey,
+			name: CAPABILITY_BUSINESS_NAMES[capabilityKey] ?? group?.name ?? capabilityKey,
+			checks: group?.checks ?? [],
+			status: !group ? 'unreported' : group.available ? 'available' : 'unavailable',
+		};
+	});
+	const availableGroups = groupedChecks.filter((group) => group.available);
+	const unavailableGroups = groupedChecks.filter((group) => !group.available);
+	const ready = result ? (typeof result.ready === 'boolean' ? result.ready : result.valid) : null;
+	const notReady = Boolean(result && ready !== true);
+	const hasUnavailableTools = unavailableGroups.length > 0;
+	const preflightIssues = result?.issues ?? [];
+	const hasShortReasons = hasUnavailableTools || (notReady && preflightIssues.length > 0);
+	const statusTone = isChecking
+		? 'text-slate-500'
+		: ready === true
+			? 'text-emerald-700'
+			: hasUnavailableTools || (notReady && groupedChecks.length === 0)
+			? 'text-red-700'
+			: result
+				? 'text-emerald-700'
+				: 'text-slate-500';
 	const summary = isChecking
-		? '运行前能力检查中...'
-		: result
-			? passed
-				? `✓ 运行前能力检查已通过 · ${availableCount > 0 ? `${availableCount} 项能力可用` : '当前无能力检查项'}`
-				: `✕ 运行前能力检查未通过${failureCount > 0 ? ` · ${failureCount} 项异常` : ''}`
-			: '运行前能力检查 · 尚未检查，点击“运行”后检查本任务能力';
+		? '正在检查工具能力'
+		: !result
+			? '尚未进行工具检查'
+			: ready === true
+				? `工具检查通过 · ${availableGroups.length} 项可用`
+			: hasUnavailableTools
+				? `工具检查异常 · ${unavailableGroups.length} 项不可用`
+				: notReady && groupedChecks.length === 0
+					? '运行前检查未通过 · 未返回工具检查项'
+					: `工具检查通过 · ${availableGroups.length} 项可用`;
+	const statusIcon = isChecking ? (
+		<Loader2 className="size-4 animate-spin" aria-hidden="true" />
+	) : ready === true ? (
+		<Check className="size-4" aria-hidden="true" />
+	) : hasUnavailableTools || (notReady && groupedChecks.length === 0) ? (
+		<AlertCircle className="size-4" aria-hidden="true" />
+	) : result ? (
+		<Check className="size-4" aria-hidden="true" />
+	) : (
+		<Info className="size-4" aria-hidden="true" />
+	);
 
 	return (
-		<div className={`mx-5 mb-3 min-w-0 rounded-xl border px-3 py-2 text-xs xl:mx-6 ${panelClass}`}>
-			<Collapsible open={open} onOpenChange={setOpen}>
-				<CollapsibleTrigger asChild>
-					<button
-						type="button"
-						disabled={!result || isChecking || !hasDetails}
-						className="flex w-full min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-default"
-					>
-						<span
-							className={`min-w-0 flex-1 break-words font-semibold ${!passed && result ? 'text-red-800' : ''}`}
-						>
-							{isChecking && (
-								<Loader2
-									className="mr-1.5 inline size-3.5 animate-spin align-[-2px]"
-									aria-hidden="true"
-								/>
-							)}
-							{summary}
-						</span>
-						<span className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-slate-600">
-							{hasDetails && result && (open ? '收起详情' : '展开详情')}
-							{hasDetails && result && (
-								<ChevronDown
-									className={`size-3.5 transition-transform ${open ? 'rotate-180' : ''}`}
-									aria-hidden="true"
-								/>
-							)}
-						</span>
-					</button>
-				</CollapsibleTrigger>
-				<CollapsibleContent className="min-w-0">
-					<p className="mt-2 break-words text-[11px] leading-5 text-slate-700">
-						工具可绑定不代表真实业务数据源已经接通；实际 Tool 调用仍会再次检查权限。
-					</p>
-					{checks.length > 0 && (
-						<div className="mt-2 min-w-0 space-y-2">
-							{checks.map((check) => (
-								<div
-									key={`${check.capability_key}:${check.step_id ?? 'missing'}`}
-									className="min-w-0 rounded-lg border border-slate-200/80 bg-white/90 px-2.5 py-2"
+		<div className={`${className} min-w-0 rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-xs`}>
+			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+				<div className="flex shrink-0 items-center gap-2">
+					<span className={`shrink-0 ${statusTone}`}>{statusIcon}</span>
+					<div className={`font-semibold ${statusTone}`}>{summary}</div>
+				</div>
+
+				{!isChecking && result && displayedCapabilities.length > 0 && (
+					<div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+						{displayedCapabilities.map(({ capabilityKey, name, checks: capabilityChecks, status }) => {
+							const available = status === 'available';
+							const unavailable = status === 'unavailable';
+							return (
+								<span
+									key={capabilityKey}
+									className={`inline-flex items-center gap-1 rounded-full border bg-white px-2 py-1 text-[10px] font-medium ${
+										available
+											? 'border-emerald-200 text-emerald-800'
+											: unavailable
+												? 'border-red-200 text-red-700'
+												: 'border-slate-200 text-slate-600'
+									}`}
+									title={unavailable ? getCapabilityFailureReason(capabilityChecks) : undefined}
 								>
-									<div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5">
-										<span className="min-w-0 break-words font-semibold">
-											{check.step_name} · {check.category}
-										</span>
-										<span
-											className={
-												check.status === 'available'
-													? 'text-emerald-700'
-													: 'text-red-700'
-											}
-										>
-											{CAPABILITY_STATUS_LABELS[check.status] ?? check.status}
-										</span>
-									</div>
-									<div className="mt-1 break-words text-[11px] leading-5 text-slate-600">
-										能力：<span className="break-all">{check.capability_key}</span>；工具：
-										{check.tool_available == null
-											? '不适用'
-											: check.tool_available
-												? '存在'
-												: '缺少'}
-										；接口：
-										{check.interface_compatible == null
-											? '未检查'
-											: check.interface_compatible
-												? '兼容'
-												: '不兼容'}
-										；权限：
-										{PERMISSION_STATUS_LABELS[check.permission_status] ??
-											check.permission_status}
-										；真实数据源：
-										{check.business_data_verified == null
-											? '不适用'
-											: check.business_data_verified
-												? '已验证'
-												: '未验证'}
-									</div>
-									<p className="mt-1 break-words text-[11px] leading-5 [overflow-wrap:anywhere]">
-										{check.message}
-									</p>
-									{check.error_category && check.error_code && (
-										<p className="mt-1 break-all text-[10px] font-medium text-red-700">
-											{TASK_ERROR_CATEGORY_LABELS[check.error_category]} · {check.error_code}
-										</p>
+									{available ? (
+										<Check className="size-3 text-emerald-600" aria-hidden="true" />
+									) : unavailable ? (
+										<AlertCircle className="size-3 text-red-600" aria-hidden="true" />
+									) : (
+										<Info className="size-3 text-slate-500" aria-hidden="true" />
 									)}
-								</div>
+									{name}{status === 'unreported' ? ' · 未返回结果' : ''}
+								</span>
+							);
+						})}
+					</div>
+				)}
+			</div>
+
+			{!isChecking && hasShortReasons && (
+				<Collapsible className="mt-1.5">
+					<CollapsibleTrigger asChild>
+						<button
+							type="button"
+							className="inline-flex items-center gap-1 rounded text-[10px] font-medium text-slate-600 outline-none hover:text-slate-900 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+						>
+							查看简短原因
+							<ChevronDown className="size-3 transition-transform data-[state=open]:rotate-180" aria-hidden="true" />
+						</button>
+					</CollapsibleTrigger>
+					<CollapsibleContent>
+						<ul className="mt-1.5 space-y-1 border-t border-slate-200 pt-1.5">
+							{unavailableGroups.map(({ capabilityKey, checks: group, name }) => (
+								<li key={capabilityKey} className="flex flex-wrap items-baseline gap-x-2 text-[10px] leading-4">
+									<span className="font-medium text-slate-700">{name}</span>
+									<span className="text-slate-500">{getCapabilityFailureReason(group)}</span>
+								</li>
 							))}
-						</div>
-					)}
-					{issues.length > 0 && (
-						<ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-5 text-red-800">
-							{issues.map((issue, index) => (
-								<li
-									key={`${issue.path}:${index}`}
-									className="break-words [overflow-wrap:anywhere]"
-								>
-									{issue.path}：{issue.message}
+							{notReady && preflightIssues.map((issue, index) => (
+								<li key={`preflight-issue-${index}`} className="text-[10px] leading-4 text-slate-500">
+									{getShortPreflightIssueReason(issue.message)}
 								</li>
 							))}
 						</ul>
-					)}
-				</CollapsibleContent>
-			</Collapsible>
+					</CollapsibleContent>
+				</Collapsible>
+			)}
+
+			{!isChecking && result && notReady && groupedChecks.length > 0 && !hasUnavailableTools && (
+				<p className="mt-1.5 text-[10px] leading-4 text-red-700">
+					工具状态已显示；运行仍受服务端 Preflight 门禁控制。
+				</p>
+			)}
+
+			{!isChecking && result && groupedChecks.length === 0 && requiredCapabilities.length === 0 && ready === true && (
+				<p className="mt-1.5 text-[10px] leading-4 text-slate-500">当前任务没有需要检查的工具能力。</p>
+			)}
 		</div>
+	);
+}
+
+interface TaskPlanningPanelProps {
+	plan: TaskPlanningDecision;
+	planVersion: number;
+	confirmed: boolean;
+	goalChanged: boolean;
+	busy: boolean;
+	applied: boolean;
+	onApply: () => void;
+	onConfirm: () => void;
+	onReplan: () => void;
+}
+
+function TaskPlanningPanel({
+	plan,
+	planVersion,
+	confirmed,
+	goalChanged,
+	busy,
+	applied,
+	onApply,
+	onConfirm,
+	onReplan,
+}: TaskPlanningPanelProps) {
+	const nodeNames = new Map(plan.nodes.map((node) => [node.id, node.name]));
+	const dependencies = plan.edges.map(
+		(edge) => `${nodeNames.get(edge.source_node_id) ?? edge.source_node_id} → ${nodeNames.get(edge.target_node_id) ?? edge.target_node_id}`,
+	);
+	const bindings = Object.entries(plan.input_bindings).flatMap(([targetId, named]) =>
+		Object.entries(named).map(
+			([name, binding]) =>
+				`${nodeNames.get(targetId) ?? targetId}.${name} ← ${nodeNames.get(binding.source_node_id) ?? binding.source_node_id}.${binding.source_value}`,
+		),
+	);
+	return (
+		<section className="mb-4 rounded-2xl border border-violet-200 bg-violet-50/50 p-4">
+			<div className="flex flex-wrap items-start justify-between gap-3">
+				<div>
+					<div className="flex items-center gap-2 text-sm font-semibold text-violet-950">
+						<Sparkles className="size-4" /> 智能规划 · {plan.recommended_mode.toUpperCase()}
+					</div>
+					<div className="mt-1 text-[10px] text-violet-800">
+						规划 {plan.planning_id} · 版本 {planVersion} · 校验 {plan.validation_status === 'valid' ? '通过' : plan.validation_status === 'pending' ? '待审查' : '未通过'} · 服务端执行授权 {plan.execution_allowed ? '允许候选' : '未允许'}
+					</div>
+				</div>
+				<div className="flex flex-wrap gap-2">
+					<Button type="button" size="sm" variant="outline" onClick={onReplan} disabled={busy}>
+						{busy ? <Loader2 className="animate-spin" /> : <RefreshCw />} 重新规划
+					</Button>
+					<Button type="button" size="sm" variant="outline" onClick={onApply} disabled={busy}>
+						{applied ? '已载入编辑器' : '载入编辑器'}
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						onClick={onConfirm}
+						disabled={busy || goalChanged || plan.validation_status === 'invalid'}
+						title={goalChanged ? '任务目标在规划后已修改，请重新规划。' : undefined}
+					>
+						{busy ? <Loader2 className="animate-spin" /> : <Check />}
+						{confirmed ? '重新确认并预检' : '确认规划并预检'}
+					</Button>
+				</div>
+			</div>
+			<div className="mt-3 grid gap-3 lg:grid-cols-2">
+				<div className="rounded-xl border border-violet-100 bg-white/80 p-3">
+					<div className="mb-2 text-[11px] font-semibold text-slate-800">执行节点</div>
+					<ol className="space-y-1.5">
+						{plan.nodes.map((node, index) => (
+							<li key={node.id} className="flex gap-2 text-[10px] leading-4 text-slate-700">
+								<span className="shrink-0 font-mono text-slate-400">{index + 1}.</span>
+								<span><strong>{node.name}</strong><span className="ml-1 text-slate-400">{node.type} · {node.id}</span></span>
+							</li>
+						))}
+					</ol>
+				</div>
+				<div className="rounded-xl border border-violet-100 bg-white/80 p-3 text-[10px] leading-4 text-slate-700">
+					<div className="mb-1 font-semibold text-slate-800">依赖与输入绑定</div>
+					<div><strong>依赖：</strong>{dependencies.length ? dependencies.join('；') : '无显式依赖（单节点）'}</div>
+					<div className="mt-1"><strong>输入绑定：</strong>{bindings.length ? bindings.join('；') : '无命名汇合输入'}</div>
+					{plan.recommended_mode === 'dag' && (
+						<div className="mt-1">并发上限 {plan.max_concurrency} · 资源容量 {Object.keys(plan.resource_limits).length ? JSON.stringify(plan.resource_limits) : '未声明节点资源需求'}</div>
+					)}
+				</div>
+			</div>
+			<div className="mt-3 rounded-xl bg-white/80 px-3 py-2 text-[10px] leading-4 text-slate-700">
+				<div className="font-semibold text-slate-800">决策说明</div>
+				<div className="mt-1 whitespace-pre-line">{plan.reason}</div>
+				{plan.validation_issues.length > 0 && (
+					<ul className="mt-2 list-disc space-y-1 pl-4 text-amber-800">
+						{plan.validation_issues.map((issue, index) => <li key={`${issue.path}-${index}`}>{issue.path}: {issue.message}</li>)}
+					</ul>
+				)}
+				{plan.approval_required_node_ids.length > 0 && (
+					<div className="mt-2 text-amber-800">需要现有人工确认/重跑门禁的 Tool 节点：{plan.approval_required_node_ids.join(', ')}</div>
+				)}
+				<div className="mt-2 text-slate-500">确认仅保存 Task 计划并执行只读 Preflight；创建 Run 仍需再次点击“执行任务”，服务端会重新校验权限、图与场景门禁。</div>
+				{goalChanged && <div className="mt-1 text-red-700">任务目标已变化，请重新规划后再确认。</div>}
+			</div>
+		</section>
 	);
 }
 
@@ -305,11 +552,17 @@ export function TaskPage() {
 	const navigate = useNavigate();
 	const { taskId } = useParams<{ taskId?: string }>();
 	const [tasks, setTasks] = React.useState<TaskRecord[]>([]);
+	const [taskDagCapabilities, setTaskDagCapabilities] =
+		React.useState<TaskDagCapabilitiesResponse | null>(null);
 	const [selectedTaskId, setSelectedTaskId] = React.useState<string | null>(taskId ?? null);
 	const [draft, setDraft] = React.useState<TaskDraft | null>(null);
 	const [currentRun, setCurrentRun] = React.useState<TaskRunRecord | null>(null);
+	const [selectedRunNodeId, setSelectedRunNodeId] = React.useState<string | null>(null);
 	const [runEvents, setRunEvents] = React.useState<TaskRunEvent[]>([]);
+	const [taskMainView, setTaskMainView] = React.useState<'editor' | 'business_results'>('editor');
+	const [fullResultRequest, setFullResultRequest] = React.useState(0);
 	const [availableTools, setAvailableTools] = React.useState<TaskToolSchema[]>([]);
+	const [isLoadingTools, setIsLoadingTools] = React.useState(false);
 	const [executionAgentId, setExecutionAgentId] = React.useState<string | null | undefined>(
 		undefined,
 	);
@@ -324,10 +577,18 @@ export function TaskPage() {
 	const [isLoading, setIsLoading] = React.useState(true);
 	const [isSaving, setIsSaving] = React.useState(false);
 	const [isRunning, setIsRunning] = React.useState(false);
+	const [pendingDagCommand, setPendingDagCommand] = React.useState<string | null>(null);
+	const pendingDagCommandRef = React.useRef(false);
 	const [isGenerating, setIsGenerating] = React.useState(false);
 	const [isSyncingGeneration, setIsSyncingGeneration] = React.useState(false);
+	const [isPlanning, setIsPlanning] = React.useState(false);
+	const [isConfirmingPlan, setIsConfirmingPlan] = React.useState(false);
+	const [planningEditorApplied, setPlanningEditorApplied] = React.useState(false);
 	const [newTaskOpen, setNewTaskOpen] = React.useState(false);
 	const [templateGalleryOpen, setTemplateGalleryOpen] = React.useState(false);
+	const [customCopyOpen, setCustomCopyOpen] = React.useState(false);
+	const [customCopyMode, setCustomCopyMode] =
+		React.useState<TaskCustomFlowCopyMode>('sop');
 	const [templateToCreate, setTemplateToCreate] = React.useState<TaskTemplateDefinition | null>(
 		null,
 	);
@@ -335,6 +596,7 @@ export function TaskPage() {
 	const [error, setError] = React.useState<string | null>(null);
 	const [capabilityPreflight, setCapabilityPreflight] =
 		React.useState<TaskPreflightResponse | null>(null);
+	const [graphValidationIssues, setGraphValidationIssues] = React.useState<TaskValidationIssue[]>([]);
 	const [isPreflighting, setIsPreflighting] = React.useState(false);
 	const [preflightResultVersion, setPreflightResultVersion] = React.useState(0);
 	const preflightRequestRef = React.useRef(0);
@@ -344,6 +606,7 @@ export function TaskPage() {
 		setIsPreflighting(false);
 	}, []);
 	const [sidebarWidth, setSidebarWidth] = React.useState(280);
+	const [taskListCollapsed, setTaskListCollapsed] = React.useState(false);
 	const [resultWidth, setResultWidth] = React.useState(380);
 	const [resizingPane, setResizingPane] = React.useState<ResizePane | null>(null);
 	const resizeStartRef = React.useRef<{ pane: ResizePane; x: number; width: number } | null>(
@@ -351,6 +614,27 @@ export function TaskPage() {
 	);
 	const { agents } = useAgents();
 	const { sessions, loading: sessionsLoading } = useSessions(executionAgentId ?? null);
+	const currentRunViewId = currentRun?.id;
+	const currentRunTaskId = currentRun?.task_id;
+	const currentRunSourceTemplateId = currentRun?.source_template_id;
+	const currentRunStatus = currentRun?.status;
+	React.useEffect(() => {
+		setSelectedRunNodeId(null);
+	}, [currentRun?.id]);
+	React.useEffect(() => {
+		if (!currentRunViewId || currentRunTaskId !== draft?.id) {
+			setTaskMainView('editor');
+			return;
+		}
+		if (
+			(currentRunSourceTemplateId === 's01_project_init' || currentRunSourceTemplateId === 's02_project_planning') &&
+			currentRunStatus === 'succeeded'
+		) {
+			setTaskMainView('business_results');
+		} else {
+			setTaskMainView('editor');
+		}
+	}, [currentRunViewId, currentRunSourceTemplateId, currentRunStatus, currentRunTaskId, draft?.id]);
 	React.useEffect(() => {
 		const templateId = draft?.source_template_id;
 		if (!templateId) {
@@ -419,9 +703,12 @@ export function TaskPage() {
 	React.useEffect(() => {
 		if (!executionAgentId || !executionSessionId) {
 			setAvailableTools([]);
+			setIsLoadingTools(false);
 			return undefined;
 		}
 		let disposed = false;
+		setAvailableTools([]);
+		setIsLoadingTools(true);
 		const selectedSession = sessions.find((view) => view.session.id === executionSessionId);
 		void taskApi
 			.listTools({
@@ -436,6 +723,9 @@ export function TaskPage() {
 			})
 			.catch(() => {
 				if (!disposed) setAvailableTools([]);
+			})
+			.finally(() => {
+				if (!disposed) setIsLoadingTools(false);
 			});
 		return () => {
 			disposed = true;
@@ -487,11 +777,16 @@ export function TaskPage() {
 		setIsLoading(true);
 		setError(null);
 		try {
-			const records = await taskApi.list();
+			const [records, dagCapabilities] = await Promise.all([
+				taskApi.list(),
+				taskApi.getCapabilities().catch(() => null),
+			]);
+			setTaskDagCapabilities(dagCapabilities);
 			setTasks(records);
 			const selected = records.find((task) => task.id === taskId) ?? records[0];
 			setSelectedTaskId(selected?.id ?? null);
 			setDraft(selected ? toDraft(selected) : null);
+			setPlanningEditorApplied(false);
 			setDeliveryMode('strict_verified');
 			setExecutionAgentId(selected?.source_context.agent_id ?? undefined);
 			setExecutionSessionId(selected?.source_context.session_id ?? undefined);
@@ -504,6 +799,7 @@ export function TaskPage() {
 				setIsRunning(false);
 			}
 			setIsDirty(false);
+			setGraphValidationIssues([]);
 			if (selected && selected.id !== taskId)
 				navigate(`/task/${selected.id}`, { replace: true });
 		} catch (requestError) {
@@ -612,8 +908,10 @@ export function TaskPage() {
 
 	const selectTask = (task: TaskRecord) => {
 		clearCapabilityPreflight();
+		setTaskMainView('editor');
 		setSelectedTaskId(task.id);
 		setDraft(toDraft(task));
+		setPlanningEditorApplied(false);
 		setDeliveryMode('strict_verified');
 		setExecutionAgentId(task.source_context.agent_id ?? undefined);
 		setExecutionSessionId(task.source_context.session_id ?? undefined);
@@ -713,9 +1011,12 @@ export function TaskPage() {
 			source_context: context,
 		});
 		clearCapabilityPreflight();
+		setTaskListCollapsed(true);
+		setTaskMainView('editor');
 		setTasks((previous) => [created, ...previous]);
 		setSelectedTaskId(created.id);
 		setDraft(toDraft(created));
+		setPlanningEditorApplied(false);
 		setDeliveryMode('strict_verified');
 		setExecutionAgentId(created.source_context.agent_id ?? null);
 		setExecutionSessionId(created.source_context.session_id ?? null);
@@ -724,8 +1025,8 @@ export function TaskPage() {
 		setIsDirty(false);
 		navigate(`/task/${created.id}`);
 		setNewTaskOpen(false);
-		void generateTask(created, context, true);
-		toast.success('任务已创建，正在生成节点');
+		void planTask(created, context, true);
+		toast.success('任务已创建，正在智能规划');
 	};
 
 	const handleInstantiateTemplate = async (
@@ -740,9 +1041,12 @@ export function TaskPage() {
 			source_context: sourceContext,
 		});
 		clearCapabilityPreflight();
+		setTaskListCollapsed(true);
+		setTaskMainView('editor');
 		setTasks((previous) => [created, ...previous.filter((task) => task.id !== created.id)]);
 		setSelectedTaskId(created.id);
 		setDraft(toDraft(created));
+		setPlanningEditorApplied(false);
 		setDeliveryMode('strict_verified');
 		setExecutionAgentId(created.source_context.agent_id ?? null);
 		setExecutionSessionId(created.source_context.session_id ?? null);
@@ -755,7 +1059,7 @@ export function TaskPage() {
 		toast.success(`已从“${template.title}”创建任务`);
 	};
 
-	const handleCreateCustomFlowCopy = async () => {
+	const handleCreateCustomFlowCopy = async (mode: TaskCustomFlowCopyMode) => {
 		if (!draft || isSaving || isRunning || isGenerating) return;
 		const source = isDirty
 			? await saveDraft()
@@ -763,19 +1067,23 @@ export function TaskPage() {
 		if (!source) return;
 		setError(null);
 		try {
-			const created = await taskApi.createCustomFlowCopy(source.id);
+			const created = await taskApi.createCustomFlowCopy(source.id, mode);
 			clearCapabilityPreflight();
+			setTaskListCollapsed(true);
+			setTaskMainView('editor');
 			setTasks((previous) => [created, ...previous]);
 			setSelectedTaskId(created.id);
 			setDraft(toDraft(created));
+			setPlanningEditorApplied(false);
 			setDeliveryMode('strict_verified');
 			setExecutionAgentId(created.source_context.agent_id ?? null);
 			setExecutionSessionId(created.source_context.session_id ?? null);
 			setCurrentRun(null);
 			setRunEvents([]);
 			setIsDirty(false);
+			setCustomCopyOpen(false);
 			navigate(`/task/${created.id}`);
-			toast.success('已创建独立自定义流程副本');
+			toast.success(mode === 'dag' ? '已另存为自定义 DAG' : '已另存为自定义 SOP');
 		} catch (requestError) {
 			setError(errorMessage(requestError));
 		}
@@ -786,24 +1094,145 @@ export function TaskPage() {
 		setIsSaving(true);
 		setError(null);
 		try {
-			const saved = await taskApi.update(draft.id, {
+			const nodes = normalizeNodes(draft.nodes);
+			const maySaveGraph = Boolean(
+				draft.graph &&
+				taskDagCapabilities?.editing_enabled &&
+				(
+					(draft.workflow_mode === 'custom_flow' &&
+						Boolean(draft.source_template_id && draft.source_template_version && draft.source_task_id) &&
+						draft.source_task_revision != null) ||
+					(!draft.source_template_id &&
+						draft.workflow_mode !== 'template_instance' &&
+						draft.workflow_mode !== 'custom_flow')
+				),
+			);
+			if (maySaveGraph && draft.graph) {
+				const validation = await taskApi.validateDefinition({
+					task_id: draft.id,
+					nodes,
+					graph: draft.graph,
+					context: buildExecutionContext(),
+				});
+				setGraphValidationIssues(validation.issues ?? []);
+				if (!validation.valid) {
+					setError('DAG 图校验未通过；请按服务端校验结果修正依赖、输入绑定或资源容量。');
+					return null;
+				}
+			}
+			const updateBody = {
 				title: draft.title.trim() || '未命名任务',
 				goal: draft.goal,
-				nodes: normalizeNodes(draft.nodes),
+				...(!draft.graph || maySaveGraph ? { nodes } : {}),
 				knowledge_base_ids: draft.knowledge_base_ids,
 				source_context: buildExecutionContext(),
-			});
+				...(maySaveGraph && draft.graph ? { graph: draft.graph } : {}),
+			};
+			const saved = await taskApi.update(draft.id, updateBody);
 			setTasks((previous) => previous.map((task) => (task.id === saved.id ? saved : task)));
 			setDraft(toDraft(saved));
 			setIsDirty(false);
 			toast.success('任务已保存');
 			return saved;
 		} catch (requestError) {
+			setGraphValidationIssues([]);
 			setError(errorMessage(requestError));
 			return null;
 		} finally {
 			setIsSaving(false);
 		}
+	};
+
+	const planTask = async (
+		task: TaskRecord,
+		context: TaskContext,
+		showPlan = false,
+	) => {
+		setIsPlanning(true);
+		setError(null);
+		clearCapabilityPreflight();
+		try {
+			const result = await taskApi.plan(task.id, { context });
+			setTasks((previous) =>
+				previous.map((item) => (item.id === result.task.id ? result.task : item)),
+			);
+			if (showPlan || selectedTaskId === result.task.id) {
+				setDraft(toDraft(result.task));
+				setIsDirty(false);
+				setPlanningEditorApplied(false);
+			}
+			toast.success(`已生成 ${result.plan.recommended_mode.toUpperCase()} 规划候选`);
+		} catch (requestError) {
+			setError(errorMessage(requestError));
+		} finally {
+			setIsPlanning(false);
+		}
+	};
+
+	const applyPlanningToEditor = () => {
+		if (!draft?.planning_decision) return;
+		const plan = draft.planning_decision;
+		const graph: TaskGraph | null = plan.recommended_mode === 'dag'
+			? {
+				schema_version: 1,
+				edges: plan.edges,
+				input_bindings: plan.input_bindings,
+				max_concurrency: plan.max_concurrency,
+				resource_limits: plan.resource_limits,
+			}
+			: null;
+		setPlanningEditorApplied(true);
+		updateDraft({ nodes: normalizeNodes(plan.nodes), graph });
+	};
+
+	const confirmPlanning = async () => {
+		if (!draft?.planning_decision) return;
+		const plan = draft.planning_decision;
+		if (draft.planning_goal_snapshot?.trim() !== draft.goal.trim()) {
+			setError('任务目标在规划后已修改，请重新规划。');
+			return;
+		}
+		setIsConfirmingPlan(true);
+		setError(null);
+		clearCapabilityPreflight();
+		try {
+			const result = await taskApi.confirmPlan(draft.id, {
+				planning_id: plan.planning_id,
+				plan_version: draft.planning_version ?? 0,
+				...(draft.title_source === 'user' ? { title: draft.title.trim() } : {}),
+				input: runInput.trim(),
+				context: buildExecutionContext(),
+				...(planningEditorApplied
+					? { nodes: normalizeNodes(draft.nodes), graph: draft.graph }
+					: {}),
+			});
+			setTasks((previous) =>
+				previous.map((task) => (task.id === result.task.id ? result.task : task)),
+			);
+			setDraft(toDraft(result.task));
+			setIsDirty(false);
+			setPlanningEditorApplied(false);
+			setCapabilityPreflight(result.preflight);
+			setPreflightResultVersion((version) => version + 1);
+			if (result.preflight.ready) {
+				toast.success('规划已确认，Preflight 通过；请再次点击“执行任务”创建 Run');
+			} else {
+				toast.info('规划已保存；Preflight 未通过，请查看阻断原因后调整或重新规划');
+			}
+		} catch (requestError) {
+			setError(errorMessage(requestError));
+		} finally {
+			setIsConfirmingPlan(false);
+		}
+	};
+
+	const handlePlanAgain = async () => {
+		if (!draft || isSaving || isRunning || isGenerating || isPlanning) return;
+		const saved = isDirty
+			? await saveDraft()
+			: (tasks.find((task) => task.id === draft.id) ?? null);
+		if (!saved) return;
+		await planTask(saved, buildExecutionContext(), true);
 	};
 
 	const handleRegenerate = async () => {
@@ -818,6 +1247,28 @@ export function TaskPage() {
 
 	const handleRun = async () => {
 		if (!draft || isSaving || isRunning) return;
+		if (draft.planning_decision) {
+			const decision = draft.planning_decision;
+			if (
+				draft.planning_confirmed_id !== decision.planning_id ||
+				draft.planning_confirmed_version !== draft.planning_version ||
+				isDirty
+			) {
+				setError('请先确认当前智能规划；Task 内容变更后需要重新确认。');
+				return;
+			}
+			if (decision.validation_status !== 'valid' || !decision.execution_allowed) {
+				setError('当前规划尚未通过服务端确定性校验或运行授权，请先查看规划原因和 Preflight 结果。');
+				return;
+			}
+		}
+		const dagExecutionBlockReasons = draft.graph
+			? getDagExecutionBlockReasons(draft, taskDagCapabilities)
+			: [];
+		if (dagExecutionBlockReasons.length > 0) {
+			setError(dagExecutionBlockReasons.join('\n'));
+			return;
+		}
 		const requestId = ++preflightRequestRef.current;
 		setCapabilityPreflight(null);
 		setIsPreflighting(false);
@@ -833,12 +1284,14 @@ export function TaskPage() {
 		setRunEvents([]);
 		setIsRunning(true);
 		setIsPreflighting(true);
+		let preflightCompleted = false;
 		try {
 			const context = buildExecutionContext();
 			const preflight = await taskApi.preflight(saved.id, {
 				input: runInput.trim(),
 				context,
 			});
+			preflightCompleted = true;
 			if (requestId !== preflightRequestRef.current) return;
 			setCapabilityPreflight(preflight);
 			setPreflightResultVersion((version) => version + 1);
@@ -874,7 +1327,11 @@ export function TaskPage() {
 		} catch (requestError) {
 			if (requestId !== preflightRequestRef.current) return;
 			setIsRunning(false);
-			setError(errorMessage(requestError));
+			setError(
+				preflightCompleted
+					? errorMessage(requestError)
+					: '运行前能力检查请求失败，请检查网络或工具配置后重试。',
+			);
 		} finally {
 			if (requestId === preflightRequestRef.current) setIsPreflighting(false);
 		}
@@ -923,6 +1380,157 @@ export function TaskPage() {
 		} catch (requestError) {
 			setIsRunning(false);
 			setError(errorMessage(requestError));
+		}
+	};
+
+	const controlRequest = (
+		run: TaskRunRecord,
+		sideEffectsVerified = false,
+	): TaskRunControlRequest | null => {
+		if (typeof run.run_version !== 'number') return null;
+		const requestId =
+			typeof crypto !== 'undefined' && 'randomUUID' in crypto
+				? crypto.randomUUID()
+				: `task-ui-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		return {
+			request_id: requestId,
+			expected_run_version: run.run_version,
+			side_effects_verified: sideEffectsVerified,
+		};
+	};
+
+	const handleDagControl = async (action: 'pause' | 'continue' | 'step' | 'stop') => {
+		const run = currentRun;
+		if (
+			!run ||
+			!['dag', 'sop'].includes(run.engine ?? '') ||
+			(run.engine === 'dag' && !run.graph) ||
+			pendingDagCommandRef.current
+		) return;
+		if (
+			action === 'stop' &&
+			!window.confirm('确定终止这个 Task Run 吗？终止后的 Run 不可继续执行。')
+		) {
+			return;
+		}
+		const body = controlRequest(run);
+		if (!body) {
+			setError('服务端未返回 Run 版本号，无法安全提交控制命令。请刷新 Run 状态后重试。');
+			return;
+		}
+		pendingDagCommandRef.current = true;
+		setPendingDagCommand(action);
+		setError(null);
+		try {
+			const updated =
+				action === 'pause'
+					? await taskApi.pauseRun(run.id, body)
+					: action === 'continue'
+						? await taskApi.continueRun(run.id, body)
+						: action === 'step'
+							? await taskApi.stepRun(run.id, body)
+							: await taskApi.stopRun(run.id, body);
+			setCurrentRun(updated);
+			setIsRunning(!TERMINAL_RUN_STATUSES.has(updated.status));
+			setTasks((previous) =>
+				previous.map((task) =>
+					task.id === updated.task_id
+						? { ...task, last_run_id: updated.id, last_run_status: updated.status }
+						: task,
+				),
+			);
+		} catch (requestError) {
+			if (requestError instanceof ApiError && requestError.status === 409) {
+				const latest = await taskApi.getRun(run.id).catch(() => null);
+				if (latest && currentRunIdRef.current === latest.id) {
+					setCurrentRun(latest);
+					setIsRunning(!TERMINAL_RUN_STATUSES.has(latest.status));
+				}
+				setError('Run 状态已被其他操作更新，已尝试同步最新状态。请检查后再提交。');
+			} else if (requestError instanceof ApiError && requestError.status === 422) {
+				setError(`控制命令参数不合法（422）：${errorMessage(requestError)}`);
+			} else {
+				setError(errorMessage(requestError));
+			}
+		} finally {
+			pendingDagCommandRef.current = false;
+			setPendingDagCommand(null);
+		}
+	};
+
+	const handleRetryNode = async (nodeId: string) => {
+		const run = currentRun;
+		if (
+			!run ||
+			!['dag', 'sop'].includes(run.engine ?? '') ||
+			(run.engine === 'dag' && !run.graph) ||
+			pendingDagCommandRef.current
+		) return;
+		const definition = run.nodes.find((node) => node.id === nodeId);
+		const nodeRun = run.node_runs.find((item) => item.node_id === nodeId);
+		if (!definition || !nodeRun) return;
+		const affectedIds = run.graph
+			? getDagDescendants(run.graph, nodeId)
+			: run.nodes.filter((node) => node.order > definition.order).map((node) => node.id);
+		const affectedNames = run.nodes
+			.filter((node) => affectedIds.includes(node.id))
+			.map((node) => node.name);
+		const hasPossibleSideEffects =
+			definition.type === 'tool' ||
+			definition.type === 'python' ||
+			nodeRun.metadata?.recovery_required === true;
+		const impact = affectedNames.length > 0 ? affectedNames.join('、') : '无下游节点';
+		const confirmation = [
+			`将在原 Run ${run.id} 中重跑“${definition.name}”。`,
+			affectedNames.length > 0
+				? `${run.graph ? '受影响的 DAG 下游' : '后续 SOP 节点'}结果将被清除并重新执行：${impact}。`
+				: '该节点没有下游节点。',
+			hasPossibleSideEffects
+				? '此 Tool/Python 节点可能有外部或工作区副作用。请先核查其执行状态；确认后才会向服务端提交副作用核验标记。'
+				: '已有尝试记录会保留。',
+		].join('\n\n');
+		if (!window.confirm(confirmation)) return;
+		const body = controlRequest(run, hasPossibleSideEffects);
+		if (!body) {
+			setError('服务端未返回 Run 版本号，无法安全提交重跑命令。请刷新 Run 状态后重试。');
+			return;
+		}
+		pendingDagCommandRef.current = true;
+		setPendingDagCommand(`retry:${nodeId}`);
+		setError(null);
+		try {
+			const updated = await taskApi.retryNode(run.id, nodeId, body);
+			setCurrentRun(updated);
+			setIsRunning(!TERMINAL_RUN_STATUSES.has(updated.status));
+			setTasks((previous) =>
+				previous.map((task) =>
+					task.id === updated.task_id
+						? { ...task, last_run_id: updated.id, last_run_status: updated.status }
+						: task,
+				),
+			);
+			if (
+				updated.control_mode === 'paused' &&
+				!TERMINAL_RUN_STATUSES.has(updated.status)
+			) {
+				toast.info('节点重跑请求已受理；Run 当前处于暂停状态，请点击“继续”从检查点恢复执行。');
+			}
+		} catch (requestError) {
+			if (requestError instanceof ApiError && requestError.status === 409) {
+				const latest = await taskApi.getRun(run.id).catch(() => null);
+				if (latest && currentRunIdRef.current === latest.id) {
+					setCurrentRun(latest);
+					setIsRunning(!TERMINAL_RUN_STATUSES.has(latest.status));
+				}
+				setError('Run 版本冲突或状态已变化，已尝试同步最新状态。请检查后再重试。');
+			} else if (requestError instanceof ApiError && requestError.status === 422) {
+				setError(`节点重跑参数不合法（422）：${errorMessage(requestError)}`);
+			} else {
+				setError(errorMessage(requestError));
+			}
+		} finally {
+			pendingDagCommandRef.current = false;
+			setPendingDagCommand(null);
 		}
 	};
 
@@ -975,7 +1583,19 @@ export function TaskPage() {
 	};
 
 	const updateDraft = (update: Partial<TaskDraft>) => {
-		setDraft((previous) => (previous ? { ...previous, ...update } : previous));
+		setTaskMainView('editor');
+		setDraft((previous) =>
+			previous
+				? {
+					...previous,
+					...update,
+					...(update.title !== undefined ? { title_source: 'user' as const } : {}),
+				}
+				: previous,
+		);
+		if (draft?.planning_decision && ('nodes' in update || 'graph' in update)) {
+			setPlanningEditorApplied(true);
+		}
 		setCapabilityPreflight(null);
 		if (isPreflighting) {
 			preflightRequestRef.current += 1;
@@ -983,6 +1603,7 @@ export function TaskPage() {
 			setIsRunning(false);
 		}
 		setIsDirty(true);
+		if ('graph' in update || 'nodes' in update) setGraphValidationIssues([]);
 	};
 	const preflightViewState = capabilityPreflight
 		? capabilityPreflight.ready === true
@@ -991,6 +1612,159 @@ export function TaskPage() {
 		: isPreflighting
 			? 'checking'
 			: 'unchecked';
+	const activeDagRun = currentRun && currentRun.task_id === draft?.id && currentRun.engine === 'dag'
+		? currentRun
+		: null;
+	const currentRunIsActive = Boolean(
+		currentRun && currentRun.task_id === draft?.id && !TERMINAL_RUN_STATUSES.has(currentRun.status),
+	);
+	const isSuccessfulS01Run = Boolean(
+		currentRun &&
+		currentRun.task_id === draft?.id &&
+		currentRun.source_template_id === 's01_project_init' &&
+		currentRun.status === 'succeeded',
+	);
+	const isSuccessfulS02Run = Boolean(
+		currentRun &&
+		currentRun.task_id === draft?.id &&
+		currentRun.source_template_id === 's02_project_planning' &&
+		currentRun.status === 'succeeded',
+	);
+	const isSuccessfulS03Run = Boolean(
+		currentRun &&
+		currentRun.task_id === draft?.id &&
+		currentRun.source_template_id === 's03_expert_matching' &&
+		currentRun.status === 'succeeded',
+	);
+	const isSuccessfulS04Run = Boolean(
+		currentRun &&
+		currentRun.task_id === draft?.id &&
+		currentRun.source_template_id === 's04_meeting_preparation' &&
+		currentRun.status === 'succeeded',
+	);
+	const isSuccessfulS05Run = Boolean(
+		currentRun &&
+		currentRun.task_id === draft?.id &&
+		currentRun.source_template_id === 's05_meeting_minutes' &&
+		currentRun.status === 'succeeded',
+	);
+	const isSuccessfulS06Run = Boolean(
+		currentRun &&
+		currentRun.task_id === draft?.id &&
+		currentRun.source_template_id === 's06_opinion_processing' &&
+		currentRun.status === 'succeeded',
+	);
+	const isSuccessfulS07Run = Boolean(
+		currentRun &&
+		currentRun.task_id === draft?.id &&
+		currentRun.source_template_id === 's07_report_generation' &&
+		currentRun.status === 'succeeded',
+	);
+	const isSuccessfulS08Run = Boolean(
+		currentRun &&
+		currentRun.task_id === draft?.id &&
+		currentRun.source_template_id === 's08_archive_transfer' &&
+		currentRun.status === 'succeeded',
+	);
+	const isSuccessfulS09Run = Boolean(
+		currentRun &&
+		currentRun.task_id === draft?.id &&
+		currentRun.source_template_id === 's09_expense_settlement' &&
+		currentRun.status === 'succeeded',
+	);
+	const showS01BusinessResults = isSuccessfulS01Run && taskMainView === 'business_results' && !isDirty;
+	const showS02BusinessResults = isSuccessfulS02Run && taskMainView === 'business_results' && !isDirty;
+	const showS03BusinessResults = isSuccessfulS03Run && taskMainView === 'business_results' && !isDirty;
+	const showS04BusinessResults = isSuccessfulS04Run && taskMainView === 'business_results' && !isDirty;
+	const showS05BusinessResults = isSuccessfulS05Run && taskMainView === 'business_results' && !isDirty;
+	const showS06BusinessResults = isSuccessfulS06Run && taskMainView === 'business_results' && !isDirty;
+	const showS07BusinessResults = isSuccessfulS07Run && taskMainView === 'business_results' && !isDirty;
+	const showS08BusinessResults = isSuccessfulS08Run && taskMainView === 'business_results' && !isDirty;
+	const showS09BusinessResults = isSuccessfulS09Run && taskMainView === 'business_results' && !isDirty;
+	const showBusinessResults = showS01BusinessResults || showS02BusinessResults || showS03BusinessResults || showS04BusinessResults || showS05BusinessResults || showS06BusinessResults || showS07BusinessResults || showS08BusinessResults || showS09BusinessResults;
+	const canEditCustomDag = Boolean(
+		draft &&
+		taskDagCapabilities?.editing_enabled &&
+		(
+			(draft.workflow_mode === 'custom_flow' &&
+				Boolean(draft.source_template_id && draft.source_template_version && draft.source_task_id) &&
+				draft.source_task_revision != null) ||
+			(!draft.source_template_id &&
+				draft.workflow_mode !== 'template_instance' &&
+				draft.workflow_mode !== 'custom_flow')
+		),
+	);
+	const canEditDag = Boolean(canEditCustomDag && !currentRunIsActive);
+	const activeDagGraph = currentRunIsActive
+		? activeDagRun?.graph ?? draft?.graph ?? null
+		: draft?.graph ?? null;
+	const activeDagCanvasNodes = currentRunIsActive ? activeDagRun?.nodes ?? draft?.nodes ?? [] : draft?.nodes ?? [];
+	const activeDagCanvasRun = activeDagRun && activeDagGraph && draft?.graph &&
+		JSON.stringify(activeDagRun.graph) === JSON.stringify(draft.graph)
+		? activeDagRun
+		: currentRunIsActive ? activeDagRun : null;
+	const dagReadOnlyReason = activeDagGraph && !canEditDag
+		? currentRunIsActive
+			? '此 Run 使用不可变图快照；Run 结束后可编辑 Task 的后续版本。'
+			: !taskDagCapabilities?.editing_enabled
+				? '服务端当前未授予 DAG 图编辑能力。'
+				: '当前 Task 不具备可验证的 DAG 编辑所有权或来源信息。'
+		: undefined;
+	const dagExecutionBlockReasons = draft?.graph
+		? getDagExecutionBlockReasons(draft, taskDagCapabilities)
+		: [];
+	const dagExecutionBlocked = dagExecutionBlockReasons.length > 0;
+	const dagExecutionBlockedReason = dagExecutionBlockReasons.join(' ');
+	const planningDecision = draft?.planning_decision ?? null;
+	const planningGoalChanged = Boolean(
+		planningDecision &&
+		draft?.planning_goal_snapshot &&
+		draft.planning_goal_snapshot.trim() !== draft.goal.trim(),
+	);
+	const planningIsConfirmed = Boolean(
+		planningDecision &&
+		draft?.planning_confirmed_id === planningDecision.planning_id &&
+		draft?.planning_confirmed_version === draft?.planning_version,
+	);
+	const plannerRunBlockedReason = !planningDecision
+		? null
+		: planningGoalChanged
+			? '任务目标在规划后已修改，请重新规划。'
+			: planningDecision.validation_status !== 'valid'
+				? '规划仍待审查或未通过确定性校验，不能启动 Run。'
+				: !planningDecision.execution_allowed
+					? '服务端规划授权未通过；查看规划说明和 Preflight 结果。'
+					: !planningIsConfirmed || isDirty
+						? '请确认当前规划；内容变更后需要重新确认。'
+						: null;
+	const runDisabledReason = dagExecutionBlocked
+		? dagExecutionBlockedReason || '无法读取服务端 DAG 执行能力，当前不能启动 DAG Run。'
+		: plannerRunBlockedReason;
+	const copyDagExecutionBlockReasons = getDagExecutionBlockReasons(
+		draft,
+		taskDagCapabilities,
+	);
+	const enableDagEditing = () => {
+		if (!draft || !canEditCustomDag || currentRunIsActive || draft.nodes.length === 0) return;
+		const resourceLimits: Record<string, number> = {};
+		for (const node of draft.nodes) {
+			for (const [resource, amount] of Object.entries(node.resource_requirements ?? {})) {
+				resourceLimits[resource] = Math.max(resourceLimits[resource] ?? 0, amount);
+			}
+		}
+		updateDraft({
+			graph: {
+				schema_version: 1,
+				edges: draft.nodes.slice(0, -1).map((node, index) => ({
+					source_node_id: node.id,
+					target_node_id: draft.nodes[index + 1].id,
+				})),
+				input_bindings: {},
+				max_concurrency: 1,
+				resource_limits: resourceLimits,
+			},
+		});
+	};
 
 	if (isLoading) {
 		return (
@@ -1012,9 +1786,11 @@ export function TaskPage() {
 				selectedTaskId={selectedTaskId}
 				run={currentRun}
 				width={sidebarWidth}
+				collapsed={taskListCollapsed}
 				onSelect={selectTask}
 				onCreate={() => setTemplateGalleryOpen(true)}
 				onDelete={(task) => void handleDelete(task)}
+				onToggleCollapsed={() => setTaskListCollapsed((collapsed) => !collapsed)}
 				disabled={isSaving || isRunning || isGenerating}
 			/>
 			<ResizeHandle
@@ -1036,7 +1812,8 @@ export function TaskPage() {
 								isRunning={isRunning}
 								isAwaitingInput={currentRun?.status === 'awaiting_input'}
 								isGenerating={isGenerating}
-								canRerun={Boolean(currentRun && currentRun.task_id === draft.id)}
+								canRerun={Boolean(currentRun && currentRun.task_id === draft.id && !dagExecutionBlocked && !plannerRunBlockedReason)}
+								runDisabledReason={runDisabledReason}
 								deliveryMode={deliveryMode}
 								showDeliveryMode={isS02V4Template}
 								onDeliveryModeChange={setDeliveryMode}
@@ -1045,97 +1822,205 @@ export function TaskPage() {
 								onRerun={handleRerun}
 								onRun={() => void handleRun()}
 							/>
-							<div className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-[11px] leading-5 text-blue-900 xl:mx-6">
-								<div className="min-w-0">
-									<div className="font-semibold">
-										流程类型：{' '}
-										{draft.workflow_mode === 'custom_flow'
-											? '自定义流程'
-											: draft.source_template_id
-												? '标准模板任务'
-												: '自由 AI Planner 任务'}
-									</div>
-									{draft.source_template_id ? (
-										sourceTemplate ? (
-											<div>
-												来源模板：<strong>{sourceTemplate.title}</strong> v
-												{sourceTemplate.template_version}。
-												{draft.workflow_mode === 'custom_flow' ? (
-													<>
-														{' '}
-														来源 Task：{draft.source_task_id ?? '未知'}
-														（修订{' '}
-														{draft.source_task_revision ?? '未知'}
-														）。来源场景的必需 Tool 能力与执行前
-														Preflight
-														仍然生效；此自定义流程不代表审批通过。
-													</>
-												) : (
-													<>
-														{' '}
-														标准模板的节点结构、必需步骤与顺序受服务端约束。
-													</>
-												)}
-											</div>
-										) : (
-											<div>
-												来源模板 {draft.source_template_id} v
-												{draft.source_template_version ?? '未知'}{' '}
-												无法加载或版本不匹配，流程编辑保持锁定。
-											</div>
-										)
-									) : (
-										<div>
-											由自由任务 AI Planner
-											生成节点；后续可按现有编辑能力调整。
-										</div>
-									)}
-								</div>
-								{draft.source_template_id &&
-									draft.workflow_mode !== 'custom_flow' && (
-										<Button
-											variant="outline"
-											size="sm"
-											onClick={() => void handleCreateCustomFlowCopy()}
-											disabled={
-												!sourceTemplate ||
-												isSaving ||
-												isRunning ||
-												isGenerating
-											}
-											title={
-												!sourceTemplate
-													? '来源模板加载完成后才能创建自定义流程副本。'
-													: '复制当前 Task 并进入高级流程编辑。'
-											}
-										>
-											<Copy />
-											另存为自定义流程
-										</Button>
-									)}
+			{!showBusinessResults && (
+				<div className="mx-5 mb-3 grid min-w-0 gap-2 xl:mx-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+					<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-[11px] leading-5 text-blue-900">
+						<div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1">
+							<div className="shrink-0 font-semibold">
+								流程类型：{' '}
+									{draft.workflow_mode === 'custom_flow'
+										? draft.graph ? '自定义 DAG' : '自定义 SOP'
+									: draft.source_template_id
+										? '标准模板任务'
+										: '自由 AI Planner 任务'}
 							</div>
+							<div className="min-w-0 flex-1 truncate">
+								{draft.source_template_id ? (
+									sourceTemplate ? (
+										<>
+											来源模板：<strong>{sourceTemplate.title}</strong> v{sourceTemplate.template_version}。
+											{draft.workflow_mode === 'custom_flow' ? (
+												<> 来源 Task：{draft.source_task_id ?? '未知'}（修订 {draft.source_task_revision ?? '未知'}）。来源场景必需 Tool 能力与执行前 Preflight 仍生效；此自定义流程不代表审批通过。</>
+											) : (
+												<> 标准模板的节点结构、必需步骤与顺序受服务端约束。</>
+											)}
+										</>
+									) : (
+										<>来源模板 {draft.source_template_id} v{draft.source_template_version ?? '未知'} 无法加载或版本不匹配，流程编辑保持锁定。</>
+									)
+								) : (
+									<>由自由任务 AI Planner 生成节点；后续可按现有编辑能力调整。</>
+								)}
+							</div>
+						</div>
+						{draft.source_template_id &&
+							draft.workflow_mode !== 'custom_flow' && (
+								<Button
+									className="shrink-0"
+									variant="outline"
+									size="sm"
+															onClick={() => {
+																setCustomCopyMode('sop');
+																setCustomCopyOpen(true);
+															}}
+									disabled={
+										!sourceTemplate ||
+										isSaving ||
+										isRunning ||
+										isGenerating
+									}
+									title={
+									!sourceTemplate
+										? '来源模板加载完成后才能创建自定义流程副本。'
+															: '选择另存为 SOP 或 DAG 自定义流程。'
+									}
+								>
+									<Copy />
+														另存为
+								</Button>
+							)}
+					</div>
+					{draft && (
+						<CapabilityPreflightPanel
+							key={`${draft.id}:${preflightResultVersion}:${preflightViewState}`}
+							result={capabilityPreflight}
+							isChecking={isPreflighting}
+							requiredCapabilities={sourceTemplate?.required_capabilities ?? []}
+							className="mx-0 mb-0 h-full"
+						/>
+					)}
+				</div>
+			)}
 							{error && (
 								<div className="mx-5 mb-3 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2.5 text-xs text-red-700 xl:mx-6">
 									<AlertCircle className="mt-0.5 size-4 shrink-0" />
 									<span>{error}</span>
 								</div>
 							)}
-							{draft && (
-								<CapabilityPreflightPanel
-									key={`${draft.id}:${preflightResultVersion}:${preflightViewState}`}
-									result={capabilityPreflight}
-									isChecking={isPreflighting}
-								/>
-							)}
-							<div className="min-h-0 flex-1 overflow-hidden border-t border-slate-100">
+							{showBusinessResults && currentRun ? (
+								<div className="min-h-0 flex-1 overflow-y-auto border-t border-slate-100 px-4 py-4 xl:px-5">
+									{showS01BusinessResults ? (
+										<TaskS01Results
+											run={currentRun}
+											onViewExecution={() => setTaskMainView('editor')}
+											onViewFullResult={() => setFullResultRequest((request) => request + 1)}
+										/>
+									) : showS02BusinessResults ? (
+										<TaskS02Results
+											run={currentRun}
+											onViewExecution={() => setTaskMainView('editor')}
+											onViewFullResult={() => setFullResultRequest((request) => request + 1)}
+										/>
+									) : showS04BusinessResults ? (
+										<TaskS04Results
+											run={currentRun}
+											onViewExecution={() => setTaskMainView('editor')}
+											onViewFullResult={() => setFullResultRequest((request) => request + 1)}
+										/>
+					) : showS05BusinessResults ? (
+						<TaskS05Results
+							run={currentRun}
+							onViewExecution={() => setTaskMainView('editor')}
+							onViewFullResult={() => setFullResultRequest((request) => request + 1)}
+						/>
+					) : showS06BusinessResults ? (
+						<TaskS06Results
+							run={currentRun}
+							onViewExecution={() => setTaskMainView('editor')}
+							onViewFullResult={() => setFullResultRequest((request) => request + 1)}
+						/>
+									) : showS07BusinessResults ? (
+										<TaskS07Results
+											run={currentRun}
+											onViewExecution={() => setTaskMainView('editor')}
+											onViewFullResult={() => setFullResultRequest((request) => request + 1)}
+										/>
+									) : showS08BusinessResults ? (
+										<TaskS08Results
+											run={currentRun}
+											onViewExecution={() => setTaskMainView('editor')}
+											onViewFullResult={() => setFullResultRequest((request) => request + 1)}
+										/>
+									) : showS09BusinessResults ? (
+										<TaskS09Results
+											run={currentRun}
+											onViewExecution={() => setTaskMainView('editor')}
+											onViewFullResult={() => setFullResultRequest((request) => request + 1)}
+										/>
+									) : (
+										<TaskS03Results
+											run={currentRun}
+											onViewExecution={() => setTaskMainView('editor')}
+											onViewFullResult={() => setFullResultRequest((request) => request + 1)}
+										/>
+									)}
+								</div>
+							) : (
+								<>
+									<div className="min-h-0 flex-1 overflow-hidden border-t border-slate-100">
 								<section className="h-full min-w-0 overflow-y-auto px-4 py-4 xl:px-5">
 									<TaskMetrics task={draft} run={currentRun} isDirty={isDirty} />
 									<TaskOverview
 										nodes={draft.nodes}
 										run={currentRun}
+										selectedRunNodeId={selectedRunNodeId}
+										onRunNodeSelect={setSelectedRunNodeId}
 										generationStatus={draft.generation_status}
 										isDirty={isDirty}
+							onViewBusinessResults={
+			(isSuccessfulS01Run || isSuccessfulS02Run || isSuccessfulS03Run || isSuccessfulS04Run || isSuccessfulS05Run || isSuccessfulS06Run || isSuccessfulS07Run || isSuccessfulS08Run || isSuccessfulS09Run) && !isDirty
+												? () => setTaskMainView('business_results')
+												: undefined
+										}
 									/>
+									{draft.planning_decision && (
+										<TaskPlanningPanel
+											plan={draft.planning_decision}
+											planVersion={draft.planning_version ?? 0}
+											confirmed={
+												draft.planning_confirmed_id === draft.planning_decision.planning_id &&
+												draft.planning_confirmed_version === draft.planning_version
+											}
+											goalChanged={
+												Boolean(draft.planning_goal_snapshot) &&
+												draft.planning_goal_snapshot?.trim() !== draft.goal.trim()
+											}
+											busy={isPlanning || isConfirmingPlan || isSaving || isRunning || isGenerating}
+											applied={planningEditorApplied}
+											onApply={applyPlanningToEditor}
+											onConfirm={() => void confirmPlanning()}
+											onReplan={() => void handlePlanAgain()}
+										/>
+									)}
+									{draft.graph == null && canEditCustomDag && !currentRunIsActive && (
+										<section className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-indigo-100 bg-indigo-50/60 px-4 py-3">
+											<div>
+												<div className="text-xs font-semibold text-indigo-950">自定义 DAG 编排</div>
+												<div className="mt-1 text-[10px] leading-4 text-indigo-800">
+													显式设置节点依赖、并行度和命名输入。转换只保存 Task 定义，不更改既有 Run 快照。
+												</div>
+											</div>
+											<Button type="button" size="sm" variant="outline" onClick={enableDagEditing} disabled={draft.nodes.length === 0 || isSaving || isGenerating}>
+												启用 DAG 图编辑
+											</Button>
+										</section>
+									)}
+									{activeDagGraph && (
+										<TaskDagCanvas
+											graph={activeDagGraph}
+											nodes={activeDagCanvasNodes}
+											run={activeDagCanvasRun}
+										selectedNodeId={activeDagCanvasRun?.id === currentRun?.id ? selectedRunNodeId : null}
+										onNodeSelect={activeDagCanvasRun ? setSelectedRunNodeId : undefined}
+											editable={canEditDag && Boolean(draft.graph)}
+											executionEnabled={taskDagCapabilities?.execution_enabled ?? null}
+											validationIssues={graphValidationIssues}
+											readOnlyReason={dagReadOnlyReason}
+																executionBlockedReason={dagExecutionBlockedReason}
+											onGraphChange={(graph) => updateDraft({ graph })}
+																onNodesChange={(nodes) => updateDraft({ nodes })}
+										/>
+									)}
 
 									<div className="mb-4 grid gap-3 md:grid-cols-2">
 										<section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4">
@@ -1143,7 +2028,18 @@ export function TaskPage() {
 												<div className="text-xs font-semibold text-slate-800">
 													任务目标
 												</div>
-												{!draft.source_template_id && (
+								<div className="flex items-center gap-1">
+									<Button
+										variant="ghost"
+										size="sm"
+										onClick={() => void handlePlanAgain()}
+										disabled={isSaving || isRunning || isGenerating || isPlanning || !draft.goal.trim()}
+										className="h-7 px-2 text-[10px] text-violet-700"
+									>
+										{isPlanning ? <Loader2 className="animate-spin" /> : <Sparkles />}
+										{isPlanning ? '规划中…' : draft.planning_decision ? '重新规划' : '智能规划'}
+									</Button>
+									{!draft.source_template_id && (
 													<Button
 														variant="ghost"
 														size="sm"
@@ -1168,6 +2064,7 @@ export function TaskPage() {
 															: '重新生成步骤'}
 													</Button>
 												)}
+								</div>
 											</div>
 											<Textarea
 												value={draft.goal}
@@ -1285,25 +2182,34 @@ export function TaskPage() {
 										disabled={isSaving || isRunning || isGenerating}
 										compact
 									/>
-									<TaskFlowEditor
-										nodes={draft.nodes}
-										tools={availableTools}
-										onChange={(nodes) => updateDraft({ nodes })}
-										disabled={
-											isSaving ||
-											isRunning ||
-											(Boolean(draft.source_template_id) && !sourceTemplate)
-										}
-										templateMode={
-											Boolean(draft.source_template_id) &&
-											draft.workflow_mode !== 'custom_flow'
-										}
-										customFlowMode={draft.workflow_mode === 'custom_flow'}
-										template={sourceTemplate}
-										templateStepBindings={draft.template_step_bindings}
-									/>
+									{!currentRunIsActive && (!draft.graph || canEditDag) && (
+										<TaskFlowEditor
+											nodes={draft.nodes}
+											tools={availableTools}
+											onChange={(nodes) => updateDraft({
+												nodes,
+												...(draft.graph ? { graph: reconcileDagNodes(draft.graph, nodes) } : {}),
+											})}
+											disabled={
+												isSaving ||
+												isRunning ||
+												currentRunIsActive ||
+												(Boolean(draft.source_template_id) && !sourceTemplate)
+											}
+											templateMode={
+												Boolean(draft.source_template_id) &&
+												draft.workflow_mode !== 'custom_flow'
+											}
+											customFlowMode={draft.workflow_mode === 'custom_flow'}
+											dagMode={Boolean(draft.graph)}
+											template={sourceTemplate}
+											templateStepBindings={draft.template_step_bindings}
+										/>
+									)}
 								</section>
-							</div>
+									</div>
+								</>
+							)}
 						</>
 					) : (
 						<div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
@@ -1359,8 +2265,80 @@ export function TaskPage() {
 					onCancel={() => void handleCancel()}
 					onAnswer={handleAnswer}
 					onRetry={() => void handleRetry()}
+					onDagControl={(action) => void handleDagControl(action)}
+					pendingDagCommand={pendingDagCommand}
+					requestedNodeId={selectedRunNodeId}
+					onNodeSelected={setSelectedRunNodeId}
+					onRetryNode={(nodeId) => void handleRetryNode(nodeId)}
+					fullResultRequest={fullResultRequest}
+					sopControlsEnabled={taskDagCapabilities?.sop_control_enabled === true}
+					sopNodeRetryEnabled={taskDagCapabilities?.sop_node_retry_enabled === true}
 				/>
 			</main>
+			<Dialog open={customCopyOpen} onOpenChange={setCustomCopyOpen}>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>另存为自定义流程</DialogTitle>
+						<DialogDescription>
+							创建独立 Task 副本，保留官方模板来源、版本和输入快照；原模板、当前 Task 与已有 Run 不会被改写。
+						</DialogDescription>
+					</DialogHeader>
+					<div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="选择副本流程模式">
+						<button
+							type="button"
+							role="radio"
+							aria-checked={customCopyMode === 'sop'}
+							onClick={() => setCustomCopyMode('sop')}
+							className={`rounded-xl border p-3 text-left ${customCopyMode === 'sop' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white'}`}
+						>
+							<div className="text-sm font-semibold">保持 SOP</div>
+							<div className="mt-1 text-xs leading-5 text-muted-foreground">
+								复制现有线性执行顺序；与当前“另存自定义流程”行为兼容。
+							</div>
+						</button>
+						<button
+							type="button"
+							role="radio"
+							aria-checked={customCopyMode === 'dag'}
+							disabled={taskDagCapabilities?.editing_enabled !== true}
+							onClick={() => setCustomCopyMode('dag')}
+							className={`rounded-xl border p-3 text-left disabled:cursor-not-allowed disabled:opacity-50 ${customCopyMode === 'dag' ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white'}`}
+						>
+							<div className="text-sm font-semibold">转换为 DAG</div>
+							<div className="mt-1 text-xs leading-5 text-muted-foreground">
+								复制原节点配置并生成线性初始依赖；之后可在 DAG 编辑器中增加分支和汇合。
+							</div>
+						</button>
+					</div>
+					{customCopyMode === 'dag' && (
+						<div className={`rounded-lg border px-3 py-2 text-xs leading-5 ${copyDagExecutionBlockReasons.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-blue-200 bg-blue-50 text-blue-900'}`}>
+							{copyDagExecutionBlockReasons.length > 0
+								? copyDagExecutionBlockReasons.join(' ')
+								: '当前 TaskService 能力检查允许提交 DAG 预检；具体冻结模板、图结构和业务交付门禁仍由服务端在 Preflight 与创建 Run 时重新校验。'}
+						</div>
+					)}
+					{taskDagCapabilities?.editing_enabled !== true && (
+						<div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+							{taskDagCapabilities
+								? '服务端 DAG 编辑开关关闭；仍可另存为 SOP。'
+								: '暂时无法确认服务端 DAG 编辑权限；为避免误报，DAG 模式不可选。'}
+						</div>
+					)}
+					<DialogFooter>
+						<Button type="button" variant="ghost" onClick={() => setCustomCopyOpen(false)}>
+							取消
+						</Button>
+						<Button
+							type="button"
+							disabled={isSaving || isRunning || isGenerating || (customCopyMode === 'dag' && taskDagCapabilities?.editing_enabled !== true)}
+							onClick={() => void handleCreateCustomFlowCopy(customCopyMode)}
+						>
+							<Copy />
+							另存副本
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 			<NewTaskDialog
 				open={newTaskOpen}
 				onOpenChange={setNewTaskOpen}
@@ -1369,6 +2347,8 @@ export function TaskPage() {
 			<TaskTemplateGallery
 				open={templateGalleryOpen}
 				onOpenChange={setTemplateGalleryOpen}
+				tools={availableTools}
+				isToolsLoading={isLoadingTools}
 				onUseTemplate={(template) => {
 					setTemplateGalleryOpen(false);
 					setTemplateToCreate(template);

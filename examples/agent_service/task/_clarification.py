@@ -16,10 +16,12 @@ REQUIREMENTS_POLICY = """你负责整理当前步骤的有效业务需求，而�
    这些状态必须有用户明确表达作为依据；未提供金额不等于没有金额上限，未提供偏好不等于无偏好。
    未提供但可选的字段保持 unknown、blocking=false，不得伪装成已确认。
    根据已知到达要求计算出发时间是执行者的工作，不能把计算结果反过来要求用户提供。
-4. 仅当缺少某个字段会使当前步骤无法产生有用、真实的结果时，才将它标为 blocking。
-   blocking_reason 必须说明具体阻塞的动作；可选偏好、附加预算、审批、住宿等不能机械地成为门槛。
-   原步骤罗列的“需要确认”字段不自动等于必填，必须结合用户当前业务范围逐项判断。
-5. 可选项缺失不阻塞；允许先完成独立可执行的部分。查询、比较与真正预订的必要参数不同。
+4. 你不能决定服务端的必填状态，也不能把模板未声明的信息升级为硬性阻断。
+   blocking、blocking_reason 和 classification 只是候选输出；Task 将按本次 Run 冻结的信息契约
+   重新计算并覆盖这些字段。仅对契约明确列出的 required、已满足条件的 conditional_required、
+   human_confirmation 字段说明缺失情况。
+5. 未在冻结契约中声明的缺失信息标为 pending_verification，blocking=false，并保留为待核实事项。
+   可选项缺失不阻塞；允许先完成独立可执行的部分。查询、比较与真正预订的必要参数不同。
    必需的真实外部资料缺失仍应阻塞，不能用编造的结果或空模板代替。
 6. 用户已经回答过的字段不要换名重新提问；确实仍缺必要数据时明确指出，不能无限澄清。
 7. fields 中的 value 只能来自用户信息或已有结果；可以规范日期/时间，不得改写专有地点名称。
@@ -28,13 +30,20 @@ REQUIREMENTS_POLICY = """你负责整理当前步骤的有效业务需求，而�
    严格区分查询、建议与预订/购买等动作；仅查询不能扩展为要求完成预订，不得新增承诺或截止时间。
 """
 
-EXECUTION_POLICY = """你在执行 SOP 的一个步骤，必须返回结构化状态。
+EXECUTION_POLICY = """你在执行 Task 的一个 Agent 节点，必须严格遵守 AgentStepOutcome 结构化输出协议：
+- status="succeeded"：当前步骤已产出真实、有用且非空的成果；questions 必须为空。
+- status="needs_input"：确实需要用户补充信息才能继续；questions 必须是非空、结构合法的问题列表，
+  保留稳定 key、清楚的 label、required 标记和 options。只有 needs_input 可以带 questions。
+- status="failed"：发生真实执行/能力失败或必须阻断的业务条件；说明真实原因，questions 必须为空。
+  不要把缺少用户资料伪装成 failed；也不要把权限拒绝、工具/接口错误、审批未通过或业务硬阻断改成 needs_input。
 以“当前有效需求”为本次业务范围和输入依据；旧答案已被合并，不要重新制造冲突。
-completed 表示已产出有用且真实的步骤成果；failed 表示必要数据或执行能力不足，并说明原因。
 可选信息未提供、无偏好、不适用，不构成失败或再次提问的理由。
+当前步骤的信息必填状态由 Task 提供的冻结信息契约决定。契约外缺失信息应作为待核实事项，
+在能够产出真实草稿时继续完成；不得自行追加业务前置条件，不得虚构信息填补空缺。
+不要臆造项目背景、制度来源、审批人、事实、日期、地点、价格或已完成的动作来避免提问。
 不要将“待确认”空模板当作成果；已有实际成果可附带未影响执行的可选事项。
-本次真正阻塞的字段由执行器统一管理；不要新增、换名或重复追问，尤其不要索要本应自行计算的结果。
-如果独立的一部分可执行，先完成它并明确其边界；不可虚构日期、地点、班次、价格或已完成的动作。
+Task 已记录或用户已回答的问题不得换名重问；不要索要本应自行计算的结果。
+如果独立的一部分可执行，先完成它并明确其边界。
 """
 
 
@@ -48,6 +57,20 @@ class EffectiveRequirement(BaseModel):
     blocking: bool = False
     blocking_reason: str = Field(default="", max_length=1_000)
     aliases: list[str] = Field(default_factory=list, max_length=16)
+    classification: Literal[
+        "required",
+        "conditional_required",
+        "optional",
+        "pending_verification",
+        "human_confirmation",
+    ] = "pending_verification"
+    source_path: str | None = Field(default=None, max_length=300)
+    condition_state: Literal[
+        "active",
+        "inactive",
+        "unresolved",
+        "unclassified",
+    ] = "unclassified"
 
     @model_validator(mode="after")
     def validate_blocker(self) -> "EffectiveRequirement":
@@ -172,6 +195,8 @@ def clarification_metadata(
     context: ExecutionContext,
     questions: list[TaskInputQuestion],
     stop_reason: str = "",
+    information_contract: dict | None = None,
+    generation_retry_reason: str = "",
 ) -> dict:
     """Persist policy state in existing step metadata, without engine changes."""
 
@@ -187,4 +212,6 @@ def clarification_metadata(
         "asked_fields": asked,
         "answered_rounds": context.clarification_rounds,
         "stop_reason": stop_reason,
+        "information_contract": information_contract or {},
+        "generation_retry_reason": generation_retry_reason,
     }

@@ -346,6 +346,15 @@ _SIDE_EFFECT_CAPABILITIES = frozenset(
         "notification.send",
     }
 )
+_TASK_READ_ONLY_MCP_TOOLS = frozenset(
+    {
+        # The Amap weather endpoint only retrieves a weather forecast. MCP
+        # servers may omit annotations.readOnlyHint, so this exact Task-owned
+        # contract supplies the missing classification without treating other
+        # tools from the same server as read-only.
+        "mcp__amap-maps__maps_weather",
+    }
+)
 _TASK_ARTIFACT_CAPABILITIES = frozenset(
     {"document.render", "meeting.minutes_export"}
 )
@@ -403,6 +412,52 @@ def capability_external_side_effect(capability_key: str | None) -> bool:
     """Return only the declared Task catalog side-effect classification."""
 
     return capability_key in _SIDE_EFFECT_CAPABILITIES
+
+
+def task_tool_is_confirmed_read_only(
+    tool: Any,
+    *,
+    capability_key: str | None = None,
+) -> bool:
+    """Return whether Tool metadata or a narrow Task contract confirms reads.
+
+    AgentScope maps MCP ``annotations.readOnlyHint`` to ``is_read_only``;
+    Task also retains the tri-state hint so an explicit ``False`` is not
+    confused with an omitted annotation. Only an omitted hint on the exact
+    Task-reviewed Amap weather Tool may use the controlled fallback. A Task
+    capability explicitly classified as a write always overrides metadata.
+    """
+
+    if capability_external_side_effect(capability_key):
+        return False
+    is_mcp = bool(getattr(tool, "is_mcp", False))
+    if not is_mcp:
+        return bool(getattr(tool, "is_read_only", False))
+
+    read_only_hint = getattr(tool, "read_only_hint", None)
+    if read_only_hint is None:
+        descriptor = getattr(tool, "_tool", None)
+        annotations = getattr(descriptor, "annotations", None)
+        if annotations is not None and hasattr(annotations, "readOnlyHint"):
+            read_only_hint = getattr(annotations, "readOnlyHint")
+    if read_only_hint is not None:
+        return bool(read_only_hint)
+    if bool(getattr(tool, "is_read_only", False)):
+        return True
+    return getattr(tool, "name", None) in _TASK_READ_ONLY_MCP_TOOLS
+
+
+def task_tool_has_external_side_effect(
+    tool: Any,
+    *,
+    capability_key: str | None = None,
+) -> bool:
+    """Fail closed unless read-only status has a trusted source."""
+
+    return not task_tool_is_confirmed_read_only(
+        tool,
+        capability_key=capability_key,
+    )
 
 
 def is_task_artifact_capability(capability_key: str) -> bool:

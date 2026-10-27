@@ -229,7 +229,7 @@ class ScenarioRuntimeTest(TestCase):
         )
         self.assertEqual(materials.result["notification"]["status"], "draft_only")
         self.assertFalse(materials.result["notification"]["sent"])
-        self.assertEqual(checked.result["status"], "passed")
+        self.assertEqual(checked.result["status"], "ready_for_ai_review")
         self.assertFalse(checked.result["fee_policy_verified"])
 
         inputs["fee_rates_json"] = json.dumps(
@@ -485,6 +485,12 @@ class ScenarioKnowledgeAdapterTest(IsolatedAsyncioTestCase):
         self.assertEqual(gateway.calls[0][0:2], ("synthetic-owner", ["kb-selected-1"]))
         self.assertEqual(gateway.calls[0][3], ["doc-synthetic-1"])
         self.assertEqual(result.result["status"], "ready")
+        runtime_security = result.metadata["task_security_review_checks"]
+        self.assertEqual(runtime_security[0]["status"], "passed")
+        self.assertEqual(
+            runtime_security[0]["check_id"],
+            "task_knowledge_scope_authorization",
+        )
         stored = result.result["evidence"][0]
         self.assertTrue(stored["evidence_id"])
         self.assertEqual(stored["content_sha256"], evidence["content_sha256"])
@@ -531,6 +537,46 @@ class ScenarioKnowledgeAdapterTest(IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.result["status"], "not_found")
         self.assertFalse(result.result["automated_compliance_conclusion"])
+        self.assertEqual(
+            result.metadata["task_security_review_checks"][0]["status"],
+            "passed",
+            "authorized scope can pass while rule-source evidence remains absent",
+        )
+        self.assertNotIn(
+            "project_rule_check",
+            result.metadata,
+            "business rule status must not be projected as a security check",
+        )
+
+    async def test_rule_no_match_keeps_runtime_authorization_evidence(self):
+        class _NoMatchGateway(_SyntheticKnowledgeGateway):
+            async def retrieve_task_evidence(self, *args, **kwargs):
+                del args, kwargs
+                raise TaskKnowledgeError(
+                    "no_matching_evidence",
+                    "Synthetic authorized search had no matching result.",
+                )
+
+        result = await retrieve_scenario_evidence(
+            "project.rule_check",
+            gateway=_NoMatchGateway([]),
+            user_id="synthetic-owner",
+            knowledge_base_ids=["kb-selected-1"],
+            source_material_ids=[],
+            input_values={"industry": "synthetic", "scope": "planning"},
+            authorization_subject="synthetic-owner",
+        )
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.result["status"], "not_found")
+        self.assertEqual(
+            result.metadata["scenario_retrieval"]["source_scope"],
+            "authorized_task_knowledge_bases",
+        )
+        self.assertEqual(
+            result.metadata["task_security_review_checks"][0]["status"],
+            "passed",
+        )
+        self.assertFalse(result.result["automated_compliance_conclusion"])
 
     async def test_rag_permission_failure_is_not_replaced_with_synthetic_evidence(self):
         class _DeniedGateway(_SyntheticKnowledgeGateway):
@@ -550,6 +596,28 @@ class ScenarioKnowledgeAdapterTest(IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.metadata["knowledge_error_code"], "permission_denied")
         self.assertIsNone(result.result)
+        self.assertEqual(
+            result.metadata["task_security_review_checks"][0]["status"],
+            "failed",
+        )
+
+    async def test_missing_query_records_runtime_check_as_not_performed(self):
+        gateway = _SyntheticKnowledgeGateway([])
+        result = await retrieve_scenario_evidence(
+            "project.similar_search",
+            gateway=gateway,
+            user_id="synthetic-owner",
+            knowledge_base_ids=["kb-selected-1"],
+            source_material_ids=[],
+            input_values={},
+            authorization_subject="synthetic-owner",
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(gateway.calls, [])
+        self.assertEqual(
+            result.metadata["task_security_review_checks"][0]["status"],
+            "not_performed",
+        )
 
     async def test_s07_claim_evidence_contract_uses_scenario_policy(self):
         source_text = "\u672c\u9879\u76ee\u5305\u62ec\u4e09\u4e2a\u9636\u6bb5\u3002"

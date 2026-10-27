@@ -413,9 +413,9 @@ def test_registry_returns_locatable_missing_and_invalid_file_errors(
     with pytest.raises(TemplateRegistryError) as missing:
         registry.list_templates()
     assert missing.value.code == "template_file_missing"
-    assert missing.value.file_name == "s01_project_init.v2.json"
+    assert missing.value.file_name == "s01_project_init.v3.json"
 
-    invalid_file = tmp_path / "s01_project_init.v2.json"
+    invalid_file = tmp_path / "s01_project_init.v3.json"
     invalid_file.write_text("{not-json", encoding="utf-8")
     with pytest.raises(TemplateRegistryError) as invalid_json:
         registry.list_templates()
@@ -427,7 +427,7 @@ def test_registry_returns_locatable_missing_and_invalid_file_errors(
 def test_template_api_reports_invalid_catalog_without_exposing_paths(
     tmp_path: Path,
 ) -> None:
-    invalid_file = tmp_path / "s01_project_init.v2.json"
+    invalid_file = tmp_path / "s01_project_init.v3.json"
     invalid_file.write_text("{not-json", encoding="utf-8")
 
     with _template_client(TemplateRegistry(tmp_path)) as client:
@@ -447,7 +447,7 @@ def test_template_api_reports_invalid_catalog_without_exposing_paths(
 def test_registry_rejects_invalid_template_schema_and_extra_files(
     tmp_path: Path,
 ) -> None:
-    invalid_file = tmp_path / "s01_project_init.v2.json"
+    invalid_file = tmp_path / "s01_project_init.v3.json"
     invalid_file.write_text(json.dumps({"schema_version": 99}), encoding="utf-8")
 
     with pytest.raises(TemplateRegistryError) as invalid_schema:

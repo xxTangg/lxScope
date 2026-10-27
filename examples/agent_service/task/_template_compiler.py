@@ -32,6 +32,7 @@ from ._output_validation import (
 from ._capability_contracts import (
     capability_contract,
     is_task_native_capability,
+    task_tool_has_external_side_effect,
     validate_contract_tool_schema,
 )
 from ._scenario_runtime import native_tool_schema
@@ -310,7 +311,10 @@ class TaskTemplateCompiler:
                 (
                     capability_key
                     for capability_key, tool in bound_tools.items()
-                    if not tool.is_read_only
+                    if task_tool_has_external_side_effect(
+                        tool,
+                        capability_key=capability_key,
+                    )
                 ),
                 key=lambda item: item.casefold(),
             )
@@ -435,6 +439,10 @@ class TaskTemplateCompiler:
                             if step.output_contract is not None
                             else None
                         ),
+                        "information_requirements": [
+                            item.model_dump(mode="python")
+                            for item in step.information_requirements
+                        ],
                     }
                 )
             except ValidationError as error:

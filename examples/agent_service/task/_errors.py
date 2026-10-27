@@ -30,6 +30,20 @@ def classify_node_error(
     if artifact_failure:
         category = "artifact_generation_failed"
         code = "TASK_ARTIFACT_GENERATION_FAILED"
+    elif (
+        isinstance(node_metadata.get("agent_outcome_protocol"), dict)
+        and node_metadata["agent_outcome_protocol"].get("status") == "rejected"
+    ):
+        category = "schema_mismatch"
+        code = "TASK_AGENT_OUTCOME_PROTOCOL_INVALID"
+        protocol_code = node_metadata["agent_outcome_protocol"].get("code")
+        if isinstance(protocol_code, str):
+            details["protocol_code"] = protocol_code[:120]
+        question_count = node_metadata["agent_outcome_protocol"].get(
+            "question_count"
+        )
+        if isinstance(question_count, int) and not isinstance(question_count, bool):
+            details["question_count"] = max(0, min(question_count, 16))
     elif node_metadata.get("knowledge_error_code"):
         source_error_code = str(node_metadata["knowledge_error_code"])
         if source_error_code == "knowledge_base_unavailable":

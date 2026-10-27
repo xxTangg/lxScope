@@ -294,7 +294,7 @@ def test_s02_v4_and_v41_historical_templates_keep_versioned_contracts() -> None:
     historical_v4_1 = registry.get_template_version(
         "s02_project_planning", "4.1.0"
     )
-    assert current is not None and current.template_version == "5.0.0"
+    assert current is not None and current.template_version == "5.1.0"
     assert historical_v4 is not None and historical_v4_1 is not None
     assert len(current.steps) == 5
     assert all(step.output_contract is None for step in current.steps)

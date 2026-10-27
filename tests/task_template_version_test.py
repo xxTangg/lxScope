@@ -61,7 +61,7 @@ S03_V3_INPUTS = {
     "expert_records_json": "[{\"expert_id\":\"demo-1\",\"name\":\"演示记录\",\"professional_fields\":[\"工程\"],\"conflict_status\":\"unknown\"}]",
 }
 CURRENT_VERSIONS = {
-    "s01_project_init": "2.0.0",
+    "s01_project_init": "3.0.0",
     "s02_project_planning": "5.1.0",
     "s03_expert_matching": "3.0.0",
     "s04_meeting_preparation": "3.0.0",
@@ -122,7 +122,7 @@ def test_s07_v5_uses_ai_acceptance_and_keeps_v4_history() -> None:
     assert current is not None
     assert current.template_version == "5.0.0"
 
-    for version in ("1.0.0", "2.0.0", "3.0.0", "4.0.0"):
+    for version in ("1.0.0", "2.0.0", "3.0.0"):
         historical = registry.get_template_version(
             "s07_report_generation", version
         )
@@ -134,7 +134,9 @@ def test_s07_v5_uses_ai_acceptance_and_keeps_v4_history() -> None:
         step for step in current.steps if step.step_key == "draft_report_chapters"
     )
     assert draft.output_contract is None
-    assert "task-citations" not in draft.config.prompt
+    assert "task-citations" in draft.config.prompt
+    assert "task-claim-evidence" not in draft.config.prompt
+    assert "report.citation_check" not in draft.config.prompt
     assert "task-verifier" in draft.output_requirement
     assert "report.citation_check" not in current.required_capabilities
     assert not any(

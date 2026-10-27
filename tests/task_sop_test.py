@@ -169,9 +169,13 @@ class TaskSOPTest(IsolatedAsyncioTestCase):
         run = await self._create(
             [_agent("前置步骤"), _input(), _agent("原始交付")]
         )
-        # A JSON round trip and a new service simulate releasing all in-memory state.
-        await self.store.save_run(
-            TaskRunRecord.model_validate_json(run.model_dump_json())
+        # Validate the persisted representation without replacing a durable
+        # Run through the compatibility save API; durable mutations use CAS.
+        restored = TaskRunRecord.model_validate_json(run.model_dump_json())
+        self.assertEqual(restored.id, run.id)
+        self.assertEqual(
+            restored.node_snapshot_fingerprint,
+            run.node_snapshot_fingerprint,
         )
         resumed = TaskService(self.store, preview_executor=self.executor)
         self.services.append(resumed)

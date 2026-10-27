@@ -1,9 +1,10 @@
 import { AlertCircle, BookOpen, CircleHelp, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import * as React from 'react';
 
+import { TASK_RESULT_CARD_CLASS } from './task-result-card-style';
 import { TaskTemplatePreview } from './task-template-preview';
 import { taskApi } from '@/api';
-import type { TaskTemplateDefinition } from '@/api/task';
+import type { TaskTemplateDefinition, TaskToolSchema } from '@/api/task';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -19,6 +20,8 @@ interface TaskTemplateGalleryProps {
 	onOpenChange: (open: boolean) => void;
 	onUseTemplate: (template: TaskTemplateDefinition) => void;
 	onOpenFreeTask: () => void;
+	tools: TaskToolSchema[];
+	isToolsLoading: boolean;
 }
 
 function errorMessage(error: unknown): string {
@@ -55,6 +58,8 @@ export function TaskTemplateGallery({
 	onOpenChange,
 	onUseTemplate,
 	onOpenFreeTask,
+	tools,
+	isToolsLoading,
 }: TaskTemplateGalleryProps) {
 	const [templates, setTemplates] = React.useState<TaskTemplateDefinition[]>([]);
 	const [selectedTemplateId, setSelectedTemplateId] = React.useState<string | null>(null);
@@ -140,11 +145,10 @@ export function TaskTemplateGallery({
 							<div className="space-y-2">
 								{templates.map((template, index) => {
 									const selected = template.template_id === selectedTemplateId;
-									const hasUnsupported = (template.unsupported_capabilities ?? []).length > 0;
 									return (
 										<div
 											key={template.template_id}
-											className={'flex w-full items-start gap-1 rounded-xl border p-1.5 transition-colors ' + (selected ? 'border-blue-300 bg-blue-50 shadow-sm' : 'border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50')}
+											className={'flex w-full items-start gap-1 rounded-xl border p-1.5 ' + TASK_RESULT_CARD_CLASS + ' ' + (selected ? 'border-blue-300 bg-blue-50 shadow-sm' : 'border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50')}
 										>
 											<button
 												type="button"
@@ -159,12 +163,11 @@ export function TaskTemplateGallery({
 													<div className="min-w-0 flex-1">
 														<div className="flex flex-wrap items-center gap-1.5">
 															<span className="text-xs font-semibold text-slate-800">{template.title}</span>
-															<Badge variant="outline" className="text-[9px]">v{template.template_version}</Badge>
 														</div>
 														<p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-500">{template.description}</p>
 														<div className="mt-2 flex flex-wrap items-center gap-1.5">
 															<Badge variant="outline" className="text-[9px]">{template.steps.length} 节点</Badge>
-															<Badge variant="outline" className={hasUnsupported ? 'border-amber-200 bg-amber-50 text-amber-800 text-[9px]' : 'text-[9px]'}>{hasUnsupported ? '含未支持能力' : '待校验工具'}</Badge>
+															<Badge variant="outline" className="text-[9px]">待校验工具</Badge>
 														</div>
 													</div>
 												</div>
@@ -187,7 +190,12 @@ export function TaskTemplateGallery({
 
 					<section className="min-h-0 overflow-hidden rounded-xl border border-slate-200 bg-white p-4">
 						{selectedTemplate ? (
-							<TaskTemplatePreview template={selectedTemplate} onUse={onUseTemplate} />
+							<TaskTemplatePreview
+								template={selectedTemplate}
+								tools={tools}
+								isToolsLoading={isToolsLoading}
+								onUse={onUseTemplate}
+							/>
 						) : (
 							<div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
 								选择一个模板查看流程详情。

@@ -1,14 +1,14 @@
 import { ClipboardPaste, MessageSquareText } from 'lucide-react';
 import * as React from 'react';
 
-import type { TaskInputRequest } from '@/api';
-import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import {
 	containsTaskTemplateDemoPlaceholder,
 	formatTaskTemplateDemoAnswer,
 	getTaskTemplateDemoInput,
 } from './task-template-demo-inputs';
+import type { TaskInputRequest } from '@/api';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 
 function isJsonArrayOrObject(value: string): boolean {
 	try {

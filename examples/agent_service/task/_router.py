@@ -29,8 +29,11 @@ from ._models import (
     TaskKnowledgeGraphRebuildResponse,
     TaskKnowledgeGraphResponse,
     TaskRecord,
+    TaskDagCapabilitiesResponse,
+    TaskCustomFlowCopyRequest,
     TaskRunRecord,
     TaskRunRequest,
+    TaskRunControlRequest,
     TaskInputReply,
     TaskPreflightRequest,
     TaskValidationRequest,
@@ -40,7 +43,14 @@ from ._models import (
     UpdateTaskRequest,
 )
 from ._knowledge import TaskKnowledgeGateway
+from ._planning_contract import (
+    TaskPlanningConfirmRequest,
+    TaskPlanningConfirmResponse,
+    TaskPlanningRequest,
+    TaskPlanningResponse,
+)
 from ._service import TaskService, TaskWorkflowConflictError
+from ._store import TaskStoreConflictError
 from ._template_compiler import (
     TaskTemplateCompiler,
     TemplateCapabilityMappingError,
@@ -76,6 +86,20 @@ async def _get_task_service(request: Request) -> TaskService:
             detail="Task module is not configured.",
         )
     return task_service
+
+
+@task_router.get(
+    "/capabilities",
+    response_model=TaskDagCapabilitiesResponse,
+    summary="Read custom Task DAG authoring and execution permissions",
+)
+async def get_task_capabilities(
+    _user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskDagCapabilitiesResponse:
+    """Expose Task-local flags to authenticated clients without weakening server checks."""
+
+    return task_service.get_dag_capabilities()
 
 
 def _get_task_knowledge_gateway(request: Request) -> TaskKnowledgeGateway:
@@ -121,6 +145,22 @@ def _not_found(resource: str, resource_id: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"{resource} '{resource_id}' not found.",
+    )
+
+
+def _run_command_conflict(error: Exception) -> HTTPException:
+    """Return a stable machine-readable conflict for DAG commands."""
+
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": (
+                "TASK_RUN_CAS_CONFLICT"
+                if isinstance(error, TaskStoreConflictError)
+                else "TASK_RUN_STATE_CONFLICT"
+            ),
+            "message": str(error),
+        },
     )
 
 
@@ -246,7 +286,19 @@ async def validate_task(
         task = await task_service.get_task(user_id, body.task_id)
         if task is None:
             raise _not_found("Task", body.task_id)
+    if "graph" in body.model_fields_set:
+        try:
+            await task_service.ensure_dag_graph_editable(user_id, task)
+        except TaskWorkflowConflictError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
     nodes = body.nodes if body.nodes is not None else (task.nodes if task else [])
+    if task is not None and "graph" in body.model_fields_set:
+        task = task.model_copy(update={"nodes": nodes, "graph": body.graph})
+    elif task is not None and body.nodes is not None:
+        task = task.model_copy(update={"nodes": nodes})
     context = body.context
     if task is not None:
         context = task.source_context.model_copy(
@@ -257,6 +309,7 @@ async def validate_task(
         task,
         nodes,
         context=context,
+        graph=body.graph if task is None else None,
     )
 
 
@@ -325,7 +378,18 @@ async def create_task(
 ) -> TaskRecord:
     """Create a task definition without touching AgentScope internals."""
 
-    return await task_service.create_task(user_id, body)
+    try:
+        return await task_service.create_task(user_id, body)
+    except TaskWorkflowConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except TaskValidationFailure as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=error.public_detail(),
+        ) from error
 
 
 @task_router.post(
@@ -363,6 +427,83 @@ async def generate_task(
 
 
 @task_router.post(
+    "/{task_id}/planning",
+    response_model=TaskPlanningResponse,
+    summary="Propose and validate a Task SOP/DAG plan",
+)
+async def plan_task(
+    task_id: str,
+    request: Request,
+    body: TaskPlanningRequest,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskPlanningResponse:
+    """Persist a reviewable plan proposal without creating a Run."""
+
+    try:
+        result = await task_service.plan_task_with_decision(
+            user_id,
+            task_id,
+            body,
+            _maybe_get_task_knowledge_gateway(request),
+        )
+    except TaskWorkflowConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except TimeoutError as error:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="智能规划超时；Task 未创建 Run，请稍后重试。",
+        ) from error
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+    if result is None:
+        raise _not_found("Task", task_id)
+    return result
+
+
+@task_router.post(
+    "/{task_id}/planning/confirm",
+    response_model=TaskPlanningConfirmResponse,
+    summary="Confirm an edited Task plan and run read-only Preflight",
+)
+async def confirm_task_plan(
+    task_id: str,
+    request: Request,
+    body: TaskPlanningConfirmRequest,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskPlanningConfirmResponse:
+    """Save the human-confirmed definition and return current Preflight."""
+
+    try:
+        result = await task_service.confirm_task_plan(
+            user_id,
+            task_id,
+            body,
+            _maybe_get_task_knowledge_gateway(request),
+        )
+    except TaskWorkflowConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except TaskValidationFailure as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=error.public_detail(),
+        ) from error
+    if result is None:
+        raise _not_found("Task", task_id)
+    return result
+
+
+@task_router.post(
     "/{task_id}/custom-flow-copy",
     response_model=TaskRecord,
     status_code=status.HTTP_201_CREATED,
@@ -370,17 +511,27 @@ async def generate_task(
 )
 async def create_custom_flow_copy(
     task_id: str,
+    body: TaskCustomFlowCopyRequest | None = None,
     user_id: str = Depends(get_current_user_id),
     task_service: TaskService = Depends(_get_task_service),
 ) -> TaskRecord:
-    """Create a user-owned custom copy without invoking the Planner."""
+    """Create a user-owned SOP or DAG copy without invoking the Planner."""
 
     try:
-        task = await task_service.create_custom_flow_copy(user_id, task_id)
+        task = await task_service.create_custom_flow_copy(
+            user_id,
+            task_id,
+            mode=body.mode if body is not None else "sop",
+        )
     except TaskWorkflowConflictError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
+        ) from error
+    except TaskValidationFailure as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=error.public_detail(),
         ) from error
     if task is None:
         raise _not_found("Task", task_id)
@@ -416,12 +567,17 @@ async def list_task_tools(
 )
 async def get_run(
     run_id: str,
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     task_service: TaskService = Depends(_get_task_service),
 ) -> TaskRunRecord:
     """Return one run owned by the current user."""
 
-    run = await task_service.get_run(user_id, run_id)
+    run = await task_service.get_run(
+        user_id,
+        run_id,
+        _maybe_get_task_knowledge_gateway(request),
+    )
     if run is None:
         raise _not_found("Run", run_id)
     return run
@@ -710,6 +866,11 @@ async def update_task(
             status_code=422,
             detail=error.public_detail(),
         ) from error
+    except TaskWorkflowConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
     if task is None:
         raise _not_found("Task", task_id)
     return task
@@ -739,6 +900,7 @@ async def delete_task(
 )
 async def list_runs(
     task_id: str,
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     task_service: TaskService = Depends(_get_task_service),
 ) -> list[TaskRunRecord]:
@@ -746,7 +908,11 @@ async def list_runs(
 
     if await task_service.get_task(user_id, task_id) is None:
         raise _not_found("Task", task_id)
-    return await task_service.list_runs(user_id, task_id)
+    return await task_service.list_runs(
+        user_id,
+        task_id,
+        _maybe_get_task_knowledge_gateway(request),
+    )
 
 
 @task_router.post(
@@ -775,6 +941,11 @@ async def create_run(
         raise HTTPException(
             status_code=422,
             detail=error.public_detail(),
+        ) from error
+    except TaskWorkflowConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
         ) from error
     if run is None:
         raise _not_found("Task", task_id)
@@ -824,6 +995,124 @@ async def retry_run(
 
 
 @task_router.post(
+    "/runs/{run_id}/pause",
+    response_model=TaskRunRecord,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Pause a Task DAG or SOP run",
+)
+async def pause_run(
+    run_id: str,
+    body: TaskRunControlRequest,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskRunRecord:
+    try:
+        run = await task_service.pause_run(user_id, run_id, body)
+    except (TaskWorkflowConflictError, TaskStoreConflictError) as error:
+        raise _run_command_conflict(error) from error
+    if run is None:
+        raise _not_found("Run", run_id)
+    return run
+
+
+@task_router.post(
+    "/runs/{run_id}/continue",
+    response_model=TaskRunRecord,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Continue a paused Task DAG or SOP run",
+)
+async def continue_run(
+    run_id: str,
+    body: TaskRunControlRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskRunRecord:
+    try:
+        run = await task_service.continue_run(
+            user_id,
+            run_id,
+            body,
+            _maybe_get_task_knowledge_gateway(request),
+        )
+    except (TaskWorkflowConflictError, TaskStoreConflictError) as error:
+        raise _run_command_conflict(error) from error
+    if run is None:
+        raise _not_found("Run", run_id)
+    return run
+
+
+@task_router.post(
+    "/runs/{run_id}/step",
+    response_model=TaskRunRecord,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Execute one ready Task DAG or SOP node",
+)
+async def step_run(
+    run_id: str,
+    body: TaskRunControlRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskRunRecord:
+    try:
+        run = await task_service.step_run(
+            user_id,
+            run_id,
+            body,
+            _maybe_get_task_knowledge_gateway(request),
+        )
+    except (TaskWorkflowConflictError, TaskStoreConflictError) as error:
+        raise _run_command_conflict(error) from error
+    if run is None:
+        raise _not_found("Run", run_id)
+    return run
+
+
+@task_router.post(
+    "/runs/{run_id}/stop",
+    response_model=TaskRunRecord,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Stop a Task DAG or SOP run",
+)
+async def stop_run(
+    run_id: str,
+    body: TaskRunControlRequest,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskRunRecord:
+    try:
+        run = await task_service.stop_run(user_id, run_id, body)
+    except (TaskWorkflowConflictError, TaskStoreConflictError) as error:
+        raise _run_command_conflict(error) from error
+    if run is None:
+        raise _not_found("Run", run_id)
+    return run
+
+
+@task_router.post(
+    "/runs/{run_id}/nodes/{node_id}/retry",
+    response_model=TaskRunRecord,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Retry a failed or successful node in the same Task Run",
+)
+async def retry_node(
+    run_id: str,
+    node_id: str,
+    body: TaskRunControlRequest,
+    user_id: str = Depends(get_current_user_id),
+    task_service: TaskService = Depends(_get_task_service),
+) -> TaskRunRecord:
+    try:
+        run = await task_service.retry_node(user_id, run_id, node_id, body)
+    except (TaskWorkflowConflictError, TaskStoreConflictError) as error:
+        raise _run_command_conflict(error) from error
+    if run is None:
+        raise _not_found("Run", run_id)
+    return run
+
+
+@task_router.post(
     "/runs/{run_id}/input",
     response_model=TaskRunRecord,
     status_code=status.HTTP_202_ACCEPTED,
@@ -844,7 +1133,7 @@ async def answer_run(
             body,
             _maybe_get_task_knowledge_gateway(request),
         )
-    except ValueError as error:
+    except (ValueError, TaskStoreConflictError) as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(error)
         ) from error

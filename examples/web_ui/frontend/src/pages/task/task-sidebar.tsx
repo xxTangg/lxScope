@@ -1,4 +1,4 @@
-import { FileText, Plus, Search, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileText, Plus, Search, Trash2 } from 'lucide-react';
 import * as React from 'react';
 
 import type { TaskListFilter } from './task-view-model';
@@ -13,9 +13,11 @@ interface TaskSidebarProps {
 	selectedTaskId: string | null;
 	run: TaskRunRecord | null;
 	width?: number;
+	collapsed?: boolean;
 	onSelect: (task: TaskRecord) => void;
 	onCreate: () => void;
 	onDelete: (task: TaskRecord) => void;
+	onToggleCollapsed: () => void;
 	disabled?: boolean;
 }
 
@@ -41,9 +43,11 @@ export function TaskSidebar({
 	selectedTaskId,
 	run,
 	width = 280,
+	collapsed = false,
 	onSelect,
 	onCreate,
 	onDelete,
+	onToggleCollapsed,
 	disabled = false,
 }: TaskSidebarProps) {
 	const [filter, setFilter] = React.useState<TaskListFilter>('all');
@@ -65,7 +69,23 @@ export function TaskSidebar({
 			return (task.title + ' ' + task.goal).toLocaleLowerCase().includes(normalizedQuery);
 		});
 	}, [filter, query, tasks]);
-
+	if (collapsed) {
+		return (
+			<aside className="flex w-[52px] min-w-[52px] shrink-0 flex-col items-center rounded-2xl border border-slate-200/80 bg-white py-3 shadow-[0_1px_2px_rgba(16,24,40,0.04),0_4px_12px_rgba(16,24,40,0.05)]">
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon"
+					className="size-8"
+					aria-label="展开我的任务列表"
+					title="展开我的任务列表"
+					onClick={onToggleCollapsed}
+				>
+					<ChevronRight />
+				</Button>
+			</aside>
+		);
+	}
 	return (
 		<aside
 			className="flex min-w-[220px] max-w-[420px] shrink-0 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04),0_4px_12px_rgba(16,24,40,0.05)]"
@@ -76,16 +96,29 @@ export function TaskSidebar({
 					<div className="text-base font-semibold text-slate-900">我的任务</div>
 					<div className="mt-1 text-[11px] text-slate-500">{tasks.length} 个任务</div>
 				</div>
-				<Button
-					size="sm"
-					variant="outline"
-					onClick={onCreate}
-					disabled={disabled}
-					className="h-8 shrink-0 border-slate-200 px-2.5 text-xs"
-				>
-					<Plus className="size-3.5" />
-					新建任务
-				</Button>
+				<div className="flex shrink-0 items-center gap-1">
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon"
+						className="size-8"
+						aria-label="折叠我的任务列表"
+						title="折叠我的任务列表"
+						onClick={onToggleCollapsed}
+					>
+						<ChevronLeft />
+					</Button>
+					<Button
+						size="sm"
+						variant="outline"
+						onClick={onCreate}
+						disabled={disabled}
+						className="h-8 shrink-0 border-slate-200 px-2.5 text-xs"
+					>
+						<Plus className="size-3.5" />
+						新建任务
+					</Button>
+				</div>
 			</div>
 
 			<div className="grid grid-cols-4 border-b border-slate-100 px-3">

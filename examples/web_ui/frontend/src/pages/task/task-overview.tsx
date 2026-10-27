@@ -11,6 +11,7 @@ import {
 	Network,
 	MessageSquareText,
 	Play,
+	Sparkles,
 	Target,
 	Timer,
 	Wrench,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import * as React from 'react';
 
+import { sanitizeTaskRunContent } from './task-run-sanitization';
 import { formatClockTime, formatDuration, getNodeDuration } from './task-view-model';
 import type {
 	NodeRunRecord,
@@ -34,6 +36,9 @@ interface TaskOverviewProps {
 	run: TaskRunRecord | null;
 	generationStatus: TaskGenerationStatus;
 	isDirty: boolean;
+	onViewBusinessResults?: () => void;
+	selectedRunNodeId?: string | null;
+	onRunNodeSelect?: (nodeId: string) => void;
 }
 
 type OverviewNodeStatus = NodeRunStatus | 'upcoming';
@@ -134,10 +139,12 @@ function CurrentTaskNode({
 	}
 	const artifact = run?.artifacts.find((item) => item.node_id === node.id);
 	const expectedOutput = artifact?.name ?? node.artifact?.filename ?? '节点运行结果';
-	const inputText = nodeRun?.input?.trim() || '当前步骤的实际输入会在执行后显示。';
+	const inputText = nodeRun?.input?.trim()
+		? sanitizeTaskRunContent(nodeRun.input)
+		: '当前步骤的实际输入会在执行后显示。';
 	const outputText =
-		nodeRun?.display_summary?.trim() ||
-		nodeRun?.output?.trim() ||
+		(nodeRun?.display_summary?.trim() && sanitizeTaskRunContent(nodeRun.display_summary)) ||
+		(nodeRun?.output?.trim() && sanitizeTaskRunContent(nodeRun.output)) ||
 		'当前步骤的输出会在执行后显示。';
 	const actions = actionDescriptions(node);
 	const duration = nodeRun ? getNodeDuration(nodeRun) : null;
@@ -229,7 +236,15 @@ function CurrentTaskNode({
 	);
 }
 
-export function TaskOverview({ nodes, run, generationStatus, isDirty }: TaskOverviewProps) {
+export function TaskOverview({
+	nodes,
+	run,
+	generationStatus,
+	isDirty,
+	onViewBusinessResults,
+	selectedRunNodeId,
+	onRunNodeSelect,
+}: TaskOverviewProps) {
 	const hasMatchingRun = matchesCurrentNodes(nodes, run, isDirty);
 	const nodeRuns = React.useMemo(
 		() =>
@@ -260,7 +275,7 @@ export function TaskOverview({ nodes, run, generationStatus, isDirty }: TaskOver
 		id: nodes[defaultIndex]?.id ?? null,
 		manual: false,
 	});
-	const selectedNodeId = selection.id;
+	const selectedNodeId = selectedRunNodeId ?? selection.id;
 	const [view, setView] = React.useState<ExecutionView>('linear');
 
 	React.useEffect(() => {
@@ -304,7 +319,10 @@ export function TaskOverview({ nodes, run, generationStatus, isDirty }: TaskOver
 							? '本次执行已取消，可以重新执行任务。'
 							: completedCount + ' / ' + nodes.length + ' 个步骤已完成。';
 
-	const selectNode = (node: TaskNode) => setSelection({ id: node.id, manual: true });
+	const selectNode = (node: TaskNode) => {
+		setSelection({ id: node.id, manual: true });
+		if (nodeRuns.has(node.id)) onRunNodeSelect?.(node.id);
+	};
 	const views: Array<{ id: ExecutionView; label: string; icon: React.ReactNode }> = [
 		{ id: 'linear', label: '线性视图', icon: <GitBranch className="size-3.5" /> },
 		{ id: 'graph', label: '图谱视图', icon: <Network className="size-3.5" /> },
@@ -346,6 +364,20 @@ export function TaskOverview({ nodes, run, generationStatus, isDirty }: TaskOver
 							{item.label}
 						</button>
 					))}
+					{onViewBusinessResults && (
+						<>
+							<span className="mx-1 h-5 w-px shrink-0 bg-slate-200" aria-hidden="true" />
+							<button
+								type="button"
+								aria-label="查看业务成果"
+								onClick={onViewBusinessResults}
+								className="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-blue-700 transition-colors hover:bg-blue-50"
+							>
+								<Sparkles className="size-3.5" />
+								业务成果
+							</button>
+						</>
+					)}
 				</div>
 			</div>
 

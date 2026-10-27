@@ -181,6 +181,17 @@ export interface TaskOutputSchema {
 	enum?: Array<string | number | boolean | null>;
 }
 
+export interface TaskNodeOutputContract {
+	contract_id: string;
+	contract_version: number;
+	output_type: 'text' | 'markdown' | 'structured_json' | 'business_result' | 'evidence_claims' | 'artifact_descriptor';
+	schema?: TaskOutputSchema | null;
+	validation_mode: 'none' | 'json_schema' | 'citations' | 'claim_evidence';
+	provenance_requirement?: 'none' | 'authorized_run_snapshot';
+	downstream_binding?: 'text_only' | 'validated_result';
+	failure_policy?: 'fail_closed';
+}
+
 export interface TaskArtifactRecord {
 	id: string;
 	run_id: string;
@@ -205,11 +216,135 @@ export interface TaskNode {
 	capability_key?: string | null;
 	artifact?: TaskArtifactConfig | null;
 	output_schema?: TaskOutputSchema | null;
+	output_contract?: TaskNodeOutputContract | null;
 	knowledge_graph_enabled?: boolean;
 	knowledge_base_mode?: 'inherit' | 'override' | 'disabled';
 	knowledge_base_ids?: string[];
 	acceptance_criteria?: string;
 	max_attempts?: number;
+	resource_requirements?: Record<string, number>;
+}
+
+export interface TaskGraphEdge {
+	source_node_id: string;
+	target_node_id: string;
+}
+
+export interface TaskGraphInputBinding {
+	source_node_id: string;
+	source_value: 'output' | 'result';
+}
+
+export interface TaskGraph {
+	schema_version: 1;
+	edges: TaskGraphEdge[];
+	input_bindings: Record<string, Record<string, TaskGraphInputBinding>>;
+	max_concurrency: number;
+	resource_limits: Record<string, number>;
+}
+
+export interface TaskDagCapabilitiesResponse {
+	editing_enabled: boolean;
+	execution_enabled: boolean;
+	sop_control_enabled: boolean;
+	sop_node_retry_enabled: boolean;
+	scenario_execution_allowlist: Array<{
+		template_id: string;
+		template_version: string;
+	}>;
+}
+
+export interface TaskPlanningDecision {
+	planning_id: string;
+	created_at: string;
+	suggested_title: string;
+	intent: string;
+	planner_suggested_mode: 'sop' | 'dag';
+	planner_reason: string;
+	recommended_mode: 'sop' | 'dag';
+	reason: string;
+	nodes: TaskNode[];
+	edges: TaskGraphEdge[];
+	input_bindings: Record<string, Record<string, TaskGraphInputBinding>>;
+	max_concurrency: number;
+	resource_limits: Record<string, number>;
+	validation_status: 'pending' | 'valid' | 'invalid';
+	execution_allowed: boolean;
+	validation_issues: TaskValidationIssue[];
+	approval_required_node_ids: string[];
+	requires_existing_rerun_gate: boolean;
+	source_template_id?: string | null;
+	source_template_version?: string | null;
+}
+
+export interface TaskPlanningResponse {
+	task: TaskRecord;
+	plan: TaskPlanningDecision;
+	plan_version: number;
+}
+
+export interface TaskPlanningConfirmRequest {
+	planning_id: string;
+	plan_version: number;
+	nodes?: TaskNode[] | null;
+	graph?: TaskGraph | null;
+	title?: string | null;
+	input?: string;
+	context?: TaskContext;
+}
+
+export interface TaskPlanningConfirmResponse extends TaskPlanningResponse {
+	preflight: TaskPreflightResponse;
+}
+
+export interface TaskValidationIssue {
+	path: string;
+	message: string;
+}
+
+export interface TaskValidationResponse {
+	task_id?: string | null;
+	valid: boolean;
+	ready?: boolean | null;
+	issues: TaskValidationIssue[];
+	missing_capabilities: string[];
+	blocked_capabilities: string[];
+	capability_checks: TaskCapabilityCheck[];
+}
+
+export interface TaskValidationRequest {
+	task_id?: string | null;
+	nodes?: TaskNode[] | null;
+	graph?: TaskGraph | null;
+	context?: TaskContext | null;
+}
+
+export type TaskRunControlMode =
+	| 'continuous'
+	| 'pause_requested'
+	| 'paused'
+	| 'single_step'
+	| 'stop_requested'
+	| 'stopped';
+
+export interface TaskRunControlRequest {
+	request_id: string;
+	expected_run_version: number;
+	side_effects_verified?: boolean;
+}
+
+export interface TaskNodeAttemptRecord {
+	attempt: number;
+	source: 'automatic' | 'manual';
+	status: 'succeeded' | 'failed' | 'canceled';
+	input: string;
+	output: string;
+	result?: unknown;
+	metadata?: Record<string, unknown>;
+	error?: string | null;
+	error_detail?: TaskErrorDetail | null;
+	started_at?: string | null;
+	finished_at?: string | null;
 }
 
 export interface TaskContext {
@@ -225,6 +360,7 @@ export interface TaskRecord {
 	title: string;
 	goal: string;
 	nodes: TaskNode[];
+	graph?: TaskGraph | null;
 	knowledge_base_ids?: string[] | null;
 	intent?: string | null;
 	title_source: 'auto' | 'user';
@@ -240,6 +376,24 @@ export interface TaskRecord {
 	workflow_mode?: TaskWorkflowMode | null;
 	source_task_id?: string | null;
 	source_task_revision?: number | null;
+	planning_decision?: TaskPlanningDecision | null;
+	planning_version?: number;
+	planning_history?: Array<Record<string, unknown>>;
+	planning_audit?: Array<{
+		planning_id: string;
+		plan_version: number;
+		action: 'proposed' | 'confirmed' | 'edited_and_confirmed';
+		actor_user_id: string;
+		recommended_mode?: 'sop' | 'dag' | null;
+		validation_status?: 'pending' | 'valid' | 'invalid' | null;
+		created_at: string;
+	}>;
+	planning_goal_fingerprint?: string | null;
+	planning_goal_snapshot?: string | null;
+	planning_confirmed_id?: string | null;
+	planning_confirmed_version?: number | null;
+	planning_confirmed_fingerprint?: string | null;
+	planning_confirmed_at?: string | null;
 	last_run_id?: string | null;
 	last_run_status?: RunStatus | null;
 	created_at: string;
@@ -253,15 +407,24 @@ export interface NodeRunRecord {
 	type: TaskStepType;
 	order: number;
 	status: NodeRunStatus;
+	attempt?: number;
+	execution_epoch?: number;
+	attempt_history?: TaskNodeAttemptRecord[];
 	input: string;
 	output: string;
 	display_summary: string;
 	result?: unknown;
 	metadata?: Record<string, unknown>;
+	security_reviews?: TaskNodeSecurityReviewRecord[];
 	error?: string | null;
 	error_detail?: TaskErrorDetail | null;
 	started_at?: string | null;
 	finished_at?: string | null;
+}
+
+export interface TaskNodeSecurityReviewRecord extends TaskCapabilityCheck {
+	source: 'task_preflight' | string;
+	checked_at?: string;
 }
 
 export interface TaskToolSchema {
@@ -338,18 +501,26 @@ export interface TaskRunRecord {
 	final_summary: string;
 	artifacts: TaskArtifactRecord[];
 	status: RunStatus;
+	run_version?: number;
+	event_sequence?: number;
+	control_mode?: TaskRunControlMode;
 	error?: string | null;
 	error_detail?: TaskErrorDetail | null;
 	context: TaskContext;
 	created_at: string;
 	started_at?: string | null;
 	finished_at?: string | null;
-	engine?: 'legacy' | 'sop';
+	engine?: 'legacy' | 'sop' | 'dag';
+	graph?: TaskGraph | null;
 	workflow_mode?: TaskWorkflowMode | null;
 	source_template_id?: string | null;
 	source_template_version?: string | null;
 	source_task_id?: string | null;
 	source_task_revision?: number | null;
+	planning_id?: string | null;
+	planning_version?: number | null;
+	planning_snapshot?: TaskPlanningDecision | null;
+	node_snapshot_fingerprint?: string | null;
 	pending_input?: TaskInputRequest | null;
 	delivery_mode?: TaskDeliveryMode;
 	delivery_status?: TaskDeliveryStatus | null;
@@ -360,6 +531,7 @@ export interface CreateTaskRequest {
 	title?: string;
 	goal: string;
 	nodes?: TaskNode[];
+	graph?: TaskGraph | null;
 	source_context?: TaskContext;
 	knowledge_base_ids?: string[];
 }
@@ -368,6 +540,7 @@ export interface UpdateTaskRequest {
 	title?: string;
 	goal?: string;
 	nodes?: TaskNode[];
+	graph?: TaskGraph | null;
 	source_context?: TaskContext;
 	knowledge_base_ids?: string[];
 }
@@ -501,8 +674,15 @@ export interface InstantiateTaskTemplateRequest {
 	source_context?: TaskContext;
 }
 
+export type TaskCustomFlowCopyMode = 'sop' | 'dag';
+
 export const taskApi = {
 	list: () => client.get<TaskRecord[]>('/tasks/'),
+
+	getCapabilities: () => client.get<TaskDagCapabilitiesResponse>('/tasks/capabilities'),
+
+	validateDefinition: (body: TaskValidationRequest) =>
+		client.post<TaskValidationResponse>('/tasks/validate', body),
 
 	listTemplates: () => client.get<TaskTemplateDefinition[]>('/tasks/templates'),
 
@@ -512,8 +692,8 @@ export const taskApi = {
 	instantiateTemplate: (templateId: string, body: InstantiateTaskTemplateRequest) =>
 		client.post<TaskRecord>(`/tasks/templates/${templateId}/instantiate`, body),
 
-	createCustomFlowCopy: (taskId: string) =>
-		client.post<TaskRecord>(`/tasks/${taskId}/custom-flow-copy`, {}),
+	createCustomFlowCopy: (taskId: string, mode: TaskCustomFlowCopyMode = 'sop') =>
+		client.post<TaskRecord>(`/tasks/${taskId}/custom-flow-copy`, { mode }),
 
 	preflight: (taskId: string, body: TaskRunRequest = {}) =>
 		client.post<TaskPreflightResponse>(`/tasks/${taskId}/preflight`, body),
@@ -533,6 +713,16 @@ export const taskApi = {
 			silent: true,
 		}),
 
+	plan: (taskId: string, body: { context?: TaskContext | null } = {}) =>
+		client.post<TaskPlanningResponse>(`/tasks/${taskId}/planning`, body, undefined, {
+			timeoutMs: 120_000,
+			silent: true,
+		}),
+	confirmPlan: (taskId: string, body: TaskPlanningConfirmRequest) =>
+		client.post<TaskPlanningConfirmResponse>(
+			`/tasks/${taskId}/planning/confirm`,
+			body,
+		),
 	listTools: (context: TaskContext = {}) =>
 		client.get<TaskToolSchema[]>(
 			'/tasks/tools',
@@ -587,6 +777,21 @@ export const taskApi = {
 	listRuns: (taskId: string) => client.get<TaskRunRecord[]>(`/tasks/${taskId}/runs`),
 
 	cancelRun: (runId: string) => client.post<TaskRunRecord>(`/tasks/runs/${runId}/cancel`),
+
+	pauseRun: (runId: string, body: TaskRunControlRequest) =>
+		client.post<TaskRunRecord>(`/tasks/runs/${runId}/pause`, body),
+
+	continueRun: (runId: string, body: TaskRunControlRequest) =>
+		client.post<TaskRunRecord>(`/tasks/runs/${runId}/continue`, body),
+
+	stepRun: (runId: string, body: TaskRunControlRequest) =>
+		client.post<TaskRunRecord>(`/tasks/runs/${runId}/step`, body),
+
+	stopRun: (runId: string, body: TaskRunControlRequest) =>
+		client.post<TaskRunRecord>(`/tasks/runs/${runId}/stop`, body),
+
+	retryNode: (runId: string, nodeId: string, body: TaskRunControlRequest) =>
+		client.post<TaskRunRecord>(`/tasks/runs/${runId}/nodes/${nodeId}/retry`, body),
 
 	retryRun: (runId: string) => client.post<TaskRunRecord>(`/tasks/runs/${runId}/retry`),
 

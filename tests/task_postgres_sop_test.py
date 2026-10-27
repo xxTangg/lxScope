@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase, skipUnless
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -25,15 +25,23 @@ from examples.agent_service.task._models import (
     AgentStepConfig,
     CreateTaskRequest,
     InputStepConfig,
+    NodeRunRecord,
     NodeRunStatus,
     RunStatus,
+    StepVerdict,
     TaskInputQuestion,
     TaskInputReply,
     TaskNode,
+    TaskEventDraft,
+    TaskGraph,
+    TaskGraphEdge,
+    TaskRunRecord,
+    TaskRunControlRequest,
     TaskRunRequest,
 )
 from examples.agent_service.task._postgres_store import PostgresTaskStore
 from examples.agent_service.task._service import TaskService
+from examples.agent_service.task._store import TaskStoreConflictError
 
 _TEST_URL = os.getenv("LXSCOPE_TASK_TEST_DATABASE_URL", "")
 _MIGRATIONS = (
@@ -67,6 +75,10 @@ class _Executor:
                 ensure_ascii=False,
             ),
         )
+
+    async def verify_node(self, *, node, output, context):
+        del node, output, context
+        return StepVerdict(passed=True, message="Deterministic test verifier passed.")
 
 
 @skipUnless(_TEST_URL, "Set a disposable PostgreSQL Task test URL")
@@ -140,11 +152,11 @@ class TaskPostgresSOPTest(IsolatedAsyncioTestCase):
             await service._active_runs[run.id]
             original = await store.get_run("owner", run.id)
             self.assertEqual(original.status, RunStatus.SUCCEEDED)
-            with self.assertRaises(IntegrityError) as failure:
+            with self.assertRaises(TaskStoreConflictError) as failure:
                 await store.update_run(
                     "owner", run.id, status=RunStatus.AWAITING_INPUT
                 )
-            self.assertIn("task_runs_status_check", str(failure.exception))
+            self.assertIn("transition_run", str(failure.exception))
 
         database.migration_dir = _MIGRATIONS
         await database.initialize()
@@ -165,7 +177,13 @@ class TaskPostgresSOPTest(IsolatedAsyncioTestCase):
             )
         self.assertEqual(versions.count("0004_task_awaiting_input.sql"), 1)
         for status in RunStatus:
-            await store.update_run("owner", run.id, status=status)
+            async with database.engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "UPDATE longxin_app.task_runs SET status=:status WHERE id=:run_id"
+                    ),
+                    {"status": status.value, "run_id": UUID(run.id)},
+                )
 
         node_id = uuid4()
         async with database.engine.begin() as connection:
@@ -282,3 +300,328 @@ class TaskPostgresSOPTest(IsolatedAsyncioTestCase):
                 self.assertEqual(
                     len({event.sequence for event in events}), len(events)
                 )
+
+    async def test_dag_cas_parallel_updates_claim_fencing_and_restart(self):
+        database = await self._database()
+        store = await self._store(database)
+        dag_service = TaskService(store)
+        self.services.append(dag_service)
+        task = await dag_service.create_task(
+            "dag-owner",
+            CreateTaskRequest(
+                goal="Synthetic atomic DAG store test",
+                nodes=[_agent("A"), _agent("B")],
+            ),
+        )
+        run = TaskRunRecord(
+            task_id=task.id,
+            user_id="dag-owner",
+            task_revision=task.revision,
+            nodes=task.nodes,
+            node_runs=[
+                NodeRunRecord(node_id=node.id, name=node.name, prompt=node.prompt, order=i)
+                for i, node in enumerate(task.nodes)
+            ],
+            status=RunStatus.RUNNING,
+            engine="dag",
+            graph=TaskGraph(
+                max_concurrency=2,
+                edges=[
+                    TaskGraphEdge(
+                        source_node_id=task.nodes[0].id,
+                        target_node_id=task.nodes[1].id,
+                    )
+                ],
+            ),
+        )
+        await store.save_run(run)
+
+        # Submit 100 concurrent callers against the same captured CAS version.
+        # Exactly one can commit that version; all others must be rejected.
+        initial = await store.get_run("dag-owner", run.id)
+        self.assertIsNotNone(initial)
+        ready = 0
+        start = asyncio.Event()
+
+        async def contend(index: int):
+            nonlocal ready
+            ready += 1
+            if ready == 100:
+                start.set()
+            await start.wait()
+            metadata = dict(initial.node_runs[0].metadata)
+            metadata[f"update-{index}"] = index
+            try:
+                return await store.transition_run(
+                    "dag-owner",
+                    run.id,
+                    expected_version=initial.run_version,
+                    node_patches={
+                        task.nodes[0].id: {"metadata": metadata}
+                    },
+                    attempt_events=[
+                        TaskEventDraft(
+                            type="node.updated",
+                            node_id=task.nodes[0].id,
+                            payload={"index": index},
+                        )
+                    ],
+                )
+            except TaskStoreConflictError:
+                return None
+
+        results = await asyncio.gather(
+            *(contend(index) for index in range(100)),
+            return_exceptions=True,
+        )
+        failures = [result for result in results if isinstance(result, BaseException)]
+        if failures:
+            raise failures[0]
+        winners = [result for result in results if result is not None]
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(sum(result is None for result in results), 99)
+        current = winners[0]
+
+        # Complete 100 durable state transitions in total using the version
+        # returned by each commit. The simultaneous wave above proves conflict
+        # behavior without spending the test on repeated stale retries.
+        winner_index = next(
+            index for index, result in enumerate(results) if result is not None
+        )
+        for index in range(100):
+            if index == winner_index:
+                continue
+            metadata = dict(current.node_runs[0].metadata)
+            metadata[f"update-{index}"] = index
+            current = await store.transition_run(
+                "dag-owner",
+                run.id,
+                expected_version=current.run_version,
+                node_patches={task.nodes[0].id: {"metadata": metadata}},
+                attempt_events=[
+                    TaskEventDraft(
+                        type="node.updated",
+                        node_id=task.nodes[0].id,
+                        payload={"index": index},
+                    )
+                ],
+            )
+        self.assertEqual(len(current.node_runs[0].metadata), 100)
+        self.assertEqual(current.run_version, 100)
+        self.assertEqual(current.event_sequence, 101)
+        events = await store.list_events("dag-owner", run.id)
+        self.assertEqual(
+            [event.sequence for event in events], list(range(1, 102))
+        )
+
+        # Force the event INSERT to fail after the snapshot UPDATE has run.
+        # The surrounding PostgreSQL transaction must roll both writes back.
+        def fail_event_insert(connection, cursor, statement, parameters, context, executemany):
+            del connection, cursor, parameters, context, executemany
+            if (
+                statement.lstrip().upper().startswith("INSERT")
+                and "longxin_app.task_events" in statement
+            ):
+                raise RuntimeError("injected task event write failure")
+
+        event.listen(database.engine.sync_engine, "before_cursor_execute", fail_event_insert)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "injected task event"):
+                await store.transition_run(
+                    "dag-owner",
+                    run.id,
+                    expected_version=current.run_version,
+                    run_patch={"control_mode": "paused"},
+                    audit_events=[TaskEventDraft(type="must.rollback")],
+                )
+        finally:
+            event.remove(
+                database.engine.sync_engine,
+                "before_cursor_execute",
+                fail_event_insert,
+            )
+        after_rollback = await store.get_run("dag-owner", run.id)
+        self.assertEqual(after_rollback.run_version, current.run_version)
+        self.assertEqual(after_rollback.control_mode, "continuous")
+        self.assertEqual(await store.list_events("dag-owner", run.id), events)
+
+        current = await store.get_run("dag-owner", run.id)
+        commanded = await store.transition_run(
+            "dag-owner",
+            run.id,
+            expected_version=current.run_version,
+            run_patch={"control_mode": "continuous"},
+            audit_events=[
+                TaskEventDraft(
+                    type="p2h.command.accepted",
+                    payload={"request_id": "p2h-idempotent-command"},
+                )
+            ],
+            command_id="p2h-command:p2h-idempotent-command",
+        )
+        duplicate = await store.transition_run(
+            "dag-owner",
+            run.id,
+            expected_version=current.run_version,
+            run_patch={"status": RunStatus.FAILED},
+            audit_events=[TaskEventDraft(type="duplicate.must.not.persist")],
+            command_id="p2h-command:p2h-idempotent-command",
+        )
+        self.assertEqual(duplicate, commanded)
+        events_after_command = await store.list_events("dag-owner", run.id)
+        self.assertEqual(len(events_after_command), 102)
+        self.assertEqual(commanded.event_sequence, len(events_after_command))
+
+        second_store = await self._store(database)
+
+        async def compete(worker_store, token):
+            try:
+                return await worker_store.claim_run(
+                    "dag-owner", run.id, owner_token=token
+                )
+            except TaskStoreConflictError:
+                return None
+
+        claims = await asyncio.gather(
+            compete(store, "worker-a"), compete(second_store, "worker-b")
+        )
+        winners = [claim for claim in claims if claim is not None]
+        self.assertEqual(len(winners), 1)
+        claimed = winners[0]
+        winning_token = claimed.owner_token
+        losing_token = "worker-b" if winning_token == "worker-a" else "worker-a"
+        self.assertEqual(claimed.fence_epoch, 1)
+        renewed = await store.claim_run(
+            "dag-owner", run.id, owner_token=winning_token, lease_seconds=30
+        )
+        self.assertEqual(renewed.fence_epoch, claimed.fence_epoch)
+        with self.assertRaises(TaskStoreConflictError):
+            await store.transition_run(
+                "dag-owner",
+                run.id,
+                expected_version=renewed.run_version,
+                run_patch={"control_mode": "paused"},
+                owner_token=losing_token,
+                expected_fence_epoch=claimed.fence_epoch,
+            )
+
+        terminal = await store.transition_run(
+            "dag-owner",
+            run.id,
+            expected_version=renewed.run_version,
+            run_patch={"status": RunStatus.SUCCEEDED},
+            audit_events=[TaskEventDraft(type="run.succeeded")],
+            owner_token=winning_token,
+            expected_fence_epoch=claimed.fence_epoch,
+            release_owner=True,
+        )
+        with self.assertRaisesRegex(TaskStoreConflictError, "terminal"):
+            await store.transition_run(
+                "dag-owner",
+                run.id,
+                expected_version=terminal.run_version,
+                run_patch={"status": RunStatus.FAILED},
+                owner_token=winning_token,
+                expected_fence_epoch=claimed.fence_epoch,
+            )
+
+        # Expiry assigns a new fencing epoch, and the former owner cannot write.
+        expiring_run = run.model_copy(
+            update={
+                "id": f"{run.id}-expiring",
+                "run_version": 0,
+                "event_sequence": 0,
+                "owner_token": None,
+                "lease_expires_at": None,
+                "fence_epoch": 0,
+                "processed_command_ids": [],
+                "status": RunStatus.RUNNING,
+            },
+            deep=True,
+        )
+        await store.save_run(expiring_run)
+        old_owner = await store.claim_run(
+            "dag-owner",
+            expiring_run.id,
+            owner_token="expiring-worker",
+            lease_seconds=2.0,
+        )
+        with self.assertRaises(TaskStoreConflictError):
+            await second_store.claim_run(
+                "dag-owner", expiring_run.id, owner_token="replacement-worker"
+            )
+        await asyncio.sleep(2.1)
+        new_owner = await second_store.claim_run(
+            "dag-owner", expiring_run.id, owner_token="replacement-worker"
+        )
+        self.assertEqual(new_owner.fence_epoch, old_owner.fence_epoch + 1)
+        with self.assertRaisesRegex(TaskStoreConflictError, "stale"):
+            await store.transition_run(
+                "dag-owner",
+                expiring_run.id,
+                expected_version=new_owner.run_version,
+                run_patch={"control_mode": "paused"},
+                owner_token="expiring-worker",
+                expected_fence_epoch=old_owner.fence_epoch,
+            )
+
+        restarted_store = PostgresTaskStore(database.engine)
+        restored = await restarted_store.get_run("dag-owner", run.id)
+        self.assertEqual(restored.status, RunStatus.SUCCEEDED)
+        self.assertEqual(len(restored.node_runs[0].metadata), 100)
+        restored_events = await restarted_store.list_events("dag-owner", run.id)
+        self.assertEqual(restored.event_sequence, len(restored_events))
+
+        # A fresh service instance can read a paused checkpoint and continue
+        # only the still-pending dependent node.
+        resume_run = TaskRunRecord(
+            task_id=task.id,
+            user_id="dag-owner",
+            task_revision=task.revision,
+            nodes=task.nodes,
+            node_runs=[
+                NodeRunRecord(
+                    node_id=task.nodes[0].id,
+                    name=task.nodes[0].name,
+                    prompt=task.nodes[0].prompt,
+                    order=0,
+                    status=NodeRunStatus.SUCCEEDED,
+                    output="A checkpoint",
+                ),
+                NodeRunRecord(
+                    node_id=task.nodes[1].id,
+                    name=task.nodes[1].name,
+                    prompt=task.nodes[1].prompt,
+                    order=1,
+                ),
+            ],
+            status=RunStatus.QUEUED,
+            control_mode="paused",
+            engine="dag",
+            graph=run.graph,
+        )
+        await store.save_run(resume_run)
+        resume_executor = _Executor()
+        resumed_service = TaskService(
+            restarted_store,
+            preview_executor=resume_executor,
+            enable_dag_scheduler=True,
+        )
+        self.services.append(resumed_service)
+        visible = await resumed_service.get_run("dag-owner", resume_run.id)
+        self.assertEqual(visible.control_mode, "paused")
+        continued = await resumed_service.continue_run(
+            "dag-owner",
+            resume_run.id,
+            TaskRunControlRequest(
+                request_id="postgres-restart-continue",
+                expected_run_version=visible.run_version,
+            ),
+        )
+        self.assertEqual(continued.id, resume_run.id)
+        await resumed_service._active_runs[resume_run.id]
+        finished = await restarted_store.get_run("dag-owner", resume_run.id)
+        self.assertEqual(finished.status, RunStatus.SUCCEEDED)
+        self.assertEqual(finished.node_runs[0].status, NodeRunStatus.SUCCEEDED)
+        self.assertEqual(finished.node_runs[1].status, NodeRunStatus.SUCCEEDED)
+        self.assertEqual(resume_executor.calls, [task.nodes[1].name])

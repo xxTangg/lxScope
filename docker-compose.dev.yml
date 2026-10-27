@@ -6,6 +6,7 @@ services:
       - .:/app
     environment:
       UVICORN_RELOAD: "true"
+      LXSCOPE_TASK_DAG_ENABLED: "${LXSCOPE_TASK_DAG_ENABLED:-false}"
       REDIS_HOST: redis
 
   web-ui:

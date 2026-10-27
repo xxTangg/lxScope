@@ -18,6 +18,7 @@ from examples.agent_service.task._models import (
     TaskNode,
     TaskRunRequest,
     TaskToolSchema,
+    StepVerdict,
     ToolStepConfig,
 )
 from examples.agent_service.task._service import TaskService
@@ -80,6 +81,9 @@ class _MockToolTaskExecutor(TaskExecutor):
             raise AssertionError(f"Unexpected step type: {node.type}")
 
         return StepExecutionResult(text=output)
+
+    async def verify_node(self, **_kwargs) -> StepVerdict:
+        return StepVerdict(passed=True, message="pipeline fixture accepted")
 
 
 class _HangingTaskPlanner:
@@ -271,7 +275,13 @@ class TestTaskMvpPipeline(IsolatedAsyncioTestCase):
         self.assertEqual(stored_task.last_run_status.value, "canceled")
         self.assertEqual(
             [event.type for event in await service.list_events("test-user", run.id)],
-            ["run.created", "run.started", "step.started", "run.canceled"],
+            [
+                "run.created",
+                "run.claimed",
+                "run.started",
+                "step.started",
+                "run.canceled",
+            ],
         )
 
     async def test_cancel_cannot_be_overwritten_by_an_executor_result(self) -> None:

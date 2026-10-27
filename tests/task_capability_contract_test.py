@@ -4,11 +4,13 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from agentscope.permission import (
     PermissionBehavior,
     PermissionContext,
+    PermissionDecision,
     PermissionRule,
 )
 from examples.agent_service.task._capability_contracts import (
@@ -20,6 +22,7 @@ from examples.agent_service.task._capability_contracts import (
 )
 from examples.agent_service.task._executor import StepExecutionResult
 from examples.agent_service.task._models import (
+    ExecutionContext,
     NodeRunRecord,
     NodeRunStatus,
     RunStatus,
@@ -40,8 +43,10 @@ from examples.agent_service.task._template_compiler import (
     TemplateCompileError,
 )
 from examples.agent_service.task._template_registry import TemplateRegistry
+from examples.agent_service.task._template_models import TaskTemplateDefinition
 from examples.agent_service.task._agentscope_executor import (
     AgentScopeTaskExecutor,
+    _mcp_read_only_hint,
     _format_execution_history,
 )
 
@@ -220,6 +225,9 @@ class _PreflightOnlyExecutor:
     def __init__(self, *, permission: str = "allowed") -> None:
         self.permission = permission
         self.read_only = True
+        self.read_only_hint: bool | None = None
+        self.is_mcp = False
+        self.tool_name = "fixture.read"
         self.discovery_error = False
         self.duplicate_registration = False
         self.tool_discovery_calls = 0
@@ -232,14 +240,16 @@ class _PreflightOnlyExecutor:
         if self.discovery_error:
             raise RuntimeError("fixture tool catalog unavailable")
         schema = TaskToolSchema(
-            name="fixture.read",
+            name=self.tool_name,
             input_schema={
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
                 "required": ["query"],
                 "additionalProperties": False,
             },
+            is_mcp=self.is_mcp,
             is_read_only=self.read_only,
+            read_only_hint=self.read_only_hint,
         )
         if self.duplicate_registration:
             return [schema, schema.model_copy(deep=True)]
@@ -262,7 +272,12 @@ class _PreflightOnlyExecutor:
         raise AssertionError("Preflight must never execute a Tool.")
 
 
-def _plain_tool_task(arguments: dict[str, Any]) -> TaskRecord:
+def _plain_tool_task(
+    arguments: dict[str, Any],
+    *,
+    tool_name: str = "fixture.read",
+    capability_key: str | None = None,
+) -> TaskRecord:
     return TaskRecord(
         user_id="capability-owner",
         title="Tool preflight fixture",
@@ -273,10 +288,11 @@ def _plain_tool_task(arguments: dict[str, Any]) -> TaskRecord:
                 name="Fixture read",
                 type=StepType.TOOL,
                 config=ToolStepConfig(
-                    tool_name="fixture.read",
+                    tool_name=tool_name,
                     arguments=arguments,
                 ),
                 order=0,
+                capability_key=capability_key,
             )
         ],
         source_context=TaskContext(
@@ -504,6 +520,303 @@ def test_preflight_blocks_side_effect_tool_without_executing_it() -> None:
     asyncio.run(scenario())
 
 
+AMAP_WEATHER_TOOL = "mcp__amap-maps__maps_weather"
+
+
+def test_mcp_read_only_metadata_parser_preserves_true_false_and_absent() -> None:
+    def tool_with_hint(hint: Any) -> Any:
+        annotations = (
+            SimpleNamespace()
+            if hint is None
+            else SimpleNamespace(readOnlyHint=hint)
+        )
+        return SimpleNamespace(
+            is_mcp=True,
+            _tool=SimpleNamespace(annotations=annotations),
+        )
+
+    assert _mcp_read_only_hint(tool_with_hint(True)) is True
+    assert _mcp_read_only_hint(tool_with_hint(False)) is False
+    assert _mcp_read_only_hint(tool_with_hint(None)) is None
+
+
+def test_preflight_allows_only_the_task_contracted_amap_weather_mcp() -> None:
+    async def scenario() -> None:
+        store = TaskStore()
+        executor = _PreflightOnlyExecutor()
+        executor.tool_name = AMAP_WEATHER_TOOL
+        executor.is_mcp = True
+        # Simulate an MCP descriptor with no readOnlyHint annotation.
+        executor.read_only = False
+        service = TaskService(store, agentscope_executor=executor)  # type: ignore[arg-type]
+        task = _plain_tool_task(
+            {"query": "上海"},
+            tool_name=AMAP_WEATHER_TOOL,
+        )
+        await store.save_task(task)
+
+        result = await service.preflight_task(
+            task.user_id,
+            task.id,
+            TaskPreflightRequest(input="fixture input"),
+        )
+
+        assert result is not None and result.ready is True
+        check = result.capability_checks[0]
+        assert check.tool_available is True
+        assert check.interface_compatible is True
+        assert check.permission_status == "allowed"
+        assert check.external_side_effect is False
+        assert check.status == "available"
+        assert executor.permission_calls == [(AMAP_WEATHER_TOOL, True)]
+        assert executor.execution_calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_preflight_keeps_unknown_mcp_conservatively_blocked() -> None:
+    async def scenario() -> None:
+        store = TaskStore()
+        executor = _PreflightOnlyExecutor()
+        executor.tool_name = "mcp__custom-maps__custom_weather"
+        executor.is_mcp = True
+        executor.read_only = False
+        service = TaskService(store, agentscope_executor=executor)  # type: ignore[arg-type]
+        task = _plain_tool_task(
+            {"query": "上海"},
+            tool_name=executor.tool_name,
+        )
+        await store.save_task(task)
+
+        result = await service.preflight_task(
+            task.user_id,
+            task.id,
+            TaskPreflightRequest(input="fixture input"),
+        )
+
+        assert result is not None and result.ready is False
+        check = result.capability_checks[0]
+        assert check.external_side_effect is True
+        assert check.status == "unsupported"
+        assert "未被只读" in check.message
+        assert executor.execution_calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_preflight_does_not_override_explicit_false_read_only_hint() -> None:
+    async def scenario() -> None:
+        store = TaskStore()
+        executor = _PreflightOnlyExecutor()
+        executor.tool_name = AMAP_WEATHER_TOOL
+        executor.is_mcp = True
+        executor.read_only = False
+        executor.read_only_hint = False
+        service = TaskService(store, agentscope_executor=executor)  # type: ignore[arg-type]
+        task = _plain_tool_task(
+            {"query": "上海"},
+            tool_name=AMAP_WEATHER_TOOL,
+        )
+        await store.save_task(task)
+
+        result = await service.preflight_task(
+            task.user_id,
+            task.id,
+            TaskPreflightRequest(input="fixture input"),
+        )
+
+        assert result is not None and result.ready is False
+        check = result.capability_checks[0]
+        assert check.external_side_effect is True
+        assert check.status == "unsupported"
+        assert "未被只读" in check.message
+        assert executor.execution_calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_preflight_keeps_write_capability_blocked_even_with_mcp_metadata() -> None:
+    async def scenario() -> None:
+        store = TaskStore()
+        executor = _PreflightOnlyExecutor()
+        executor.tool_name = "mcp__notify__send_message"
+        executor.is_mcp = True
+        executor.read_only = True
+        service = TaskService(store, agentscope_executor=executor)  # type: ignore[arg-type]
+        task = _plain_tool_task(
+            {"query": "message"},
+            tool_name=executor.tool_name,
+            capability_key="notification.send",
+        )
+        await store.save_task(task)
+
+        result = await service.preflight_task(
+            task.user_id,
+            task.id,
+            TaskPreflightRequest(input="fixture input"),
+        )
+
+        assert result is not None and result.ready is False
+        check = result.capability_checks[0]
+        assert check.external_side_effect is True
+        assert check.status == "unsupported"
+        assert executor.execution_calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_template_compiler_accepts_only_contracted_weather_mcp_without_hint() -> None:
+    template = TaskTemplateDefinition.model_validate(
+        {
+            "schema_version": 1,
+            "template_id": "s99_weather_lookup",
+            "template_version": "1.0.0",
+            "title": "Weather lookup fixture",
+            "description": "Task compiler safety contract fixture.",
+            "category": "test",
+            "required_capabilities": [AMAP_WEATHER_TOOL],
+            "input_schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Weather location.",
+                    }
+                },
+                "additionalProperties": False,
+            },
+            "output_requirement": "Return the tool result.",
+            "steps": [
+                {
+                    "step_key": "weather",
+                    "title": "Get weather",
+                    "kind": "tool",
+                    "required": True,
+                    "editable": False,
+                    "capability_key": AMAP_WEATHER_TOOL,
+                    "config": {
+                        "type": "tool",
+                        "arguments": {"query": "Shanghai"},
+                    },
+                    "output_requirement": "Return weather data.",
+                    "failure_handling": "Stop if the lookup fails.",
+                    "sensitive_information": "No sensitive data.",
+                }
+            ],
+        }
+    )
+
+    compiled = TaskTemplateCompiler().compile_nodes(
+        template,
+        [
+            TaskToolSchema(
+                name=AMAP_WEATHER_TOOL,
+                is_mcp=True,
+                is_read_only=False,
+                input_schema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            )
+        ],
+    )
+
+    assert compiled.nodes[0].config.tool_name == AMAP_WEATHER_TOOL
+
+    try:
+        TaskTemplateCompiler().compile_nodes(
+            template,
+            [
+                TaskToolSchema(
+                    name=AMAP_WEATHER_TOOL,
+                    is_mcp=True,
+                    is_read_only=False,
+                    read_only_hint=False,
+                    input_schema={
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                )
+            ],
+        )
+    except TemplateCompileError as error:
+        assert error.code == "TEMPLATE_CAPABILITY_UNSAFE"
+    else:  # pragma: no cover - fail with a focused diagnostic
+        raise AssertionError("An explicit non-read-only hint must be respected.")
+
+
+def test_template_compiler_rejects_unknown_mcp_without_read_only_metadata() -> None:
+    unknown_tool = "mcp__custom-maps__custom_weather"
+    template = TaskTemplateDefinition.model_validate(
+        {
+            "schema_version": 1,
+            "template_id": "s99_weather_lookup",
+            "template_version": "1.0.0",
+            "title": "Weather lookup fixture",
+            "description": "Task compiler safety contract fixture.",
+            "category": "test",
+            "required_capabilities": [unknown_tool],
+            "input_schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Weather location.",
+                    }
+                },
+                "additionalProperties": False,
+            },
+            "output_requirement": "Return the tool result.",
+            "steps": [
+                {
+                    "step_key": "weather",
+                    "title": "Get weather",
+                    "kind": "tool",
+                    "required": True,
+                    "editable": False,
+                    "capability_key": unknown_tool,
+                    "config": {
+                        "type": "tool",
+                        "arguments": {"query": "Shanghai"},
+                    },
+                    "output_requirement": "Return weather data.",
+                    "failure_handling": "Stop if the lookup fails.",
+                    "sensitive_information": "No sensitive data.",
+                }
+            ],
+        }
+    )
+
+    try:
+        TaskTemplateCompiler().compile_nodes(
+            template,
+            [
+                TaskToolSchema(
+                    name=unknown_tool,
+                    is_mcp=True,
+                    is_read_only=False,
+                    input_schema={
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                )
+            ],
+        )
+    except TemplateCompileError as error:
+        assert error.code == "TEMPLATE_CAPABILITY_UNSAFE"
+        assert error.blocked_capabilities == (unknown_tool,)
+    else:  # pragma: no cover - fail with a focused diagnostic
+        raise AssertionError("An unknown MCP tool must remain blocked.")
+
+
 class _PermissionTool:
     name = "fixture.read"
     is_read_only = True
@@ -519,6 +832,44 @@ class _PermissionTool:
 
     async def __call__(self, **_: Any) -> None:
         self.executions += 1
+
+
+class _RuntimeMCPTool(_PermissionTool):
+    is_mcp = True
+    is_read_only = False
+    is_external_tool = False
+    is_state_injected = False
+    input_schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.name = name
+
+    async def check_read_only(self, arguments: dict[str, Any]) -> bool:
+        del arguments
+        return False
+
+    async def check_permissions(self, *_: Any, **__: Any) -> PermissionDecision:
+        return PermissionDecision(
+            behavior=PermissionBehavior.ASK,
+            message="MCP use requires an explicit Task permission rule.",
+        )
+
+    async def generate_suggestions(
+        self,
+        tool_input: dict[str, Any],
+    ) -> list[PermissionRule]:
+        del tool_input
+        return []
+
+    async def __call__(self, **_: Any) -> str:
+        self.executions += 1
+        return "weather result"
 
 
 class _PermissionToolkit:
@@ -587,6 +938,125 @@ def test_agent_scope_preflight_uses_permission_engine_without_tool_call() -> Non
     asyncio.run(scenario())
 
 
+def test_runtime_mcp_weather_contract_calls_after_permission_recheck_only() -> None:
+    async def scenario() -> None:
+        tool = _RuntimeMCPTool(AMAP_WEATHER_TOOL)
+        allowed_context = PermissionContext(
+            allow_rules={
+                tool.name: [
+                    PermissionRule(
+                        tool_name=tool.name,
+                        rule_content="",
+                        behavior=PermissionBehavior.ALLOW,
+                        source="task-test",
+                    )
+                ]
+            }
+        )
+        executor = _PermissionProbeExecutor(tool, allowed_context)
+        node = TaskNode(
+            name="Get weather",
+            type=StepType.TOOL,
+            config=ToolStepConfig(
+                tool_name=tool.name,
+                arguments={"query": "Shanghai"},
+            ),
+            capability_key=tool.name,
+        )
+        context = ExecutionContext(
+            user_id="owner",
+            task_id="task-weather",
+            run_id="run-weather",
+            task_revision=1,
+        )
+
+        result = await executor.execute_node(
+            node=node,
+            previous_output="",
+            context=context,
+        )
+        assert result.text == '["weather result"]'
+        assert result.metadata["task_security_review_checks"][0]["status"] == (
+            "passed"
+        )
+        assert tool.executions == 1
+
+        denied_tool = _RuntimeMCPTool(AMAP_WEATHER_TOOL)
+        denied_executor = _PermissionProbeExecutor(
+            denied_tool,
+            PermissionContext(),
+        )
+        try:
+            await denied_executor.execute_node(
+                node=node,
+                previous_output="",
+                context=context,
+            )
+        except RuntimeError as error:
+            assert "Permission" in str(error)
+        else:  # pragma: no cover - fail with a focused diagnostic
+            raise AssertionError("Runtime permission denial must be enforced.")
+        assert denied_tool.executions == 0
+
+    asyncio.run(scenario())
+
+
+def test_runtime_unknown_or_write_mcp_cannot_be_called_even_if_allowed() -> None:
+    async def scenario() -> None:
+        context = ExecutionContext(
+            user_id="owner",
+            task_id="task-mcp",
+            run_id="run-mcp",
+            task_revision=1,
+        )
+        for tool_name, capability_key, read_only_metadata, hint in (
+            ("mcp__custom__unknown_tool", "mcp__custom__unknown_tool", False, None),
+            ("mcp__notify__send_message", "notification.send", True, None),
+            (AMAP_WEATHER_TOOL, AMAP_WEATHER_TOOL, False, False),
+        ):
+            tool = _RuntimeMCPTool(tool_name)
+            tool.is_read_only = read_only_metadata
+            if hint is not None:
+                tool._tool = SimpleNamespace(
+                    annotations=SimpleNamespace(readOnlyHint=hint)
+                )
+            permission_context = PermissionContext(
+                allow_rules={
+                    tool.name: [
+                        PermissionRule(
+                            tool_name=tool.name,
+                            rule_content="",
+                            behavior=PermissionBehavior.ALLOW,
+                            source="task-test",
+                        )
+                    ]
+                }
+            )
+            executor = _PermissionProbeExecutor(tool, permission_context)
+            node = TaskNode(
+                name="MCP operation",
+                type=StepType.TOOL,
+                config=ToolStepConfig(
+                    tool_name=tool.name,
+                    arguments={"query": "payload"},
+                ),
+                capability_key=capability_key,
+            )
+            try:
+                await executor.execute_node(
+                    node=node,
+                    previous_output="",
+                    context=context,
+                )
+            except RuntimeError as error:
+                assert "confirmed Task read-only contract" in str(error)
+            else:  # pragma: no cover - fail with a focused diagnostic
+                raise AssertionError(f"Unsafe MCP tool was not blocked: {tool_name}")
+            assert tool.executions == 0
+
+    asyncio.run(scenario())
+
+
 class _BadJsonToolExecutor(_PreflightOnlyExecutor):
     async def execute_node(
         self,
@@ -633,11 +1103,19 @@ def test_tool_schema_failure_is_persisted_and_stops_run() -> None:
         assert run is not None and run.status is RunStatus.FAILED
         node_run = run.node_runs[0]
         assert node_run.status is NodeRunStatus.FAILED
+        assert len(node_run.security_reviews) == 1
+        assert node_run.security_reviews[0]["source"] == "task_preflight"
+        assert node_run.security_reviews[0]["step_id"] == node_run.node_id
+        assert node_run.security_reviews[0]["permission_status"] == "allowed"
         assert node_run.result == {
             "tool": "fixture.read",
             "chunks": [{"text": "not-json"}],
         }
         assert node_run.metadata["output_schema_validation"]["status"] == "failed"
+        assert node_run.metadata["attempts"] == 1
+        assert node_run.metadata["verifications"][0]["verifier"] == (
+            "task-output-contract"
+        )
         assert "合法 JSON" in (node_run.error or "")
         assert run.final_output == ""
         assert executor.execution_calls == 1

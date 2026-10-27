@@ -1370,6 +1370,10 @@ class TaskProjectPlanningRagTest(IsolatedAsyncioTestCase):
         self.assertIn(_SOURCE_TEXT, document_text)
         self.assertIn("task-citations", document_text)
         self.assertIn("[C1]", run.final_output)
+        self.assertEqual(
+            run.node_runs[4].metadata["citation_protocol_status"],
+            "verified",
+        )
         self.assertTrue(
             run.node_runs[4].metadata["citation_verification"]["passed"]
         )
@@ -1934,13 +1938,21 @@ class TaskProjectPlanningRagTest(IsolatedAsyncioTestCase):
         run = await task_service.get_run(_OWNER, run.id)
 
         self.assertEqual(run.status, RunStatus.FAILED)
+        self.assertEqual(
+            run.node_runs[4].metadata["citation_protocol_status"],
+            "verified",
+        )
         self.assertTrue(
             run.node_runs[4].metadata["citation_verification"]["passed"]
         )
         self.assertFalse(
             run.node_runs[-1].metadata["evidence_ledger"]["passed"]
         )
-        self.assertEqual(run.node_runs[-1].metadata["attempts"], 1)
+        self.assertEqual(
+            run.node_runs[-1].metadata["attempts"],
+            1,
+            f"Run error={run.error}; final node error={run.node_runs[-1].error}",
+        )
         self.assertEqual(
             run.node_runs[-1].metadata["authoritative_output_status"][
                 "error_code"

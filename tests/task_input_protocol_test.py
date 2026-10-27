@@ -29,6 +29,7 @@ from examples.agent_service.task._models import (
     TaskPlanDraft,
     TaskPlanNode,
     TaskRunRequest,
+    StepVerdict,
     ToolStepConfig,
 )
 from examples.agent_service.task._plan_validation import validate_task_plan
@@ -59,11 +60,16 @@ def _context() -> ExecutionContext:
 class TaskInputModelTest(TestCase):
     def test_outcome_cannot_confuse_a_question_with_completion(self) -> None:
         for payload in (
-            {"status": "completed", "output": ""},
+            {"status": "succeeded", "output": ""},
             {"status": "needs_input", "questions": []},
             {
-                "status": "completed",
+                "status": "succeeded",
                 "output": "done",
+                "questions": [{"key": "date", "label": "日期？"}],
+            },
+            {
+                "status": "failed",
+                "reason": "实际执行失败",
                 "questions": [{"key": "date", "label": "日期？"}],
             },
         ):
@@ -182,7 +188,22 @@ class TaskAgentProtocolTest(IsolatedAsyncioTestCase):
                 node=node,
                 previous_output="",
                 context=_context().model_copy(
-                    update={"knowledge_context": "资料中的 {{unknown}} 是原文"}
+                    update={
+                        "knowledge_context": "资料中的 {{unknown}} 是原文",
+                        "information_contract": {
+                            "requirements": [
+                                {
+                                    "key": "date",
+                                    "label": "出差日期",
+                                    "classification": "required",
+                                    "reason": "筛选车次需要确定日期。",
+                                    "condition": None,
+                                    "condition_state": "active",
+                                    "source_path": "test.contract.date",
+                                }
+                            ]
+                        },
+                    }
                 ),
             )
         self.assertEqual(result.status, "needs_input")
@@ -206,6 +227,10 @@ class _Executor:
         del kwargs
         self.calls += 1
         return StepExecutionResult(text="真实交付")
+
+    async def verify_node(self, **kwargs) -> StepVerdict:
+        del kwargs
+        return StepVerdict(passed=True, message="input-flow fixture accepted")
 
 
 class TaskInputAPITest(IsolatedAsyncioTestCase):

@@ -20,6 +20,7 @@ from examples.agent_service.task._models import (
     NodeRunRecord,
     NodeRunStatus,
     RunStatus,
+    StepVerdict,
     StepType,
     TaskNode,
     TaskRunRecord,
@@ -330,6 +331,9 @@ class _S02RetryExecutor:
         self.feedback.append(context.verification_feedback)
         self.prompts.append(node.prompt)
         return StepExecutionResult(text=self.outputs.pop(0))
+
+    async def verify_node(self, **_kwargs):
+        return StepVerdict(passed=True, message="content-repair fixture accepted")
 
 
 class TaskS02ContentRepairSOPTest(IsolatedAsyncioTestCase):
