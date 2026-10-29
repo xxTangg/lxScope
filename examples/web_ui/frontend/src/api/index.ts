@@ -14,7 +14,12 @@ export { knowledgeBaseApi } from './knowledgeBase';
 export { channelApi } from './channel';
 export { healthApi } from './health';
 export { authApi } from './auth';
-export type { AuthUser, LoginResponse } from './auth';
+export type {
+	AuthUser,
+	LoginCaptchaChallenge,
+	LoginCaptchaSubmission,
+	LoginResponse,
+} from './auth';
 export { adminApi } from './admin';
 export * from './admin';
 export { publishedApi } from './published';

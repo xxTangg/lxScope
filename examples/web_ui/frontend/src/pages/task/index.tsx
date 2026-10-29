@@ -273,8 +273,31 @@ function getCapabilityFailureReason(checks: TaskCapabilityCheck[]): string {
 
 function getShortPreflightIssueReason(message: string): string {
 	const normalized = message.toLowerCase();
-	if (normalized.includes('permission') || normalized.includes('权限') || normalized.includes('授权')) {
+	if (
+		normalized.includes('当前实例未获授权') ||
+		normalized.includes('版本化场景 dag 仅允许') ||
+		normalized.includes('dag execution')
+	) {
+		return '此来源模板 DAG 未通过服务端执行授权。';
+	}
+	if (
+		normalized.includes('permission denied') ||
+		normalized.includes('permission_denied') ||
+		normalized.includes('forbidden') ||
+		normalized.includes('无权') ||
+		normalized.includes('缺少权限') ||
+		normalized.includes('没有权限') ||
+		normalized.includes('权限不足') ||
+		normalized.includes('权限被拒绝')
+	) {
 		return '当前用户或会话缺少所需权限。';
+	}
+	if (
+		normalized.includes('permission') ||
+		normalized.includes('权限') ||
+		normalized.includes('授权')
+	) {
+		return '服务端未确认运行所需权限或执行授权；请查看具体错误项。';
 	}
 	if (normalized.includes('unsupported') || normalized.includes('不支持')) {
 		return '当前环境不支持此能力。';

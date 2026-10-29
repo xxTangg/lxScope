@@ -2395,14 +2395,15 @@ class TaskService:
             task.template_step_bindings[step.step_key]
             for step in template.steps
         ]
-        ordered_nodes = sorted(task.nodes, key=lambda item: (item.order, item.id))
+        node_by_id = {node.id: node for node in task.nodes}
         if (
-            len(ordered_nodes) != len(template.steps)
-            or [node.id for node in ordered_nodes] != source_node_ids
+            len(task.nodes) != len(template.steps)
+            or len(set(source_node_ids)) != len(source_node_ids)
+            or set(node_by_id) != set(source_node_ids)
         ):
             return (
-                "场景 DAG 执行验收当前仅覆盖模板原节点的线性副本；"
-                "新增、删除或重排节点仍可保存，但不能启动 Run。"
+                "场景 DAG 执行验收仅覆盖来源模板原节点；"
+                "新增或删除节点仍可保存，但不能启动 Run。"
             )
 
         try:
@@ -2414,11 +2415,8 @@ class TaskService:
         except Exception:  # noqa: BLE001 — unknown source compilation fails closed
             return "冻结来源模板无法重新编译为规范节点，已拒绝场景 DAG 执行。"
 
-        for step, node, canonical in zip(
-            template.steps,
-            ordered_nodes,
-            canonical_nodes,
-        ):
+        for step, canonical in zip(template.steps, canonical_nodes):
+            node = node_by_id[task.template_step_bindings[step.step_key]]
             if node.type.value != step.kind:
                 return f"来源步骤 {step.step_key} 的节点类型与冻结模板不一致。"
             if node.capability_key != step.capability_key:
@@ -2441,6 +2439,10 @@ class TaskService:
             expected_node = canonical.model_dump(mode="json")
             actual_node.pop("id", None)
             expected_node.pop("id", None)
+            # DAG edges determine execution order. Card order is only editor
+            # metadata and does not change the frozen node contract.
+            actual_node.pop("order", None)
+            expected_node.pop("order", None)
             if actual_node != expected_node:
                 return (
                     f"来源步骤 {step.step_key} 的冻结节点配置已改变，"
@@ -2486,6 +2488,42 @@ class TaskService:
         if graph.max_concurrency != 1:
             return "并发度为 1 是版本化线性兼容图的执行前提。"
         return None
+
+    def _normalize_scenario_run_node_order(
+        self,
+        task: TaskRecord,
+        nodes: list[TaskNode],
+    ) -> list[TaskNode]:
+        """Order only the immutable Run snapshot by source template steps.
+
+        DAG editors may reorder cards, but existing scenario result adapters
+        consume source-step order. Normalize the Run snapshot without changing
+        the saved Task definition or its graph edges.
+        """
+
+        if (
+            task.graph is None
+            or task.workflow_mode is not TaskWorkflowMode.CUSTOM_FLOW
+        ):
+            return nodes
+        template = self._template_validator.template_for_task(task)
+        if template is None:
+            return nodes
+        node_by_id = {node.id: node for node in nodes}
+        expected_keys = {step.step_key for step in template.steps}
+        if (
+            set(task.template_step_bindings) != expected_keys
+            or set(node_by_id) != set(task.template_step_bindings.values())
+            or len(node_by_id) != len(template.steps)
+        ):
+            # Preflight will report malformed provenance; never invent a map.
+            return nodes
+        return [
+            node_by_id[task.template_step_bindings[step.step_key]].model_copy(
+                update={"order": index},
+            )
+            for index, step in enumerate(template.steps)
+        ]
 
     @staticmethod
     def _is_s01_parallel_pilot_graph(
@@ -2557,15 +2595,48 @@ class TaskService:
             and actual_bindings == expected_bindings
         )
 
-    @staticmethod
-    def _is_linear_source_template_run(run: TaskRunRecord) -> bool:
+    def _template_ordered_run_nodes(
+        self,
+        run: TaskRunRecord,
+    ) -> list[TaskNode]:
+        """Resolve a Run's node order from frozen step bindings when present."""
+
+        node_by_id = {node.id: node for node in run.nodes}
+        template = self._template_validator.template_for_source(
+            run.source_template_id,
+            run.source_template_version,
+        )
+        if template is not None and run.template_step_bindings:
+            step_keys = [step.step_key for step in template.steps]
+            bindings = run.template_step_bindings
+            if (
+                set(bindings) == set(step_keys)
+                and len(set(bindings.values())) == len(bindings)
+                and set(bindings.values()) == set(node_by_id)
+            ):
+                return [node_by_id[bindings[key]] for key in step_keys]
+            raise TaskWorkflowConflictError(
+                "Task Run 的来源步骤绑定与节点快照不一致。"
+            )
+
+        # Backward compatibility for Runs persisted before step bindings were
+        # captured in the Run snapshot.
+        bound_ids = list(run.template_step_bindings.values())
+        if (
+            bound_ids
+            and len(bound_ids) == len(run.nodes)
+            and len(set(bound_ids)) == len(bound_ids)
+            and set(bound_ids) == set(node_by_id)
+        ):
+            return [node_by_id[node_id] for node_id in bound_ids]
+        return sorted(run.nodes, key=lambda item: (item.order, item.id))
+
+    def _is_linear_source_template_run(self, run: TaskRunRecord) -> bool:
         """Return whether a frozen source Run has the SOP handoff shape."""
 
         if run.source_template_id is None or run.graph is None:
             return False
-        ordered_ids = [
-            node.id for node in sorted(run.nodes, key=lambda item: item.order)
-        ]
+        ordered_ids = [node.id for node in self._template_ordered_run_nodes(run)]
         expected_edges = {
             (left, right) for left, right in zip(ordered_ids, ordered_ids[1:])
         }
@@ -3249,12 +3320,19 @@ class TaskService:
         """Check an artifact capability against real config and I/O adapters."""
 
         configured = [node for node in nodes if node.artifact is not None]
+        artifact_is_terminal = bool(
+            configured
+            and (
+                configured[0].id in terminal_node_ids(task.graph, nodes)
+                if task.graph is not None
+                else nodes and configured[0] is nodes[-1]
+            )
+        )
         artifact_node = (
             configured[0]
             if len(configured) == 1
-            and nodes
-            and configured[0] is nodes[-1]
-            and nodes[-1].type is not StepType.INPUT
+            and artifact_is_terminal
+            and configured[0].type is not StepType.INPUT
             else None
         )
         base = {
@@ -3586,6 +3664,7 @@ class TaskService:
             task.nodes,
             tool_schemas,
         )
+        run_nodes = self._normalize_scenario_run_node_order(task, run_nodes)
         run_id = uuid4().hex
         security_reviews_by_node: dict[str, list[dict[str, Any]]] = {}
         preflight_checked_at = _utc_now().isoformat()
@@ -3622,6 +3701,7 @@ class TaskService:
             source_template_version=task.source_template_version,
             source_task_id=task.source_task_id,
             source_task_revision=task.source_task_revision,
+            template_step_bindings=dict(task.template_step_bindings),
             planning_id=(
                 task.planning_confirmed_id
                 if task.planning_decision is not None
@@ -5881,7 +5961,7 @@ class TaskService:
 
         if run.graph is None:
             return run.input
-        ordered_nodes = sorted(run.nodes, key=lambda item: (item.order, item.id))
+        ordered_nodes = self._template_ordered_run_nodes(run)
         if self._is_s01_parallel_pilot_graph(
             (run.source_template_id, run.source_template_version),
             [item.id for item in ordered_nodes],
@@ -5953,12 +6033,25 @@ class TaskService:
             else {"project_brief", "industry", "scope"}
         )
         ordered_nodes = sorted(run.nodes, key=lambda item: (item.order, item.id))
-        if len(ordered_nodes) != 7 or ordered_nodes[0].type is not StepType.INPUT:
+        input_node_id = run.template_step_bindings.get("collect_project_input")
+        input_node = (
+            next(
+                (item for item in run.nodes if item.id == input_node_id),
+                None,
+            )
+            if run.template_step_bindings
+            else (ordered_nodes[0] if ordered_nodes else None)
+        )
+        if (
+            len(run.nodes) != 7
+            or input_node is None
+            or input_node.type is not StepType.INPUT
+        ):
             raise TaskGraphValidationError(
                 f"graph.input_bindings.{node.id}",
                 "S01 DAG 的冻结项目输入步骤无法定位。",
             )
-        input_node_id = ordered_nodes[0].id
+        input_node_id = input_node.id
         input_record = next(
             (item for item in current.node_runs if item.node_id == input_node_id),
             None,
@@ -6027,8 +6120,8 @@ class TaskService:
 
         This adapter does not implement business checks. It verifies the
         existing TaskSOPStep gate audit persisted for every frozen node, then
-        reuses the SOP S02 delivery projection. Only exact, explicitly
-        test-authorized linear source graphs can reach this method today.
+        reuses the SOP S02 delivery projection. Only exact, server-authorized
+        source graph profiles can reach this method.
         """
 
         if run.source_template_id is None:
@@ -6041,7 +6134,27 @@ class TaskService:
             raise TaskWorkflowConflictError(
                 "冻结 DAG Run 的业务模板版本无法定位，拒绝完成交付。"
             )
-        ordered_nodes = sorted(run.nodes, key=lambda item: item.order)
+        step_keys = [step.step_key for step in template.steps]
+        step_bindings = dict(run.template_step_bindings)
+        node_by_id = {node.id: node for node in run.nodes}
+        if step_bindings:
+            if (
+                set(step_bindings) != set(step_keys)
+                or len(set(step_bindings.values())) != len(step_bindings)
+                or set(step_bindings.values()) != set(node_by_id)
+            ):
+                raise TaskWorkflowConflictError(
+                    "冻结 DAG Run 的来源步骤绑定与节点快照不一致，拒绝完成交付。"
+                )
+            ordered_nodes = [node_by_id[step_bindings[key]] for key in step_keys]
+        else:
+            # Backward compatibility for Runs created before bindings were
+            # included in the Run snapshot.
+            ordered_nodes = sorted(run.nodes, key=lambda item: item.order)
+            step_bindings = {
+                step.step_key: node.id
+                for step, node in zip(template.steps, ordered_nodes)
+            }
         if len(ordered_nodes) != len(template.steps) or not ordered_nodes:
             raise TaskWorkflowConflictError(
                 "冻结 DAG Run 与业务模板节点数量不一致，拒绝完成交付。"
@@ -6058,10 +6171,7 @@ class TaskService:
             source_template_version=run.source_template_version,
             source_task_id=run.source_task_id,
             source_task_revision=run.source_task_revision,
-            template_step_bindings={
-                step.step_key: node.id
-                for step, node in zip(template.steps, ordered_nodes)
-            },
+            template_step_bindings=step_bindings,
         )
         blocker = self._scenario_dag_execution_blocker(
             synthetic_task,
@@ -8018,7 +8128,7 @@ class TaskService:
                 "冻结 TaskRun 的模板版本无法定位，已拒绝执行以防绕过原输出契约。"
             )
 
-        ordered_nodes = sorted(run.nodes, key=lambda item: item.order)
+        ordered_nodes = self._template_ordered_run_nodes(run)
         contract_steps = [
             step
             for step in template.steps
@@ -8030,13 +8140,7 @@ class TaskService:
             raise TaskWorkflowConflictError(
                 "冻结 TaskRun 节点数量与来源模板不一致，无法确定性恢复输出契约。"
             )
-        for index, (step, node) in enumerate(
-            zip(template.steps, ordered_nodes)
-        ):
-            if node.order != index:
-                raise TaskWorkflowConflictError(
-                    "冻结 TaskRun 节点顺序与来源模板不一致，无法验证输出契约。"
-                )
+        for step, node in zip(template.steps, ordered_nodes):
             expected_contract = step.output_contract
             expected_schema = step.output_schema or (
                 expected_contract.json_schema

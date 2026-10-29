@@ -680,6 +680,59 @@ def _apply_sign_in_experience(
         )
 
 
+def _apply_login_captcha(client: LogtoManagementClient) -> None:
+    """Enable Logto's hosted CAPTCHA using its supported Management API."""
+
+    raw_enabled = os.getenv("LXSCOPE_LOGTO_CAPTCHA_ENABLED", "false").strip().lower()
+    if raw_enabled in {"", "0", "false", "no", "off"}:
+        return
+    if raw_enabled not in {"1", "true", "yes", "on"}:
+        raise BootstrapError("LXSCOPE_LOGTO_CAPTCHA_ENABLED must be set to true or false")
+
+    provider = os.getenv("LOGTO_CAPTCHA_PROVIDER", "Turnstile").strip()
+    if provider != "Turnstile":
+        raise BootstrapError("LOGTO_CAPTCHA_PROVIDER currently supports Turnstile only")
+    site_key = os.getenv("LOGTO_CAPTCHA_SITE_KEY", "").strip()
+    secret_key = os.getenv("LOGTO_CAPTCHA_SECRET_KEY", "").strip()
+    missing = [
+        name
+        for name, value in (
+            ("LOGTO_CAPTCHA_SITE_KEY", site_key),
+            ("LOGTO_CAPTCHA_SECRET_KEY", secret_key),
+        )
+        if not value
+    ]
+    if missing:
+        raise BootstrapError(
+            "Logto CAPTCHA is enabled but required environment variable(s) are missing: "
+            + ", ".join(missing),
+        )
+
+    try:
+        client.request(
+            "PUT",
+            "/captcha-provider",
+            payload={
+                "config": {
+                    "type": "Turnstile",
+                    "siteKey": site_key,
+                    "secretKey": secret_key,
+                },
+            },
+        )
+        client.request(
+            "PATCH",
+            "/sign-in-exp",
+            payload={"captchaPolicy": {"enabled": True}},
+        )
+    except ManagementApiError as exc:
+        # Provider credentials are sensitive; never include the response body
+        # or submitted configuration in the bootstrap error.
+        raise BootstrapError(
+            f"Logto CAPTCHA configuration failed (HTTP {exc.status}).",
+        ) from None
+
+
 def bootstrap(
     config_path: Path = DEFAULT_CONFIG_PATH,
     *,
@@ -793,6 +846,7 @@ def bootstrap(
 
     if sign_in_experience is not None:
         _apply_sign_in_experience(client, sign_in_experience)
+    _apply_login_captcha(client)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

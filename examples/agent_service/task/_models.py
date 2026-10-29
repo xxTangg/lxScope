@@ -908,6 +908,9 @@ class TaskRunRecord(BaseModel):
     )
     source_task_id: str | None = Field(default=None, max_length=80)
     source_task_revision: int | None = Field(default=None, ge=1)
+    # Keep the immutable source-step to node mapping with the Run snapshot.
+    # Older persisted Runs remain readable with an empty mapping.
+    template_step_bindings: dict[str, str] = Field(default_factory=dict)
     planning_id: str | None = Field(default=None, max_length=80)
     planning_version: int | None = Field(default=None, ge=1)
     planning_snapshot: dict[str, Any] | None = None

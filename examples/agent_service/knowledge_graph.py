@@ -253,7 +253,10 @@ class KnowledgeBaseGraphService:
         settings = await self.store.settings(user, kb)
         if not settings.get("enabled"): raise HTTPException(status_code=409, detail="请先启用知识图谱。")
         extractor = self._extractor()
-        if extractor is None: return {"status": "disabled", "error": "未配置关系抽取模型。"}
+        if extractor is None:
+            error = "未配置知识图谱抽取模型，请设置 DEEPSEEK_API_KEY 后重试。"
+            await self.store.set_status(user, kb, "error", error)
+            return {"status": "error", "error": error}
         lock = self._locks.setdefault(kb, asyncio.Lock())
         async with lock:
             documents, _ = await self.kb.list_documents(user, kb, page=1, page_size=1000)

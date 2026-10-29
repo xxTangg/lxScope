@@ -232,6 +232,16 @@ export function KnowledgeGraphPanel({ knowledgeBaseId, editable = false }: Props
 						<Loader2 className="size-4 animate-spin" />
 						{t('knowledge.graph.loading')}
 					</div>
+				) : graph?.status === 'error' && graph.nodes.length === 0 ? (
+					<div role="alert" className="flex items-start justify-center gap-2 py-16 text-sm text-destructive">
+						<AlertCircle className="mt-0.5 size-4 shrink-0" />
+						<div className="max-w-2xl text-left">
+							<p className="font-medium">{t('knowledge.graph.error')}</p>
+							<p className="mt-1 break-words text-muted-foreground">
+								{graph.error || t('knowledge.graph.errorDetailsFallback')}
+							</p>
+						</div>
+					</div>
 				) : !graph || graph.status === 'empty' || graph.nodes.length === 0 ? (
 					<div className="py-16 text-center text-sm text-muted-foreground">
 						{graph?.status === 'building'

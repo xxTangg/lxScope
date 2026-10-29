@@ -16,8 +16,10 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
+
+from login_captcha import LoginCaptchaError, LoginCaptchaService
 
 _DEFAULT_ISSUER = "agentscope-web-ui"
 _DEFAULT_AUDIENCE = "agentscope-api"
@@ -30,6 +32,8 @@ class LoginRequest(BaseModel):
 
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=1024)
+    captcha_challenge_id: str | None = Field(default=None, alias="captchaChallengeId")
+    captcha_text: str | None = Field(default=None, alias="captchaText", max_length=16)
 
 
 class RegisterRequest(BaseModel):
@@ -37,6 +41,17 @@ class RegisterRequest(BaseModel):
 
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=6, max_length=1024)
+    captcha_challenge_id: str | None = Field(default=None, alias="captchaChallengeId")
+    captcha_text: str | None = Field(default=None, alias="captchaText", max_length=16)
+
+
+class LoginCaptchaResponse(BaseModel):
+    """Public CAPTCHA image challenge, without its answer."""
+
+    enabled: bool
+    challenge_id: str | None = Field(default=None, alias="challengeId")
+    image_data_url: str | None = Field(default=None, alias="imageDataUrl")
+    expires_in: int | None = Field(default=None, alias="expiresIn")
 
 
 class AuthUser(BaseModel):
@@ -143,6 +158,7 @@ class JWTAuthService:
         issuer: str = _DEFAULT_ISSUER,
         audience: str = _DEFAULT_AUDIENCE,
         token_minutes: int = _DEFAULT_TOKEN_MINUTES,
+        captcha_enabled: bool = False,
     ) -> None:
         if not users:
             raise ValueError("At least one authentication account is required.")
@@ -187,6 +203,7 @@ class JWTAuthService:
         self._issuer = issuer
         self._audience = audience
         self._token_lifetime = timedelta(minutes=token_minutes)
+        self._captcha = LoginCaptchaService(storage, secret) if captcha_enabled else None
         self.router = self._build_router()
 
     @staticmethod
@@ -722,12 +739,59 @@ class JWTAuthService:
     def _build_router(self) -> APIRouter:
         router = APIRouter(prefix="/auth", tags=["auth"])
 
+        def captcha_failure(error: LoginCaptchaError) -> HTTPException:
+            messages = {
+                "captcha_required": "A CAPTCHA is required.",
+                "captcha_invalid": "The CAPTCHA is incorrect or invalid.",
+                "captcha_expired": "The CAPTCHA expired. Request a new one.",
+                "captcha_used": "The CAPTCHA was already used. Request a new one.",
+                "captcha_rate_limited": "Too many CAPTCHA requests. Try again later.",
+                "captcha_unavailable": "CAPTCHA verification is temporarily unavailable.",
+            }
+            return HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": messages[error.code]},
+            )
+
+        async def verify_login_captcha(
+            challenge_id: str | None,
+            captcha_text: str | None,
+            request: Request,
+        ) -> None:
+            if self._captcha is None:
+                return
+            client_ip = request.client.host if request.client is not None else "unknown"
+            try:
+                await self._captcha.verify(challenge_id, captcha_text, client_ip)
+            except LoginCaptchaError as exc:
+                raise captcha_failure(exc) from exc
+
+        @router.get("/captcha", response_model=LoginCaptchaResponse)
+        async def get_login_captcha(
+            request: Request,
+            response: Response,
+        ) -> LoginCaptchaResponse:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            if self._captcha is None:
+                return LoginCaptchaResponse(enabled=False)
+            client_ip = request.client.host if request.client is not None else "unknown"
+            try:
+                challenge = await self._captcha.issue(client_ip)
+            except LoginCaptchaError as exc:
+                raise captcha_failure(exc) from exc
+            return LoginCaptchaResponse(**challenge)
+
         @router.get("/health", status_code=status.HTTP_204_NO_CONTENT)
         async def auth_health() -> Response:
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         @router.post("/login", response_model=LoginResponse)
-        async def login(body: LoginRequest) -> LoginResponse:
+        async def login(body: LoginRequest, request: Request) -> LoginResponse:
+            await verify_login_captcha(
+                body.captcha_challenge_id,
+                body.captcha_text,
+                request,
+            )
             user = await self.authenticate(body.username, body.password)
             token, expires_in = self.issue_access_token(user)
             return self._login_response(user, token, expires_in)
@@ -737,7 +801,12 @@ class JWTAuthService:
             response_model=LoginResponse,
             status_code=status.HTTP_201_CREATED,
         )
-        async def register(body: RegisterRequest) -> LoginResponse:
+        async def register(body: RegisterRequest, request: Request) -> LoginResponse:
+            await verify_login_captcha(
+                body.captcha_challenge_id,
+                body.captcha_text,
+                request,
+            )
             user = await self.register(body.username, body.password)
             token, expires_in = self.issue_access_token(user)
             return self._login_response(user, token, expires_in)
@@ -801,6 +870,18 @@ def _parse_users(raw: str) -> dict[str, tuple[str, str, str]]:
     return users
 
 
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be set to true or false.")
+
+
 def load_auth_from_env(
     *,
     storage: Any | None = None,
@@ -842,6 +923,7 @@ def load_auth_from_env(
             "change-me-in-production-use-32-bytes",
         ),
         storage=storage,
+        captcha_enabled=_env_bool("LXSCOPE_LOGIN_CAPTCHA_ENABLED", default=True),
         on_registered=on_registered,
         token_minutes=int(
             os.getenv("AGENTSCOPE_JWT_EXPIRE_MINUTES", str(_DEFAULT_TOKEN_MINUTES)),

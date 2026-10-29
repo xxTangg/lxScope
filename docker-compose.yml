@@ -132,6 +132,10 @@ services:
       AGENTSCOPE_JWT_SECRET: ${AGENTSCOPE_JWT_SECRET:-change-me-in-production-use-32-bytes}
       AGENTSCOPE_JWT_EXPIRE_MINUTES: ${AGENTSCOPE_JWT_EXPIRE_MINUTES:-1440}
       LXSCOPE_AUTH_PROVIDER: ${LXSCOPE_AUTH_PROVIDER:-logto}
+      # The local JWT login path requires a server-side CAPTCHA by default.
+      # Logto-hosted OIDC sign-in is protected separately through Logto's
+      # native bot-protection configuration.
+      LXSCOPE_LOGIN_CAPTCHA_ENABLED: ${LXSCOPE_LOGIN_CAPTCHA_ENABLED:-true}
       LOGTO_ENDPOINT: ${LOGTO_ENDPOINT:-}
       LOGTO_INTERNAL_ENDPOINT: ${LOGTO_INTERNAL_ENDPOINT:-}
       LOGTO_JWKS_URI: ${LOGTO_JWKS_URI:-}
@@ -148,7 +152,7 @@ services:
       LXSCOPE_GRAPH_MODEL: ${LXSCOPE_GRAPH_MODEL:-}
       SILICONFLOW_EMBEDDING_MODEL: ${SILICONFLOW_EMBEDDING_MODEL:-BAAI/bge-m3}
       SILICONFLOW_EMBEDDING_DIMENSIONS: ${SILICONFLOW_EMBEDDING_DIMENSIONS:-1024}
-      # DeepSeek 官方 OpenAI 兼容端点(与 SILICONFLOW_API_KEY 同一把 key)
+      # DeepSeek 官方 API 凭据需单独申请，不能复用 SILICONFLOW_API_KEY。
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
       DEEPSEEK_CHAT_MODEL: ${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash}

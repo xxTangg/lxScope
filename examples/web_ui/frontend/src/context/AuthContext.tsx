@@ -2,7 +2,7 @@ import { LogtoProvider, Prompt, UserScope, useHandleSignInCallback, useLogto, ty
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
-import { authApi, type AuthUser } from '@/api';
+import { authApi, type AuthUser, type LoginCaptchaSubmission } from '@/api';
 import {
 	AUTH_MEMBER_DISABLED_EVENT,
 	AUTH_UNAUTHORIZED_EVENT,
@@ -101,15 +101,23 @@ function LocalAuthProvider({ children }: { children: React.ReactNode }) {
 		};
 	}, [becomeAnonymous]);
 
-	const login = useCallback(async (username: string, password: string) => {
-		const currentUser = await authApi.login(username, password);
+	const login = useCallback(async (
+		username: string,
+		password: string,
+		captcha?: LoginCaptchaSubmission,
+	) => {
+		const currentUser = await authApi.login(username, password, captcha);
 		queryClient.clear();
 		setUser(currentUser);
 		setStatus('authenticated');
 	}, []);
 
-	const register = useCallback(async (username: string, password: string) => {
-		const currentUser = await authApi.register(username, password);
+	const register = useCallback(async (
+		username: string,
+		password: string,
+		captcha?: LoginCaptchaSubmission,
+	) => {
+		const currentUser = await authApi.register(username, password, captcha);
 		queryClient.clear();
 		setUser(currentUser);
 		setStatus('authenticated');

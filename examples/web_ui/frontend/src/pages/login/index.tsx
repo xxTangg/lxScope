@@ -1,7 +1,9 @@
 import { ArrowLeft, CircleAlert, Loader2 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 
+import { LoginCaptchaField } from './LoginCaptchaField';
+import { authApi, type LoginCaptchaChallenge, type LoginCaptchaSubmission } from '@/api/auth';
 import { ApiError, TIMEOUT_STATUS } from '@/api/client';
 import AgentScope from '@/assets/images/agentscope.svg?react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -37,10 +39,40 @@ export function LoginPage() {
 	const [mode, setMode] = useState<'login' | 'register'>('login');
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState('');
+	const [captcha, setCaptcha] = useState<LoginCaptchaChallenge | null>(null);
+	const [captchaText, setCaptchaText] = useState('');
+	const [captchaLoading, setCaptchaLoading] = useState(false);
+	const [captchaError, setCaptchaError] = useState('');
 	const [tenantId, setTenantId] = useState('');
 	const autoLoginStarted = useRef(false);
 	const autoTenantAttempted = useRef('');
+	const initialCaptchaLoadStarted = useRef(false);
 	const memberDisabledLogout = sessionStorage.getItem(MEMBER_DISABLED_LOGOUT_KEY) === '1';
+
+	const refreshCaptcha = useCallback(async () => {
+		setCaptchaLoading(true);
+		setCaptcha(null);
+		setCaptchaText('');
+		setCaptchaError('');
+		try {
+			const nextCaptcha = await authApi.loginCaptcha();
+			if (nextCaptcha.enabled && (!nextCaptcha.challengeId || !nextCaptcha.imageDataUrl)) {
+				setCaptchaError(t('auth.captchaUnavailable'));
+				return;
+			}
+			setCaptcha(nextCaptcha);
+		} catch (reason) {
+			setCaptchaError(formatApiErrorForAlert(reason));
+		} finally {
+			setCaptchaLoading(false);
+		}
+	}, [t]);
+
+	useEffect(() => {
+		if (logtoEnabled || status !== 'anonymous' || initialCaptchaLoadStarted.current) return;
+		initialCaptchaLoadStarted.current = true;
+		void refreshCaptcha();
+	}, [logtoEnabled, refreshCaptcha, status]);
 
 	useEffect(() => {
 		if (organizations.includes(tenantId)) return;
@@ -252,18 +284,31 @@ export function LoginPage() {
 			setError(t('auth.passwordMismatch'));
 			return;
 		}
+		if (captchaLoading || captcha === null || captchaError) {
+			setError(t('auth.captchaUnavailable'));
+			return;
+		}
+		if (captcha.enabled && (!captcha.challengeId || !captchaText.trim())) {
+			setError(t('auth.captchaRequired'));
+			return;
+		}
 		setSubmitting(true);
 		setError('');
+		const captchaSubmission: LoginCaptchaSubmission | undefined = captcha.enabled
+			? { challengeId: captcha.challengeId!, captchaText: captchaText.trim() }
+			: undefined;
 		try {
 			if (mode === 'register') {
-				await register(username.trim(), password);
+				await register(username.trim(), password, captchaSubmission);
 			} else {
-				await login(username.trim(), password);
+				await login(username.trim(), password, captchaSubmission);
 			}
 			const from = (location.state as { from?: string } | null)?.from;
 			navigate(from || '/chat', { replace: true });
 		} catch (reason) {
 			setError(describeError(reason));
+			const rateLimited = reason instanceof ApiError && reason.code === 'captcha_rate_limited';
+			if (captcha.enabled && !rateLimited) void refreshCaptcha();
 		} finally {
 			setSubmitting(false);
 		}
@@ -333,6 +378,35 @@ export function LoginPage() {
 										required
 									/>
 								</Field>
+								{captcha?.enabled && captcha.imageDataUrl && (
+									<LoginCaptchaField
+									value={captchaText}
+									imageDataUrl={captcha.imageDataUrl}
+									expiresIn={captcha.expiresIn ?? 300}
+									loading={captchaLoading}
+									submitting={submitting}
+									error={captchaError}
+									onChange={setCaptchaText}
+									onRefresh={() => void refreshCaptcha()}
+								/>
+								)}
+								{captchaError && !captcha?.enabled && (
+									<Alert variant="destructive">
+										<CircleAlert />
+										<AlertDescription className="flex w-full items-center justify-between gap-2">
+											<span>{captchaError}</span>
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												onClick={() => void refreshCaptcha()}
+												disabled={captchaLoading}
+											>
+												{t('auth.refreshCaptcha')}
+											</Button>
+										</AlertDescription>
+									</Alert>
+								)}
 								{mode === 'register' && (
 									<Field>
 										<FieldLabel htmlFor="login-confirm-password">
@@ -359,7 +433,7 @@ export function LoginPage() {
 										<AlertDescription>{error}</AlertDescription>
 									</Alert>
 								)}
-								<Button type="submit" className="w-full" disabled={submitting}>
+								<Button type="submit" className="w-full" disabled={submitting || captchaLoading || captcha === null}>
 									{submitting && <Loader2 className="size-3.5 animate-spin" />}
 									{submitting
 										? mode === 'register'

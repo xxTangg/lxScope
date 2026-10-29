@@ -65,6 +65,7 @@ classifiers = ["agentscope[classifier-jev]"]
 # ------------ Service ------------
 service = [
     "fastapi",
+    "Pillow>=10,<13",
     "python-multipart",
     "uvicorn",
     "apscheduler",

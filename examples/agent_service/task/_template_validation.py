@@ -13,6 +13,7 @@ from ._capability_contracts import (
     is_task_artifact_capability,
     is_task_native_capability,
 )
+from ._dag import terminal_node_ids
 from ._models import (
     TaskNode,
     TaskRecord,
@@ -335,7 +336,11 @@ class TaskTemplateValidator:
 
         if tool_schemas is not None:
             configured_artifact_capabilities = (
-                _configured_task_artifact_capabilities(template, nodes)
+                _configured_task_artifact_capabilities(
+                    template,
+                    nodes,
+                    graph=task.graph,
+                )
             )
             compile_template = template
             if configured_artifact_capabilities:
@@ -569,15 +574,24 @@ class TaskTemplateValidator:
 def _configured_task_artifact_capabilities(
     template: TaskTemplateDefinition,
     nodes: list[TaskNode],
+    *,
+    graph: Any | None = None,
 ) -> set[str]:
-    """Resolve only artifact capabilities backed by one valid final output."""
+    """Resolve artifact capabilities backed by one valid terminal output."""
 
     configured = [node for node in nodes if node.artifact is not None]
+    artifact_is_terminal = bool(
+        configured
+        and (
+            configured[0].id in terminal_node_ids(graph, nodes)
+            if graph is not None
+            else nodes and configured[0] is nodes[-1]
+        )
+    )
     if (
         len(configured) != 1
-        or not nodes
-        or configured[0] is not nodes[-1]
-        or nodes[-1].type.value == "input"
+        or not artifact_is_terminal
+        or configured[0].type.value == "input"
     ):
         return set()
     artifact = configured[0].artifact
@@ -643,7 +657,7 @@ def _validate_custom_flow(
     protected_positions: list[tuple[int, int]] = []
     input_questions: set[str] = set()
 
-    if nodes and nodes[-1].type.value == "input":
+    if task.graph is None and nodes and nodes[-1].type.value == "input":
         issues.append(
             TaskValidationIssue(
                 path=f"nodes.{nodes[-1].id}",
@@ -730,7 +744,7 @@ def _validate_custom_flow(
                     ),
                 )
 
-    if any(
+    if task.graph is None and any(
         protected_positions[index][1]
         >= protected_positions[index + 1][1]
         for index in range(len(protected_positions) - 1)

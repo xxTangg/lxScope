@@ -18,6 +18,18 @@ export interface LoginResponse {
 	user: AuthUser;
 }
 
+export interface LoginCaptchaChallenge {
+	enabled: boolean;
+	challengeId?: string | null;
+	imageDataUrl?: string | null;
+	expiresIn?: number | null;
+}
+
+export interface LoginCaptchaSubmission {
+	challengeId: string;
+	captchaText: string;
+}
+
 export interface TokenUsage {
 	input_tokens: number;
 	output_tokens: number;
@@ -32,8 +44,13 @@ async function authenticate(
 	path: '/auth/login' | '/auth/register',
 	username: string,
 	password: string,
+	captcha?: LoginCaptchaSubmission,
 ) {
-	const response = await client.post<LoginResponse>(path, { username, password }, undefined, {
+	const response = await client.post<LoginResponse>(path, {
+		username,
+		password,
+		...(captcha ?? {}),
+	}, undefined, {
 		authenticated: false,
 		silent: true,
 	});
@@ -42,9 +59,15 @@ async function authenticate(
 }
 
 export const authApi = {
-	login: (username: string, password: string) => authenticate('/auth/login', username, password),
-	register: (username: string, password: string) =>
-		authenticate('/auth/register', username, password),
+	loginCaptcha: () =>
+		client.get<LoginCaptchaChallenge>('/auth/captcha', undefined, {
+			authenticated: false,
+			silent: true,
+		}),
+	login: (username: string, password: string, captcha?: LoginCaptchaSubmission) =>
+		authenticate('/auth/login', username, password, captcha),
+	register: (username: string, password: string, captcha?: LoginCaptchaSubmission) =>
+		authenticate('/auth/register', username, password, captcha),
 	me: () => client.get<AuthUser>('/auth/me', undefined, { silent: true }),
 	usage: () => client.get<TokenUsage>('/auth/usage', undefined, { silent: true }),
 	logout: async () => {

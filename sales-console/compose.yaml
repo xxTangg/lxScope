@@ -59,12 +59,20 @@ services:
   admin-web:
     build:
       context: .
-      dockerfile: apps/admin-web/Dockerfile
+      dockerfile: apps/admin-web/Dockerfile.dev
     depends_on:
       sales-api:
         condition: service_healthy
+    environment:
+      SALES_API_PROXY_TARGET: http://sales-api:44100
+      VITE_USE_POLLING: 'true'
     ports:
-      - '44101:80'
+      - '44101:44101'
+    volumes:
+      - ./apps/admin-web/src:/app/apps/admin-web/src
+      - ./apps/admin-web/public:/app/apps/admin-web/public
+      - ./apps/admin-web/index.html:/app/apps/admin-web/index.html:ro
+      - ./apps/admin-web/vite.config.ts:/app/apps/admin-web/vite.config.ts:ro
     restart: unless-stopped
 
 volumes:

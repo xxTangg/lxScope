@@ -1,6 +1,6 @@
 import { createContext } from 'react';
 
-import type { AuthUser } from '@/api';
+import type { AuthUser, LoginCaptchaSubmission } from '@/api/auth';
 
 export type AuthStatus = 'loading' | 'authenticated' | 'anonymous' | 'selecting_tenant';
 
@@ -9,8 +9,8 @@ export const MEMBER_DISABLED_LOGOUT_KEY = 'lxscope_member_disabled_logout';
 export interface AuthContextValue {
 	status: AuthStatus;
 	user: AuthUser | null;
-	login: (username: string, password: string) => Promise<void>;
-	register: (username: string, password: string) => Promise<void>;
+	login: (username: string, password: string, captcha?: LoginCaptchaSubmission) => Promise<void>;
+	register: (username: string, password: string, captcha?: LoginCaptchaSubmission) => Promise<void>;
 	logout: () => Promise<void>;
 	switchAccount: () => Promise<void>;
 	logtoEnabled: boolean;
