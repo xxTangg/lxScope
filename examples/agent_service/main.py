@@ -2,9 +2,18 @@
 """The example script to start the agent service."""
 from contextlib import asynccontextmanager
 import asyncio
+import copy
 import os
 import sys
 from uuid import uuid4
+
+# Load local configuration (.env) before any module reads environment vars.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:  # pragma: no cover - python-dotenv is optional
+    pass
 
 import uvicorn
 from fastapi import HTTPException, Request
@@ -27,6 +36,14 @@ from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
 from agentscope.app.storage import RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
+from agentscope.credential import OpenAICredential
+from agentscope.model import ModelCard
+# Local-only Redis substitute: fakeredis is a pure-Python, in-process Redis
+# implementation. No external Redis server is required to run the service on
+# a developer machine. The upstream RedisStorage is kept untouched; we only
+# inject an in-memory connection pool. local_redis adds a disk snapshot so
+# restarting the service no longer wipes agents/sessions/messages.
+from local_redis import create_persistent_redis, start_autosave, stop_autosave
 from agentscope._logging import logger
 from agentscope.mcp import MCPClient, StdioMCPConfig
 from agentscope.middleware import (
@@ -103,27 +120,28 @@ playwright_mcp_args = (
     else ["-y", "@playwright/mcp@latest"]
 )
 
-default_mcps = [
-    MCPClient(
-        name="playwright",
-        mcp_config=StdioMCPConfig(
-            command=playwright_mcp_command,
-            args=playwright_mcp_args,
-            # Explicitly pass this to the child process. Some Playwright MCP
-            # launch paths do not reliably inherit the container environment
-            # and otherwise fall back to /root/.cache/ms-playwright.
-            env={"PLAYWRIGHT_BROWSERS_PATH": playwright_browsers_path},
-        ),
-        is_stateful=True,
-    ),
-]
+# Local run: skip the Playwright MCP to avoid an implicit `npx @playwright/mcp`
+# download (and Chromium fetch) on first workspace use. Re-enable by
+# uncommenting the block below if browser automation is needed.
+default_mcps = []  # type: ignore[var-annotated]
+# default_mcps = [
+#     MCPClient(
+#         name="playwright",
+#         mcp_config=StdioMCPConfig(
+#             command=playwright_mcp_command,
+#             args=playwright_mcp_args,
+#             env={"PLAYWRIGHT_BROWSERS_PATH": playwright_browsers_path},
+#         ),
+#         is_stateful=True,
+#     ),
+# ]
 
+# Local-only Redis backend: inject an in-process fakeredis connection pool so
+# the upstream RedisStorage works without an external Redis server.  The
+# snapshot file keeps the data across restarts (fakeredis alone is memory only).
+_fake_redis, _local_redis_server, _local_redis_snapshot = create_persistent_redis()
 storage = TenantScopedStorage(
-    RedisStorage(
-        host=os.getenv("REDIS_HOST", "localhost"),
-        port=int(os.getenv("REDIS_PORT", "6379")),
-        password=os.getenv("REDIS_PASSWORD") or None,
-    ),
+    RedisStorage(connection_pool=_fake_redis.connection_pool),
 )
 
 # Skill analysis persistence is an application-level optional sink.  The
@@ -154,13 +172,79 @@ builtin_skill_paths = [
 # ``:memory:`` configuration made every API restart look like an empty
 # knowledge base because all vectors disappeared with the process.
 vector_store = QdrantStore(
-    path=os.getenv("QDRANT_PATH", "/app/qdrant_data"),
+    path=os.getenv("QDRANT_PATH", "./qdrant_data"),
 )
 
 
 async def _provision_registered_user(user_id: str) -> None:
     """Provision deployment-managed model access for a new account."""
     await provision_siliconflow_credential(storage, (user_id,))
+
+
+def _install_local_chat_model_catalog() -> None:
+    """Advertise the configured SiliconFlow model ids instead of OpenAI's.
+
+    SiliconFlow speaks the OpenAI wire protocol, so its credential is stored as
+    a plain ``OpenAICredential``.  That class also carries the *public OpenAI*
+    model catalogue, and the Web UI seeds a brand-new session with the first
+    entry of whatever catalogue it sees.  With a SiliconFlow key that default
+    becomes ``gpt-4.1-mini``, which SiliconFlow does not host, so every chat
+    turn came back as ``invalid_request`` ("The request to the model was
+    rejected as invalid").
+
+    For this local deployment the OpenAI-compatible credential always points at
+    SiliconFlow, so the advertised catalogue is replaced by the ids configured
+    in ``.env``.
+    """
+    model_name = os.getenv("SILICONFLOW_CHAT_MODEL", "").strip()
+    if not model_name or not os.getenv("SILICONFLOW_API_KEY", "").strip():
+        return
+
+    chat_cls = OpenAICredential.get_chat_model_class()
+    builtin_catalog = chat_cls.list_models
+
+    @classmethod
+    def _siliconflow_catalog(cls) -> list[ModelCard]:
+        template = builtin_catalog()
+        if not template:  # pragma: no cover - the builtin list is never empty
+            return []
+        card = copy.deepcopy(template[0])
+        card.name = model_name
+        card.label = model_name.split("/")[-1]
+        card.context_size = int(
+            os.getenv("SILICONFLOW_CONTEXT_SIZE", "131072"),
+        )
+        card.output_size = int(os.getenv("SILICONFLOW_OUTPUT_SIZE", "8192"))
+        return [card]
+
+    chat_cls.list_models = _siliconflow_catalog
+    logger.info(
+        "local model catalog: openai_credential advertises %s",
+        model_name,
+    )
+
+
+_install_local_chat_model_catalog()
+
+
+def _classify_insufficient_balance_as_quota() -> None:
+    """Report provider "out of credit" (HTTP 402) as a quota problem.
+
+    The upstream classifier maps only 401/403/429 and treats every other 4xx
+    as ``INVALID_REQUEST`` ("the request was rejected as invalid").  SiliconFlow
+    answers an empty wallet with ``402 {"code": 30001, "message": "Sorry, your
+    account balance is insufficient"}``, so a top-up problem surfaced as a
+    malformed-request problem and sent people looking for a config bug.
+    """
+    try:
+        from agentscope.app._service._errors import _STATUS_MAP
+        from agentscope.types import ErrorType
+    except Exception:  # pragma: no cover - internal module moved upstream
+        return
+    _STATUS_MAP.setdefault(402, ErrorType.RATE_LIMIT)
+
+
+_classify_insufficient_balance_as_quota()
 
 
 auth = load_auth_from_env(
@@ -702,6 +786,13 @@ async def _application_lifespan(app_instance):
     global skill_observation_sink, skill_observation_store
     global project_observability_store, application_database
 
+    # Persist the in-process fakeredis database every few seconds so restarting
+    # the service does not wipe agents, sessions and messages.
+    local_redis_autosave = start_autosave(
+        _local_redis_server,
+        _local_redis_snapshot,
+    )
+
     # Configure the application-owned observability layer before the
     # AgentScope lifespan creates the ChatService and its runtime agents.
     # The integration uses only public extension points.
@@ -878,6 +969,12 @@ async def _application_lifespan(app_instance):
         application_database = None
         project_observability.shutdown()
         skill_observation_store = None
+        # Write the final local-redis snapshot before the process exits.
+        await stop_autosave(
+            local_redis_autosave,
+            _local_redis_server,
+            _local_redis_snapshot,
+        )
         skill_observation_sink = NullSkillObservationSink()
 
 
