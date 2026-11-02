@@ -1,5 +1,4 @@
 import {
-	BarChart3,
 	BookText,
 	BotMessageSquare,
 	Cable,
@@ -53,7 +52,6 @@ export function AppSidebar() {
 	const { t } = useTranslation();
 	const { startOnborda } = useOnborda();
 	const { user, logout, switchAccount, logtoEnabled } = useAuth();
-	const isObservability = location.pathname.startsWith('/admin/observability');
 	const isAdmin = user?.role === 'admin';
 
 	const handleStartTour = () => {
@@ -122,31 +120,11 @@ export function AppSidebar() {
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('admin.title') }}
-										isActive={
-											location.pathname.startsWith('/admin') && !isObservability
-										}
+										isActive={location.pathname.startsWith('/admin')}
 										onClick={() => navigate('/admin/overview')}
 									>
 										<ShieldCheck />
 										<span>{t('admin.title')}</span>
-										<Badge
-											variant="secondary"
-											className="ml-auto shrink-0 px-1.5 text-[10px] font-medium group-data-[collapsible=icon]:hidden"
-										>
-											{t('common.adminBadge')}
-										</Badge>
-									</SidebarMenuButton>
-								</SidebarMenuItem>
-							)}
-							{isAdmin && (
-								<SidebarMenuItem>
-									<SidebarMenuButton
-										tooltip={{ children: t('admin.analyticsTitle') }}
-										isActive={isObservability}
-										onClick={() => navigate('/admin/observability')}
-									>
-										<BarChart3 />
-										<span>{t('admin.analyticsTitle')}</span>
 										<Badge
 											variant="secondary"
 											className="ml-auto shrink-0 px-1.5 text-[10px] font-medium group-data-[collapsible=icon]:hidden"
