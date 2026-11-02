@@ -23,6 +23,20 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _local_tz():
+    """Return the service host timezone.
+
+    Daily buckets follow the operator's wall clock instead of UTC, otherwise
+    everything that happens after 16:00 UTC is silently reported on the next
+    day for Asia/Shanghai deployments.
+    """
+    return datetime.now().astimezone().tzinfo
+
+
+def _local_date(value: datetime) -> date:
+    return _utc(value).astimezone(_local_tz()).date()
+
+
 def _text(value: Any) -> str | None:
     if value is None:
         return None
@@ -149,13 +163,32 @@ class ObservabilityEventStore:
                 if normalized_start <= event.occurred_at < normalized_end
             ]
 
+    @staticmethod
+    def _business_events(events: list[ObservabilityEvent]) -> list[ObservabilityEvent]:
+        """Return the events that represent one real unit of AI work.
+
+        An Agent run is the business unit.  A run also emits child model/tool
+        events, so counting both would double the volume.  Deployments that
+        call a model without an Agent wrapper fall back to model events so the
+        dashboard never reports zero while the model table shows traffic.
+        """
+        agent_events = [
+            event for event in events if event.component == "agent"
+        ]
+        if agent_events:
+            return agent_events
+        return [event for event in events if event.component == "model"]
+
     def summarize(self, *, start: datetime, end: datetime) -> dict[str, Any]:
         events = self.query(start=start, end=end)
-        request_events = [
+        # HTTP traffic is platform traffic, not business volume.  Keep it as a
+        # separate series so health checks and 404s stop inflating the numbers.
+        platform_events = [
             event
             for event in events
             if self._is_business_request(event)
         ]
+        request_events = self._business_events(events)
         successful_requests = sum(
             event.result == "success" for event in request_events
         )
@@ -164,6 +197,11 @@ class ObservabilityEventStore:
             event.duration_seconds
             for event in request_events
             if event.duration_seconds is not None
+        ]
+        component_events = [
+            event
+            for event in events
+            if event.component in {"model", "agent", "tool"}
         ]
 
         return {
@@ -182,8 +220,22 @@ class ObservabilityEventStore:
                 else None
             ),
             "active_user_count": len(
-                {event.user_id for event in events if event.user_id}
+                {event.user_id for event in request_events if event.user_id}
+            ) or len({event.user_id for event in events if event.user_id}),
+            "platform_request_count": len(platform_events),
+            "platform_failure_count": sum(
+                event.result != "success" for event in platform_events
             ),
+            "agent_call_count": sum(
+                event.component == "agent" for event in events
+            ),
+            "model_call_count": sum(
+                event.component == "model" for event in events
+            ),
+            "tool_call_count": sum(
+                event.component == "tool" for event in events
+            ),
+            "event_token_usage": self._token_totals(component_events),
             "daily": self._daily(events, start=start, end=end),
             "models": self._component_rows(events, "model", "model"),
             "agents": self._component_rows(events, "agent", "agent_name"),
@@ -191,6 +243,16 @@ class ObservabilityEventStore:
             "failures": self._failures(events),
             "failure_by_component": self._failure_breakdown(events),
             "failure_by_type": self._failure_type_breakdown(events),
+        }
+
+    @staticmethod
+    def _token_totals(events: list[ObservabilityEvent]) -> dict[str, int]:
+        """Aggregate token usage straight from the event stream."""
+        return {
+            "input_tokens": sum(event.input_tokens for event in events),
+            "output_tokens": sum(event.output_tokens for event in events),
+            "total_tokens": sum(event.total_tokens for event in events),
+            "call_count": len(events),
         }
 
     def failure_center(
@@ -778,26 +840,31 @@ class ObservabilityEventStore:
                 "requests": 0,
                 "errors": 0,
                 "calls": 0,
+                "platform_requests": 0,
+                "platform_errors": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "total_tokens": 0,
             },
         )
+        prefer_agent = any(event.component == "agent" for event in events)
         for event in events:
-            row = daily[event.occurred_at.date()]
-            if ObservabilityEventStore._is_business_request(event):
+            row = daily[_local_date(event.occurred_at)]
+            if event.component == ("agent" if prefer_agent else "model"):
                 row["requests"] += 1
                 row["calls"] += 1
                 row["errors"] += int(event.result != "success")
             elif event.component in {"model", "agent", "tool"}:
                 row["calls"] += 1
-                row["errors"] += int(event.result != "success")
+            elif ObservabilityEventStore._is_business_request(event):
+                row["platform_requests"] += 1
+                row["platform_errors"] += int(event.result != "success")
             row["input_tokens"] += event.input_tokens
             row["output_tokens"] += event.output_tokens
             row["total_tokens"] += event.total_tokens
 
-        start_date = _utc(start).date()
-        end_date = _utc(end).date()
+        start_date = _local_date(start)
+        end_date = _local_date(end)
         rows: list[dict[str, Any]] = []
         current = start_date
         while current <= end_date:

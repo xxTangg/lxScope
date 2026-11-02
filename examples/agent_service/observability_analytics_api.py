@@ -30,6 +30,15 @@ class ObservabilityDaily(BaseModel):
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    platform_requests: int = 0
+    platform_errors: int = 0
+
+
+class ObservabilityEventTokenUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    call_count: int = 0
 
 
 class ObservabilityComponentRow(BaseModel):
@@ -114,6 +123,15 @@ class ObservabilityOverviewResponse(BaseModel):
     active_user_count: int
     average_response_time_seconds: float | None = Field(default=None, ge=0)
     token_usage: ObservabilityTokenUsage
+    token_usage_source: str = "message_history"
+    event_token_usage: ObservabilityEventTokenUsage = Field(
+        default_factory=ObservabilityEventTokenUsage,
+    )
+    platform_request_count: int = 0
+    platform_failure_count: int = 0
+    agent_call_count: int = 0
+    model_call_count: int = 0
+    tool_call_count: int = 0
     daily: list[ObservabilityDaily]
     models: list[ObservabilityComponentRow]
     agents: list[ObservabilityComponentRow]
@@ -383,6 +401,17 @@ def _empty_summary() -> dict[str, Any]:
         "success_rate": 0.0,
         "active_user_count": 0,
         "average_response_time_seconds": None,
+        "platform_request_count": 0,
+        "platform_failure_count": 0,
+        "agent_call_count": 0,
+        "model_call_count": 0,
+        "tool_call_count": 0,
+        "event_token_usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "call_count": 0,
+        },
         "daily": [],
         "models": [],
         "agents": [],
@@ -477,6 +506,30 @@ async def _resolve_failure_users(
         row["username"] = username_by_id.get(user_id, user_id)
 
 
+def _resolve_token_source(
+    token_usage: dict[str, Any],
+    summary: dict[str, Any],
+) -> str:
+    """Prefer the message-history ledger, fall back to the event stream.
+
+    Deployments that do not persist Redis message history report zero tokens
+    while the event stream already carries per-call usage.  Rendering both
+    numbers on one page contradicts itself, so pick the source that has data
+    and tell the UI which one won.
+    """
+    event_usage = summary.get("event_token_usage") or {}
+    event_total = int(event_usage.get("total_tokens", 0))
+    ledger_total = int(token_usage.get("total_tokens", 0))
+    if ledger_total == 0 and event_total > 0:
+        token_usage["input_tokens"] = int(event_usage.get("input_tokens", 0))
+        token_usage["output_tokens"] = int(event_usage.get("output_tokens", 0))
+        token_usage["total_tokens"] = event_total
+        if not token_usage.get("message_count"):
+            token_usage["message_count"] = int(event_usage.get("call_count", 0))
+        return "event_stream"
+    return "message_history"
+
+
 @observability_analytics_router.get(
     "/overview",
     response_model=ObservabilityOverviewResponse,
@@ -566,6 +619,7 @@ async def get_observability_overview(
         end=normalized_end,
         data_available=data_available,
         token_usage=ObservabilityTokenUsage(**token_usage),
+        token_usage_source=_resolve_token_source(token_usage, summary),
         **summary,
     )
 

@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>管理员中心 + 可观测性分析 · P0 改造效果图</title>
+<style>
+  :root{
+    --bg:#0a0c11; --surface:#12161f; --surface2:#181d28; --surface3:#1e2432;
+    --border:#242b3a; --border2:#2f3849;
+    --text:#e7eaf0; --muted:#8a93a8; --muted2:#616b80;
+    --primary:#7c8cff; --primary-dim:rgba(124,140,255,.14);
+    --ok:#2ecc8f; --warn:#f5a524; --danger:#fb5a76;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    font-size:14px; line-height:1.55;
+  }
+  .wrap{max-width:1440px;margin:0 auto;padding:24px 28px 60px}
+
+  /* ---------- 页头 ---------- */
+  .mock-bar{
+    display:flex;align-items:center;justify-content:space-between;gap:16px;
+    padding:14px 20px;margin-bottom:20px;border-radius:12px;
+    background:linear-gradient(90deg,rgba(124,140,255,.14),rgba(124,140,255,.03));
+    border:1px solid rgba(124,140,255,.28);
+  }
+  .mock-bar h1{margin:0;font-size:15px;font-weight:650;letter-spacing:.2px}
+  .mock-bar p{margin:3px 0 0;font-size:12px;color:var(--muted)}
+  .toggle-group{display:flex;gap:4px;padding:3px;background:var(--surface2);border:1px solid var(--border);border-radius:9px}
+  .toggle-group button{
+    border:0;background:transparent;color:var(--muted);font-size:12px;padding:6px 12px;
+    border-radius:6px;cursor:pointer;font-family:inherit;transition:.15s;
+  }
+  .toggle-group button.on{background:var(--primary);color:#0a0c11;font-weight:650}
+
+  /* ---------- 模块互切 Tabs（P0-5） ---------- */
+  .module-tabs{display:flex;gap:6px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:0}
+  .module-tabs button{
+    border:0;background:transparent;color:var(--muted);font-size:13.5px;padding:10px 16px;
+    cursor:pointer;font-family:inherit;border-bottom:2px solid transparent;margin-bottom:-1px;transition:.15s;
+  }
+  .module-tabs button:hover{color:var(--text)}
+  .module-tabs button.on{color:var(--text);font-weight:600;border-bottom-color:var(--primary)}
+
+  /* ---------- 骨架 ---------- */
+  .shell{display:grid;grid-template-columns:212px 1fr;gap:20px;align-items:start}
+  .sidenav{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:8px;position:sticky;top:24px}
+  .sidenav .grp{padding:10px 10px 6px;font-size:11px;color:var(--muted2);letter-spacing:.6px;text-transform:uppercase}
+  .sidenav a{
+    display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:8px;
+    color:var(--muted);text-decoration:none;font-size:13px;transition:.15s;
+  }
+  .sidenav a:hover{background:var(--surface2);color:var(--text)}
+  .sidenav a.on{background:var(--primary-dim);color:var(--primary);font-weight:600}
+  .sidenav .dot{width:6px;height:6px;border-radius:50%;background:var(--border2);flex:none}
+  .sidenav a.on .dot{background:var(--primary)}
+
+  .main{min-width:0}
+  .page-head{margin-bottom:18px}
+  .page-head h2{margin:0;font-size:20px;font-weight:650;letter-spacing:.2px}
+  .page-head p{margin:4px 0 0;font-size:12.5px;color:var(--muted)}
+
+  /* ---------- 卡片 ---------- */
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  .grid2{display:grid;grid-template-columns:1.35fr 1fr;gap:16px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .card.pad0{padding:0}
+  .card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+  .card-head h3{margin:0;font-size:14px;font-weight:620;display:flex;align-items:center;gap:7px}
+  .card-head .desc{margin:3px 0 0;font-size:11.5px;color:var(--muted)}
+
+  .metric{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 15px;position:relative;transition:.18s}
+  .metric.clickable{cursor:pointer}
+  .metric.clickable:hover{border-color:var(--border2);background:var(--surface2)}
+  .metric .lbl{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted)}
+  .metric .val{font-family:var(--mono);font-size:26px;font-weight:600;letter-spacing:-.5px;margin-top:8px;line-height:1.1}
+  .metric .sub{font-size:11px;color:var(--muted2);margin-top:6px;font-family:var(--mono)}
+  .metric .old{font-size:11px;color:var(--danger);margin-top:5px;text-decoration:line-through;opacity:.75}
+  .ico{width:15px;height:15px;flex:none;opacity:.75}
+
+  /* ---------- 口径说明条（P0-1） ---------- */
+  .caliber{
+    display:flex;gap:12px;align-items:flex-start;margin:14px 0 18px;padding:12px 14px;
+    border-radius:10px;background:rgba(124,140,255,.07);border:1px dashed rgba(124,140,255,.35);
+  }
+  .caliber .tag{
+    flex:none;font-size:10.5px;font-weight:700;letter-spacing:.5px;padding:2px 7px;border-radius:5px;
+    background:var(--primary);color:#0a0c11;
+  }
+  .caliber .txt{font-size:12.5px;color:var(--muted);line-height:1.6}
+  .caliber .txt b{color:var(--text);font-weight:600}
+  .caliber .txt code{font-family:var(--mono);font-size:11.5px;background:var(--surface3);padding:1px 5px;border-radius:4px;color:var(--primary)}
+
+  /* ---------- P0 改动标注 ---------- */
+  .note{
+    position:relative;margin-top:10px;padding:9px 11px 9px 12px;border-radius:8px;
+    background:rgba(245,165,36,.07);border:1px dashed rgba(245,165,36,.42);
+    font-size:11.5px;color:#e2c48a;line-height:1.6;
+  }
+  .note::before{
+    content:"P0";position:absolute;top:-8px;left:10px;font-size:9.5px;font-weight:800;letter-spacing:.5px;
+    background:var(--warn);color:#1a1204;padding:1px 6px;border-radius:4px;
+  }
+  .note b{color:#ffd79a;font-weight:650}
+  .note code{font-family:var(--mono);font-size:11px;background:rgba(0,0,0,.28);padding:1px 4px;border-radius:3px}
+
+  /* ---------- 表格 ---------- */
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;font-weight:500;color:var(--muted2);font-size:11px;padding:7px 10px;border-bottom:1px solid var(--border)}
+  td{padding:9px 10px;border-bottom:1px solid rgba(36,43,58,.6);vertical-align:middle}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr.hoverable:hover{background:var(--surface2)}
+  .mono{font-family:var(--mono)}
+  .trunc{max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  .badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--border2);color:var(--muted)}
+  .badge.ok{background:rgba(46,204,143,.12);border-color:rgba(46,204,143,.3);color:var(--ok)}
+  .badge.warn{background:rgba(245,165,36,.12);border-color:rgba(245,165,36,.3);color:var(--warn)}
+  .badge.danger{background:rgba(251,90,118,.12);border-color:rgba(251,90,118,.3);color:var(--danger)}
+  .badge.info{background:var(--primary-dim);border-color:rgba(124,140,255,.3);color:var(--primary)}
+
+  /* ---------- 趋势图 ---------- */
+  .chart{display:flex;align-items:flex-end;gap:6px;height:150px;padding:14px 4px 0}
+  .chart .col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:6px;height:100%}
+  .chart .bar{width:100%;max-width:34px;border-radius:4px 4px 0 0;background:var(--primary);opacity:.85;min-height:2px;transition:.2s}
+  .chart .bar.zero{background:var(--surface3);opacity:1;height:3px !important}
+  .chart .bar.err{background:var(--danger);opacity:.7}
+  .chart .xlab{font-size:9.5px;color:var(--muted2);font-family:var(--mono);white-space:nowrap}
+  .chart .col.today .bar{box-shadow:0 0 0 1.5px rgba(124,140,255,.5)}
+  .chart .col.today .xlab{color:var(--primary)}
+  .legend{display:flex;gap:14px;font-size:11px;color:var(--muted);padding-top:10px;border-top:1px solid var(--border);margin-top:6px}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+
+  /* ---------- 进度 ---------- */
+  .progress{height:7px;border-radius:20px;background:var(--surface3);overflow:hidden;margin:7px 0 4px}
+  .progress > div{height:100%;border-radius:20px;background:var(--ok)}
+
+  /* ---------- 分段控件（P0-口径切换） ---------- */
+  .seg{display:inline-flex;padding:2px;background:var(--surface2);border:1px solid var(--border);border-radius:8px}
+  .seg button{border:0;background:transparent;color:var(--muted);font-size:11.5px;padding:5px 11px;border-radius:6px;cursor:pointer;font-family:inherit}
+  .seg button.on{background:var(--surface3);color:var(--text);font-weight:600}
+
+  .rowline{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0;font-size:12.5px}
+  .rowline + .rowline{border-top:1px solid rgba(36,43,58,.6)}
+  .rowline .k{color:var(--muted)}
+  .rowline .v{font-family:var(--mono)}
+
+  .empty{padding:22px;text-align:center;color:var(--muted2);font-size:12.5px}
+  .hide{display:none !important}
+  .foot{margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted2);line-height:1.8}
+  .foot b{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 顶部说明条 -->
+  <div class="mock-bar">
+    <div>
+      <h1>第 ⑦ 项 · P0 改造效果图（管理员中心 + 可观测性分析）</h1>
+      <p>数值取自本机后端真实返回 <span class="mono">GET /admin/observability/overview?days=14</span> · 黄色虚线框 = 本次改动点 · 可切换「改造前 / 改造后」对照</p>
+    </div>
+    <div class="toggle-group">
+      <button id="btn-after" class="on" onclick="setMode('after')">改造后</button>
+      <button id="btn-before" onclick="setMode('before')">改造前</button>
+    </div>
+  </div>
+
+  <!-- 模块互切 Tabs -->
+  <div class="module-tabs">
+    <button id="tab-admin" class="on" onclick="setTab('admin')">管理员中心</button>
+    <button id="tab-obs" onclick="setTab('obs')">可观测性分析</button>
+  </div>
+
+  <div class="shell">
+    <!-- 侧边导航 -->
+    <nav class="sidenav" id="nav-admin">
+      <div class="grp">管理</div>
+      <a class="on"><span class="dot"></span>总览</a>
+      <a><span class="dot"></span>成员管理</a>
+      <a><span class="dot"></span>审计日志</a>
+      <a><span class="dot"></span>模型配置</a>
+      <a><span class="dot"></span>配额与流水</a>
+      <a><span class="dot"></span>策略</a>
+      <a><span class="dot"></span>系统升级</a>
+    </nav>
+    <nav class="sidenav hide" id="nav-obs">
+      <div class="grp">可观测性</div>
+      <a class="on"><span class="dot"></span>运行总览</a>
+      <a><span class="dot"></span>用量分析</a>
+      <a><span class="dot"></span>模型 / 智能体 / 工具</a>
+      <a><span class="dot"></span>失败中心</a>
+      <a><span class="dot"></span>技能分析</a>
+    </nav>
+
+    <div class="main">
+      <!-- ============ 管理员中心 ============ -->
+      <section id="view-admin">
+        <div class="page-head">
+          <h2>管理员中心</h2>
+          <p>平台资源、账号与运行状况的总览</p>
+        </div>
+
+        <div class="grid4">
+          <div class="metric clickable" data-after="1">
+            <div class="lbl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>今日业务请求</div>
+            <div class="val">6</div>
+            <div class="sub">智能体调用 6 · 模型调用 6</div>
+            <div class="old hide">5,177（HTTP 口径，含健康检查/404/422）</div>
+            <div class="note">口径改为<b>智能体 / 模型调用次数</b>，HTTP 事件拆出为「平台流量」单独展示，不再混入业务量。</div>
+          </div>
+
+          <div class="metric clickable" data-after="1">
+            <div class="lbl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9 10h6M9 14h6"/></svg>今日 Token 消耗</div>
+            <div class="val">74,749</div>
+            <div class="sub">输入 73,898 · 输出 851</div>
+            <div class="old hide">0</div>
+            <div class="note">顶卡与趋势图、模型表<b>统一取同一聚合源</b>。改前顶卡恒为 <code>0</code>，同页趋势图却是 74,749，自相矛盾。</div>
+          </div>
+
+          <div class="metric clickable" data-after="1">
+            <div class="lbl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87"/></svg>活跃用户</div>
+            <div class="val">1</div>
+            <div class="sub">近 14 天有行为 · 共 1 个账号</div>
+            <div class="note">日切改用<b>本地时区</b>（改前按 UTC 切日，今天的量会被算到明天）。</div>
+          </div>
+
+          <div class="metric clickable" data-after="1">
+            <div class="lbl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>7 天成功率</div>
+            <div class="val">100<span style="font-size:16px">%</span></div>
+            <div class="sub">成功 6 · 失败 0 · 系统类告警 5</div>
+            <div class="old hide">99.9%（分母是 5177 次 HTTP）</div>
+            <div class="note">分母换成业务调用后成功率才真实；HTTP 层的 5 次失败归到<b>「平台告警」</b>，不污染业务成功率。</div>
+          </div>
+        </div>
+
+        <div class="caliber">
+          <span class="tag">口径</span>
+          <div class="txt">
+            <b>业务请求</b> = 智能体 / 模型调用（<code>component ∈ {agent, model}</code>），只统计真正跑 AI 的次数。<br />
+            <b>平台流量</b> = HTTP 请求事件（健康检查、静态资源、404/422 等），单独成卡，默认不占主指标位。<br />
+            <b>Token</b> 统一采用与趋势图一致的聚合源；<b>日切</b>按浏览器本地时区（Asia/Shanghai）而非 UTC。
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <h3>配额与流水</h3>
+                <p class="desc">账号额度变更记录</p>
+              </div>
+              <span class="seg"><button class="on">全部</button><button>充值</button><button>扣减</button></span>
+            </div>
+            <table>
+              <thead><tr><th>时间</th><th>用户</th><th>类型</th><th style="text-align:right">额度变动</th></tr></thead>
+              <tbody>
+                <tr><td class="mono" style="color:var(--muted)">11-02 09:12</td><td>admin</td><td><span class="badge ok">手动调整</span></td><td class="mono" style="text-align:right;color:var(--ok)">+10,000,000</td></tr>
+                <tr><td class="mono" style="color:var(--muted)">11-01 18:40</td><td>admin</td><td><span class="badge info">套餐续期</span></td><td class="mono" style="text-align:right;color:var(--ok)">+500,000</td></tr>
+                <tr><td class="mono" style="color:var(--muted)">10-31 11:03</td><td>admin</td><td><span class="badge danger">模型调用</span></td><td class="mono" style="text-align:right;color:var(--danger)">−74,749</td></tr>
+              </tbody>
+            </table>
+            <div class="note">修死链：前端 <code>GET /admin/ledger</code> → <code>GET /admin/quota/ledger</code>。改前此表<b>永远 404 空白</b>。</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div><h3>系统快照</h3><p class="desc">部署信息（降级为次要卡片）</p></div>
+              <span class="badge">次要</span>
+            </div>
+            <div class="rowline"><span class="k">系统 ID</span><span class="v trunc">lxscope-local</span></div>
+            <div class="rowline"><span class="k">应用版本</span><span class="v">2.0.8</span></div>
+            <div class="rowline"><span class="k">核心版本</span><span class="v">2.0.8</span></div>
+            <div class="rowline"><span class="k">Token 池</span><span class="v">0</span></div>
+            <div class="rowline"><span class="k">最后更新</span><span class="v">2026-11-02 13:05</span></div>
+            <div class="note">原四张主指标卡全是这类静态部署信息（token 池 0 / 充值 0.00 / system_id），看完不知道「今天系统发生了什么」——已降级并让位给运行指标。</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-head">
+            <div><h3>今日消耗趋势（按小时）</h3><p class="desc">业务调用与 Token 消耗</p></div>
+            <span class="seg"><button class="on">按小时</button><button>按天</button></span>
+          </div>
+          <div class="chart" id="chart-admin"></div>
+          <div class="legend">
+            <span><i style="background:var(--primary)"></i>业务调用</span>
+            <span><i style="background:var(--danger);opacity:.7"></i>失败</span>
+            <span style="color:var(--muted2)">14 天窗口里 13 天是 0，按天看图几乎空白 → 今日支持按小时聚合</span>
+          </div>
+          <div class="note">趋势图新增<b>小时粒度</b>。改前 14 天里 13 天为 0，图看起来像「没数据」。</div>
+        </div>
+      </section>
+
+      <!-- ============ 可观测性分析 ============ -->
+      <section id="view-obs" class="hide">
+        <div class="page-head">
+          <h2>可观测性分析</h2>
+          <p>模型、智能体、工具与技能的运行时表现</p>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:10px">
+          <div style="display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--muted)">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>统计周期
+          </div>
+          <span class="seg">
+            <button>7 天</button><button class="on">14 天</button><button>30 天</button><button>90 天</button>
+          </span>
+        </div>
+
+        <div class="grid4">
+          <div class="metric clickable" data-after="1">
+            <div class="lbl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>业务请求</div>
+            <div class="val">6</div>
+            <div class="sub">智能体 6 · 模型 6 · 工具 0</div>
+            <div class="old hide">5,177</div>
+            <div class="note">主指标只算业务调用；HTTP 平台流量 5,177 移到下方「平台流量」次级行，可展开查看。</div>
+          </div>
+          <div class="metric clickable" data-after="1">
+            <div class="lbl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9 10h6M9 14h6"/></svg>Token 消耗</div>
+            <div class="val">74,749</div>
+            <div class="sub">输入 73,898 · 输出 851</div>
+            <div class="old hide">0</div>
+            <div class="note">与趋势图、模型明细同源，改前此处为 <code>0</code> 而下方趋势图为 74,749。</div>
+          </div>
+          <div class="metric clickable" data-after="1">
+            <div class="lbl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>活跃用户</div>
+            <div class="val">1</div>
+            <div class="sub">admin · 会话 1</div>
+            <div class="note">与总览页、用量分析共用同一口径。</div>
+          </div>
+          <div class="metric clickable" data-after="1">
+            <div class="lbl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>平均耗时</div>
+            <div class="val">4.94<span style="font-size:16px">s</span></div>
+            <div class="sub">智能体 4.94s · 模型 4.90s</div>
+            <div class="old hide">0.03s</div>
+            <div class="note">改前 0.03s 是<b>HTTP 往返</b>的平均，不是 LLM 耗时；改后按智能体/模型事件统计，才是真实 4.94s。</div>
+          </div>
+        </div>
+
+        <div class="grid2" style="margin-top:16px">
+          <div class="card">
+            <div class="card-head">
+              <div><h3>运行趋势</h3><p class="desc">近 14 天（今日已高亮）</p></div>
+              <span class="seg"><button class="on">业务调用</button><button>平台流量</button></span>
+            </div>
+            <div class="chart" id="chart-obs"></div>
+            <div class="legend">
+              <span><i style="background:var(--primary)"></i>业务调用</span>
+              <span><i style="background:var(--danger);opacity:.7"></i>失败</span>
+              <span><i style="background:var(--surface3)"></i>无数据</span>
+            </div>
+            <div class="note">新增<b>口径切换</b>：想排查接口层问题可切到「平台流量」，默认看业务调用。</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div><h3>成功率</h3><p class="desc">业务调用口径</p></div>
+              <span class="badge ok">100%</span>
+            </div>
+            <div class="progress"><div style="width:100%"></div></div>
+            <div class="rowline"><span class="k">成功调用</span><span class="v">6</span></div>
+            <div class="rowline"><span class="k">失败调用</span><span class="v">0</span></div>
+            <div class="rowline"><span class="k">平台流量（HTTP）</span><span class="v">5,177</span></div>
+            <div class="rowline"><span class="k">平台告警</span><span class="v" style="color:var(--warn)">5</span></div>
+            <div class="rowline"><span class="k">超时次数</span><span class="v">0</span></div>
+            <div class="note">把 HTTP 层的 5 次失败单列为<b>平台告警</b>，业务成功率不再被稀释成 99.9%。</div>
+          </div>
+        </div>
+
+        <div class="grid3" style="margin-top:16px">
+          <div class="card">
+            <div class="card-head"><div><h3>模型 Top 5</h3><p class="desc">按调用量排序</p></div><span class="badge info">可下钻</span></div>
+            <table><thead><tr><th>模型</th><th style="text-align:right">调用</th><th style="text-align:right">成功率</th><th style="text-align:right">耗时</th></tr></thead>
+            <tbody>
+              <tr class="hoverable"><td class="mono trunc">deepseek-v4-pro</td><td class="mono" style="text-align:right">6</td><td class="mono" style="text-align:right;color:var(--ok)">100%</td><td class="mono" style="text-align:right">4.90s</td></tr>
+              <tr class="hoverable"><td class="mono trunc" style="color:var(--muted2)">—</td><td class="mono" style="text-align:right;color:var(--muted2)">—</td><td class="mono" style="text-align:right;color:var(--muted2)">—</td><td class="mono" style="text-align:right;color:var(--muted2)">—</td></tr>
+            </tbody></table>
+            <div class="note">组件表由 <code>slice(0,2)</code> 改为 <b>Top 5</b> 并支持排序，改前再多模型也只看得到 2 行。</div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h3>智能体 Top 5</h3><p class="desc">按调用量排序</p></div><span class="badge info">可下钻</span></div>
+            <table><thead><tr><th>智能体</th><th style="text-align:right">调用</th><th style="text-align:right">成功率</th><th style="text-align:right">耗时</th></tr></thead>
+            <tbody>
+              <tr class="hoverable"><td class="mono trunc">测试-1</td><td class="mono" style="text-align:right">6</td><td class="mono" style="text-align:right;color:var(--ok)">100%</td><td class="mono" style="text-align:right">4.94s</td></tr>
+              <tr class="hoverable"><td class="mono trunc" style="color:var(--muted2)">—</td><td class="mono" style="text-align:right;color:var(--muted2)">—</td><td class="mono" style="text-align:right;color:var(--muted2)">—</td><td class="mono" style="text-align:right;color:var(--muted2)">—</td></tr>
+            </tbody></table>
+            <div class="note">同左。智能体行保留点击进入单智能体明细。</div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h3>工具 / MCP</h3><p class="desc">按调用量排序</p></div><span class="badge">0</span></div>
+            <div class="empty">暂无工具调用记录</div>
+            <div class="note">空态改为一句可读文案 + 引导，不再是空白卡片。</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-head">
+            <div><h3>最近失败</h3><p class="desc">错误码已做可读化映射</p></div>
+            <span class="badge danger">5 条</span>
+          </div>
+          <table>
+            <thead><tr><th>时间</th><th>组件</th><th>对象</th><th>用户</th><th>错误</th></tr></thead>
+            <tbody>
+              <tr class="hoverable"><td class="mono" style="color:var(--muted)">11-02 10:37</td><td>HTTP 接口</td><td class="trunc">GET /api/unknown</td><td>admin</td><td><span style="color:var(--danger)" class="mono">接口不存在（404）</span></td></tr>
+              <tr class="hoverable"><td class="mono" style="color:var(--muted)">11-02 10:36</td><td>HTTP 接口</td><td class="trunc">POST /api/agent</td><td>admin</td><td><span style="color:var(--danger)" class="mono">请求参数不合法（422）</span></td></tr>
+              <tr class="hoverable"><td class="mono" style="color:var(--muted)">11-02 10:35</td><td>HTTP 接口</td><td class="trunc">GET /health</td><td>—</td><td><span style="color:var(--danger)" class="mono">上游服务不可用</span></td></tr>
+            </tbody>
+          </table>
+          <div class="note">错误码可读化：<code>http_404</code> →「接口不存在（404）」；失败类型 <code>system</code> →「系统错误」。改前直接把原始 code 甩给管理员。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="foot">
+    <b>P0 清单</b>　① 业务请求口径修正（智能体/模型调用 vs 平台流量）　② Token 聚合口径统一 + 日切改本地时区　③ 修 <code>/admin/ledger</code> 死链、删 763 行死代码 <code>pages/admin/index.tsx</code>　④ 管理员中心总览指标卡换血　⑤ 两模块顶部互切 Tabs　⑥ 组件表 Top 5　⑦ 错误码可读化　⑧ 趋势图小时聚合<br />
+    <b>未含（P1/P2）</b>　请求/Token/用户三个 focus 页合并为「用量分析」　审计页分页与筛选　失败中心独立页增强<br />
+    <b>说明</b>　本图为静态效果图，未改动任何业务代码；「改造前」按钮用来对照旧数值。
+  </div>
+</div>
+
+<script>
+  // ---- 趋势图渲染 ----
+  const days = ['10-20','10-21','10-22','10-23','10-24','10-25','10-26','10-27','10-28','10-29','10-30','10-31','11-01','11-02'];
+  function renderChart(el, values, errs, max){
+    el.innerHTML = days.map((d,i)=>{
+      const v = values[i]||0, e = errs[i]||0;
+      const h = v===0 ? 3 : Math.max(4, Math.round(v/max*118));
+      const eh = e===0 ? 0 : Math.max(3, Math.round(e/max*118));
+      const today = i===days.length-1 ? ' today':'';
+      return `<div class="col${today}">
+        <div class="bar${v===0?' zero':''}" style="height:${h}px" title="${d} 业务调用 ${v}"></div>
+        ${eh?`<div class="bar err" style="height:${eh}px" title="${d} 失败 ${e}"></div>`:''}
+        <div class="xlab">${i===days.length-1?'今天':d}</div>
+      </div>`;
+    }).join('');
+  }
+  const zero14 = new Array(14).fill(0);
+  renderChart(document.getElementById('chart-obs'), [...zero14.slice(0,13), 6], [...zero14.slice(0,13), 0], 6);
+
+  // 管理员中心按小时（今日）
+  const hours = Array.from({length:24},(_,i)=>String(i).padStart(2,'0'));
+  const hv = new Array(24).fill(0); hv[10]=4; hv[11]=2;
+  document.getElementById('chart-admin').innerHTML = hours.map((h,i)=>{
+    const v=hv[i]; const hh = v===0?3:Math.max(4,Math.round(v/4*112));
+    return `<div class="col${i===11?' today':''}"><div class="bar${v===0?' zero':''}" style="height:${hh}px"></div><div class="xlab">${i%3===0?h:''}</div></div>`;
+  }).join('');
+
+  // ---- 改造前 / 改造后 ----
+  function setMode(mode){
+    document.getElementById('btn-after').classList.toggle('on', mode==='after');
+    document.getElementById('btn-before').classList.toggle('on', mode==='before');
+    document.querySelectorAll('.metric[data-after]').forEach(m=>{
+      const val=m.querySelector('.val'), sub=m.querySelector('.sub'), old=m.querySelector('.old'), note=m.querySelector('.note');
+      if(mode==='before'){
+        val.style.opacity=.35; if(sub) sub.style.display='none'; if(old) old.classList.remove('hide'); if(note) note.style.display='none';
+      }else{
+        val.style.opacity=1; if(sub) sub.style.display=''; if(old) old.classList.add('hide'); if(note) note.style.display='';
+      }
+    });
+  }
+
+  // ---- 模块切换 ----
+  function setTab(tab){
+    document.getElementById('tab-admin').classList.toggle('on', tab==='admin');
+    document.getElementById('tab-obs').classList.toggle('on', tab==='obs');
+    document.getElementById('view-admin').classList.toggle('hide', tab!=='admin');
+    document.getElementById('view-obs').classList.toggle('hide', tab!=='obs');
+    document.getElementById('nav-admin').classList.toggle('hide', tab!=='admin');
+    document.getElementById('nav-obs').classList.toggle('hide', tab!=='obs');
+  }
+</script>
+</body>
+</html>

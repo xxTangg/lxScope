@@ -47,16 +47,25 @@ export function MetricCard({
 	value,
 	Icon,
 	onClick,
+	hint,
+	emphasis = false,
 }: {
 	label: string;
 	value: string | number;
 	Icon: LucideIcon;
 	onClick?: () => void;
+	/** 次级说明：口径或构成，避免主数字被误读。 */
+	hint?: string;
+	/** 强调态：用于口径修正后需要突出对比的主指标。 */
+	emphasis?: boolean;
 }) {
 	const interactive = Boolean(onClick);
 	return (
 		<Card
-			className={interactive ? 'cursor-pointer transition-colors hover:border-primary/50 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50' : undefined}
+			className={[
+				interactive ? 'cursor-pointer transition-colors hover:border-primary/50 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50' : '',
+				emphasis ? 'border-primary/40 bg-primary/5' : '',
+			].filter(Boolean).join(' ') || undefined}
 			role={interactive ? 'button' : undefined}
 			tabIndex={interactive ? 0 : undefined}
 			onClick={onClick}
@@ -65,11 +74,12 @@ export function MetricCard({
 			}}
 		>
 			<CardContent className="flex items-center justify-between">
-				<div>
+				<div className="min-w-0">
 					<div className="text-xs text-muted-foreground">{label}</div>
 					<div className="mt-1 font-mono text-lg font-semibold">{value}</div>
+					{hint && <div className="mt-1 truncate text-xs text-muted-foreground/80">{hint}</div>}
 				</div>
-				<Icon className="size-5 text-muted-foreground" />
+				<Icon className={`size-5 flex-none ${emphasis ? 'text-primary' : 'text-muted-foreground'}`} />
 			</CardContent>
 		</Card>
 	);

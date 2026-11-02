@@ -159,6 +159,15 @@ export interface ObservabilityDaily {
 	input_tokens: number;
 	output_tokens: number;
 	total_tokens: number;
+	platform_requests: number;
+	platform_errors: number;
+}
+
+export interface ObservabilityEventTokenUsage {
+	input_tokens: number;
+	output_tokens: number;
+	total_tokens: number;
+	call_count: number;
 }
 
 export interface ObservabilityComponentRow {
@@ -225,6 +234,13 @@ export interface ObservabilityOverview {
 	active_user_count: number;
 	average_response_time_seconds: number | null;
 	token_usage: ObservabilityTokenUsage;
+	token_usage_source: 'message_history' | 'event_stream';
+	event_token_usage: ObservabilityEventTokenUsage;
+	platform_request_count: number;
+	platform_failure_count: number;
+	agent_call_count: number;
+	model_call_count: number;
+	tool_call_count: number;
 	daily: ObservabilityDaily[];
 	models: ObservabilityComponentRow[];
 	agents: ObservabilityComponentRow[];
