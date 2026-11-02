@@ -99,35 +99,37 @@ export function AdminLayout() {
 			</aside>
 			<main className="min-w-0 flex-1 overflow-auto">
 				<div className="border-b px-6">
-					<div className="mx-auto flex w-full max-w-6xl gap-1" role="tablist" aria-label={t('admin.moduleSwitch')}>
-						<button
-							type="button"
-							role="tab"
-							aria-selected={!isObservability}
-							onClick={() => navigate('/admin/overview')}
-							className={`flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm transition-colors ${
-								isObservability
-									? 'border-transparent text-muted-foreground hover:text-foreground'
-									: 'border-primary font-semibold text-foreground'
-							}`}
-						>
-							<ShieldCheck className="size-4" />
-							{t('admin.title')}
-						</button>
-						<button
-							type="button"
-							role="tab"
-							aria-selected={isObservability}
-							onClick={() => navigate('/admin/observability')}
-							className={`flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm transition-colors ${
-								isObservability
-									? 'border-primary font-semibold text-foreground'
-									: 'border-transparent text-muted-foreground hover:text-foreground'
-							}`}
-						>
-							<BarChart3 className="size-4" />
-							{t('admin.analyticsTitle')}
-						</button>
+					<div className="mx-auto flex w-full max-w-6xl py-2.5" role="tablist" aria-label={t('admin.moduleSwitch')}>
+						<div className="inline-flex items-center gap-1 rounded-lg bg-muted p-1">
+							<button
+								type="button"
+								role="tab"
+								aria-selected={!isObservability}
+								onClick={() => navigate('/admin/overview')}
+								className={`flex items-center gap-2 rounded-md px-3.5 py-1.5 text-sm transition-colors ${
+									isObservability
+										? 'text-muted-foreground hover:bg-background hover:text-foreground'
+										: 'bg-primary font-medium text-primary-foreground shadow-sm'
+								}`}
+							>
+								<ShieldCheck className="size-4" />
+								{t('admin.title')}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={isObservability}
+								onClick={() => navigate('/admin/observability')}
+								className={`flex items-center gap-2 rounded-md px-3.5 py-1.5 text-sm transition-colors ${
+									isObservability
+										? 'bg-primary font-medium text-primary-foreground shadow-sm'
+										: 'text-muted-foreground hover:bg-background hover:text-foreground'
+								}`}
+							>
+								<BarChart3 className="size-4" />
+								{t('admin.analyticsTitle')}
+							</button>
+						</div>
 					</div>
 				</div>
 				<div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">

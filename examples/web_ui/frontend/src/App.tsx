@@ -147,6 +147,10 @@ const router = createBrowserRouter([
 					{ path: '/knowledge', element: <KnowledgePage /> },
 					{ path: '/knowledge/:kbId', element: <KnowledgePage /> },
 					{ path: '/account', element: <AccountPage /> },
+					// Legacy admin-center addresses for the extracted
+					// models & credentials pages — keep old links working.
+					{ path: '/admin/models/config', element: <Navigate to="/credential/config" replace /> },
+					{ path: '/admin/models', element: <Navigate to="/credential" replace /> },
 					{
 						path: '/admin',
 						element: (
