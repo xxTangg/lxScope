@@ -36,7 +36,7 @@ import { AdminLayout } from '@/pages/admin/layout';
 import { AdminMcpPage } from '@/pages/admin/mcp';
 import { AdminMembersPage } from '@/pages/admin/members';
 import { AdminModelObservabilityPage } from '@/pages/admin/model-analysis';
-import { AdminModelsPage } from '@/pages/admin/models';
+import { ModelsCredentialsPage } from '@/pages/models-credentials';
 import { AdminOverviewPage } from '@/pages/admin/overview';
 import { AdminPolicyPage } from '@/pages/admin/policy';
 import { AdminQuotaPage } from '@/pages/admin/quota';
@@ -128,6 +128,14 @@ const router = createBrowserRouter([
 						path: '/credential',
 						element: (
 							<AdminOnlyRoute>
+								<ModelsCredentialsPage />
+							</AdminOnlyRoute>
+						),
+					},
+					{
+						path: '/credential/config',
+						element: (
+							<AdminOnlyRoute>
 								<CredentialPage />
 							</AdminOnlyRoute>
 						),
@@ -165,8 +173,6 @@ const router = createBrowserRouter([
 							{ path: 'analytics/skills', element: <AdminSkillAnalyticsPage /> },
 							{ path: 'members', element: <AdminMembersPage /> },
 							{ path: 'quota', element: <AdminQuotaPage /> },
-							{ path: 'models', element: <AdminModelsPage /> },
-							{ path: 'models/config', element: <CredentialPage /> },
 							{ path: 'skills', element: <AdminSkillsPage /> },
 							{ path: 'mcp', element: <AdminMcpPage /> },
 							{ path: 'policy', element: <AdminPolicyPage /> },
