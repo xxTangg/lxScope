@@ -165,8 +165,11 @@ export function AppSidebar() {
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										tooltip={{ children: t('common.credential') }}
-										isActive={location.pathname === '/credential'}
-										onClick={() => navigate('/credential')}
+										isActive={
+											location.pathname === '/credential' ||
+											location.pathname.startsWith('/admin/models')
+										}
+										onClick={() => navigate('/admin/models')}
 									>
 										<KeyRound />
 										<span>{t('common.credential')}</span>
