@@ -258,12 +258,6 @@ export function AppSidebar() {
 									<UserRound />
 									{t('auth.accountAndUsage')}
 								</DropdownMenuItem>
-								{isAdmin && (
-									<DropdownMenuItem onSelect={() => navigate('/admin/observability')}>
-										<BarChart3 />
-										{t('admin.analyticsTitle')}
-									</DropdownMenuItem>
-								)}
 								<DropdownMenuItem onSelect={() => navigate('/setup')}>
 									<Settings />
 									{t('common.settings')}
