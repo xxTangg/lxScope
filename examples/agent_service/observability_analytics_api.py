@@ -34,6 +34,20 @@ class ObservabilityDaily(BaseModel):
     platform_errors: int = 0
 
 
+class ObservabilityHourly(BaseModel):
+    """Hourly buckets of the end day, cut in the service local timezone."""
+
+    date: str
+    hour: int = Field(ge=0, le=23)
+    requests: int = 0
+    errors: int = 0
+    calls: int = 0
+    platform_requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
 class ObservabilityEventTokenUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
@@ -133,6 +147,7 @@ class ObservabilityOverviewResponse(BaseModel):
     model_call_count: int = 0
     tool_call_count: int = 0
     daily: list[ObservabilityDaily]
+    hourly: list[ObservabilityHourly] = Field(default_factory=list)
     models: list[ObservabilityComponentRow]
     agents: list[ObservabilityComponentRow]
     tools: list[ObservabilityComponentRow]
@@ -413,6 +428,7 @@ def _empty_summary() -> dict[str, Any]:
             "call_count": 0,
         },
         "daily": [],
+        "hourly": [],
         "models": [],
         "agents": [],
         "tools": [],

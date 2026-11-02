@@ -163,6 +163,18 @@ export interface ObservabilityDaily {
 	platform_errors: number;
 }
 
+export interface ObservabilityHourly {
+	date: string;
+	hour: number;
+	requests: number;
+	errors: number;
+	calls: number;
+	platform_requests: number;
+	input_tokens: number;
+	output_tokens: number;
+	total_tokens: number;
+}
+
 export interface ObservabilityEventTokenUsage {
 	input_tokens: number;
 	output_tokens: number;
@@ -242,6 +254,7 @@ export interface ObservabilityOverview {
 	model_call_count: number;
 	tool_call_count: number;
 	daily: ObservabilityDaily[];
+	hourly: ObservabilityHourly[];
 	models: ObservabilityComponentRow[];
 	agents: ObservabilityComponentRow[];
 	tools: ObservabilityComponentRow[];

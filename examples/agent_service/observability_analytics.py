@@ -37,6 +37,12 @@ def _local_date(value: datetime) -> date:
     return _utc(value).astimezone(_local_tz()).date()
 
 
+def _local_stamp(value: datetime) -> tuple[date, int]:
+    """Return (local date, local hour) for hourly bucketing."""
+    local = _utc(value).astimezone(_local_tz())
+    return local.date(), local.hour
+
+
 def _text(value: Any) -> str | None:
     if value is None:
         return None
@@ -237,6 +243,7 @@ class ObservabilityEventStore:
             ),
             "event_token_usage": self._token_totals(component_events),
             "daily": self._daily(events, start=start, end=end),
+            "hourly": self._hourly(events, end=end),
             "models": self._component_rows(events, "model", "model"),
             "agents": self._component_rows(events, "agent", "agent_name"),
             "tools": self._component_rows(events, "tool", "tool"),
@@ -871,6 +878,50 @@ class ObservabilityEventStore:
             rows.append({"date": current.isoformat(), **daily[current]})
             current += timedelta(days=1)
         return rows
+
+    @staticmethod
+    def _hourly(
+        events: list[ObservabilityEvent],
+        *,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        """Aggregate the last local day into 24 hourly buckets.
+
+        A 14-day window in a quiet deployment is mostly zeros, so the daily
+        chart reads as "no data".  Hourly buckets for the end day give the
+        overview a trend that is actually readable.
+        """
+        hourly: dict[tuple[date, int], dict[str, int]] = defaultdict(
+            lambda: {
+                "requests": 0,
+                "errors": 0,
+                "calls": 0,
+                "platform_requests": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        prefer_agent = any(event.component == "agent" for event in events)
+        for event in events:
+            row = hourly[_local_stamp(event.occurred_at)]
+            if event.component == ("agent" if prefer_agent else "model"):
+                row["requests"] += 1
+                row["calls"] += 1
+                row["errors"] += int(event.result != "success")
+            elif event.component in {"model", "agent", "tool"}:
+                row["calls"] += 1
+            elif ObservabilityEventStore._is_business_request(event):
+                row["platform_requests"] += 1
+            row["input_tokens"] += event.input_tokens
+            row["output_tokens"] += event.output_tokens
+            row["total_tokens"] += event.total_tokens
+
+        end_date = _local_date(end)
+        return [
+            {"date": end_date.isoformat(), "hour": hour, **hourly[(end_date, hour)]}
+            for hour in range(24)
+        ]
 
     @staticmethod
     def _failures(
