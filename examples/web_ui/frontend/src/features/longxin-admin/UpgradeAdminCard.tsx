@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArchiveRestore, Download, Loader2, RotateCcw, Upload } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 
+import { ConfirmDialog, type ConfirmDialogValues } from '@/components/dialog/ConfirmDialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,6 +35,7 @@ export function UpgradeAdminCard() {
 	const [version, setVersion] = useState('');
 	const [file, setFile] = useState<File | null>(null);
 	const [adminPassword, setAdminPassword] = useState('');
+	const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 	const catalog = useQuery({
 		queryKey: ['longxin-upgrades', user?.id, 'catalog'],
 		queryFn: upgradeApi.catalog,
@@ -109,6 +111,12 @@ export function UpgradeAdminCard() {
 	const submitUpload = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		upload.mutate();
+	};
+
+	const handleDeleteBackupConfirm = ({ reason }: ConfirmDialogValues) => {
+		if (!deleteTarget || !reason) return;
+		deleteBackup.mutate({ backupId: deleteTarget, reason });
+		setDeleteTarget(null);
 	};
 
 	return (
@@ -233,19 +241,11 @@ export function UpgradeAdminCard() {
 																											<Button
 																												variant="destructive"
 																												size="sm"
-																												disabled={deleteBackup.isPending}
-																												onClick={() => {
-																													if (!window.confirm(t('upgrade.deleteBackupConfirm'))) return;
-																													const reason = window.prompt(t('upgrade.deleteBackupReason'));
-																													if (reason && reason.trim().length >= 4) {
-																														deleteBackup.mutate({ backupId: backup.backup_id, reason: reason.trim() });
-																													} else if (reason !== null) {
-																														window.alert(t('upgrade.reasonRequired'));
-																													}
-																													}}
+																													disabled={deleteBackup.isPending}
+																													onClick={() => setDeleteTarget(backup.backup_id)}
 																												>
-																												{t('upgrade.deleteBackup')}
-																											</Button>
+																													{t('upgrade.deleteBackup')}
+																												</Button>
 							</div>
 						))
 					) : (
@@ -270,6 +270,18 @@ export function UpgradeAdminCard() {
 					)}
 				</div>
 			</CardContent>
+			<ConfirmDialog
+				open={Boolean(deleteTarget)}
+				onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+				title={t('upgrade.deleteBackup')}
+				description={t('upgrade.deleteBackupConfirm')}
+				variant="destructive"
+				requireReason
+				reasonLabel={t('common.reason')}
+				reasonPlaceholder={t('upgrade.deleteBackupReason')}
+				loading={deleteBackup.isPending}
+				onConfirm={handleDeleteBackupConfirm}
+			/>
 		</Card>
 	);
 }

@@ -48,6 +48,7 @@ import type {
 	TaskTemplateDefinition,
 	TaskValidationIssue,
 } from '@/api/task';
+import { ConfirmDialog } from '@/components/dialog/ConfirmDialog';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
@@ -621,6 +622,15 @@ export function TaskPage() {
 		React.useState<TaskPreflightResponse | null>(null);
 	const [graphValidationIssues, setGraphValidationIssues] = React.useState<TaskValidationIssue[]>([]);
 	const [isPreflighting, setIsPreflighting] = React.useState(false);
+	// Replaces the native `window.confirm` calls: holds the pending action so
+	// the confirmation can render in the app's own themed dialog.
+	const [pendingConfirm, setPendingConfirm] = React.useState<{
+		title: string;
+		description: string;
+		confirmLabel?: string;
+		variant?: 'default' | 'destructive';
+		run: () => void | Promise<void>;
+	} | null>(null);
 	const [preflightResultVersion, setPreflightResultVersion] = React.useState(0);
 	const preflightRequestRef = React.useRef(0);
 	const clearCapabilityPreflight = React.useCallback(() => {
@@ -1362,11 +1372,11 @@ export function TaskPage() {
 
 	const handleRerun = () => {
 		if (!currentRun || isSaving || isRunning || isGenerating) return;
-		const confirmed = window.confirm(
-			'确定重新执行此任务？\n\n已有执行结果将保留为历史运行记录。',
-		);
-		if (!confirmed) return;
-		void handleRun();
+		setPendingConfirm({
+			title: '确定重新执行此任务？',
+			description: '已有执行结果将保留为历史运行记录。',
+			run: () => void handleRun(),
+		});
 	};
 	const handleCancel = async () => {
 		if (!currentRun) return;
@@ -1422,7 +1432,7 @@ export function TaskPage() {
 		};
 	};
 
-	const handleDagControl = async (action: 'pause' | 'continue' | 'step' | 'stop') => {
+	const handleDagControl = (action: 'pause' | 'continue' | 'step' | 'stop') => {
 		const run = currentRun;
 		if (
 			!run ||
@@ -1430,12 +1440,19 @@ export function TaskPage() {
 			(run.engine === 'dag' && !run.graph) ||
 			pendingDagCommandRef.current
 		) return;
-		if (
-			action === 'stop' &&
-			!window.confirm('确定终止这个 Task Run 吗？终止后的 Run 不可继续执行。')
-		) {
+		if (action === 'stop') {
+			setPendingConfirm({
+				title: '确定终止这个 Task Run 吗？',
+				description: '终止后的 Run 不可继续执行。',
+				variant: 'destructive',
+				run: () => void executeDagControl(run, action),
+			});
 			return;
 		}
+		void executeDagControl(run, action);
+	};
+
+	const executeDagControl = async (run: TaskRunRecord, action: 'pause' | 'continue' | 'step' | 'stop') => {
 		const body = controlRequest(run);
 		if (!body) {
 			setError('服务端未返回 Run 版本号，无法安全提交控制命令。请刷新 Run 状态后重试。');
@@ -1481,7 +1498,7 @@ export function TaskPage() {
 		}
 	};
 
-	const handleRetryNode = async (nodeId: string) => {
+	const handleRetryNode = (nodeId: string) => {
 		const run = currentRun;
 		if (
 			!run ||
@@ -1512,7 +1529,14 @@ export function TaskPage() {
 				? '此 Tool/Python 节点可能有外部或工作区副作用。请先核查其执行状态；确认后才会向服务端提交副作用核验标记。'
 				: '已有尝试记录会保留。',
 		].join('\n\n');
-		if (!window.confirm(confirmation)) return;
+		setPendingConfirm({
+			title: `重跑节点“${definition.name}”`,
+			description: confirmation,
+			run: () => void executeRetryNode(run, nodeId, hasPossibleSideEffects),
+		});
+	};
+
+	const executeRetryNode = async (run: TaskRunRecord, nodeId: string, hasPossibleSideEffects: boolean) => {
 		const body = controlRequest(run, hasPossibleSideEffects);
 		if (!body) {
 			setError('服务端未返回 Run 版本号，无法安全提交重跑命令。请刷新 Run 状态后重试。');
@@ -1582,8 +1606,17 @@ export function TaskPage() {
 		);
 	};
 
-	const handleDelete = async (task: TaskRecord) => {
-		if (!window.confirm(`确认删除任务“${task.title}”吗？`)) return;
+	const handleDelete = (task: TaskRecord) => {
+		setPendingConfirm({
+			title: `确认删除任务“${task.title}”吗？`,
+			description: '删除后该任务及其执行记录将无法恢复。',
+			variant: 'destructive',
+			confirmLabel: '删除',
+			run: () => void executeDelete(task),
+		});
+	};
+
+	const executeDelete = async (task: TaskRecord) => {
 		try {
 			await taskApi.delete(task.id);
 			const remaining = tasks.filter((item) => item.id !== task.id);
@@ -2388,6 +2421,21 @@ export function TaskPage() {
 					if (!open) setTemplateToCreate(null);
 				}}
 				onInstantiate={handleInstantiateTemplate}
+			/>
+			<ConfirmDialog
+				open={pendingConfirm !== null}
+				onOpenChange={(open) => {
+					if (!open) setPendingConfirm(null);
+				}}
+				title={pendingConfirm?.title ?? ''}
+				description={pendingConfirm?.description}
+				confirmLabel={pendingConfirm?.confirmLabel}
+				variant={pendingConfirm?.variant}
+				onConfirm={async () => {
+					const action = pendingConfirm;
+					setPendingConfirm(null);
+					await action?.run();
+				}}
 			/>
 		</div>
 	);

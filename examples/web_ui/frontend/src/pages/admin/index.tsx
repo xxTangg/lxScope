@@ -19,6 +19,8 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Navigate } from 'react-router-dom';
 
 import { adminApi, type AdminUser } from '@/api';
+import { ConfirmDialog, type ConfirmDialogValues } from '@/components/dialog/ConfirmDialog';
+import { InfoDialog } from '@/components/dialog/InfoDialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -169,7 +171,7 @@ export function AdminPage() {
 		mutationFn: ({ userId, reason, admin_password }: { userId: string; reason: string; admin_password: string }) =>
 			adminApi.resetPassword(userId, { reason, admin_password }),
 		onSuccess: async (data) => {
-			window.alert(`${t('admin.temporaryPassword')}: ${data.temporary_password}\n${t('admin.expiresAt')}: ${data.expires_at}`);
+			setCredInfo({ temporaryPassword: data.temporary_password, expiresAt: data.expires_at });
 			await refresh();
 		},
 	});
@@ -180,7 +182,7 @@ export function AdminPage() {
 	const auditOverview = useMutation({
 		mutationFn: adminApi.auditOverview,
 		onSuccess: (data) => {
-			window.alert(`${t('admin.auditOverviewResult')}\n${JSON.stringify(data.data, null, 2)}`);
+			setAuditResult(JSON.stringify(data.data, null, 2));
 			void refresh();
 		},
 	});
@@ -199,6 +201,13 @@ export function AdminPage() {
 	if (!user || user.role !== 'admin') {
 		return <Navigate to="/chat" replace />;
 	}
+
+	const [credInfo, setCredInfo] = useState<{ temporaryPassword: string; expiresAt: string } | null>(null);
+	const [auditResult, setAuditResult] = useState<string | null>(null);
+	const [resetTarget, setResetTarget] = useState<AdminUser | null>(null);
+	const [auditTarget, setAuditTarget] = useState<AdminUser | null>(null);
+	const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
+	const [revokeTarget, setRevokeTarget] = useState<AdminUser | null>(null);
 
 	const error = [
 		overview.error?.message,
@@ -222,23 +231,35 @@ export function AdminPage() {
 	const hasNextPage = users.data ? userPage * users.data.page_size < users.data.total : false;
 
 	const handleResetPassword = (item: AdminUser) => {
-		const adminPassword = window.prompt(t('admin.adminPasswordPrompt'));
-		if (!adminPassword) return;
-		const reason = window.prompt(t('admin.resetPasswordReasonPrompt'));
-		if (!reason || reason.trim().length < 4) {
-			window.alert(t('admin.reasonRequired'));
-			return;
-		}
-		resetPassword.mutate({ userId: item.id, reason: reason.trim(), admin_password: adminPassword });
+		setResetTarget(item);
+	};
+
+	const handleResetPasswordConfirm = async ({ reason, secret }: ConfirmDialogValues) => {
+		if (!resetTarget || !secret) return;
+		resetPassword.mutate({ userId: resetTarget.id, reason: reason ?? '', admin_password: secret });
+		setResetTarget(null);
 	};
 
 	const handleAuditOverview = (item: AdminUser) => {
-		const reason = window.prompt(t('admin.auditOverviewPrompt', { username: item.username }));
-		if (!reason || reason.trim().length < 4) {
-			if (reason !== null) window.alert(t('admin.reasonRequired'));
-			return;
-		}
-		auditOverview.mutate({ target_user_id: item.id, reason: reason.trim() });
+		setAuditTarget(item);
+	};
+
+	const handleAuditOverviewConfirm = async ({ reason }: ConfirmDialogValues) => {
+		if (!auditTarget || !reason) return;
+		auditOverview.mutate({ target_user_id: auditTarget.id, reason });
+		setAuditTarget(null);
+	};
+
+	const handleDeleteConfirm = async ({ reason }: ConfirmDialogValues) => {
+		if (!deleteTarget || !reason) return;
+		deleteUser.mutate({ userId: deleteTarget.id, reason });
+		setDeleteTarget(null);
+	};
+
+	const handleRevokeConfirm = async () => {
+		if (!revokeTarget) return;
+		revokeSessions.mutate(revokeTarget.id);
+		setRevokeTarget(null);
 	};
 
 	const submitCreateUser = (event: FormEvent<HTMLFormElement>) => {
@@ -453,15 +474,7 @@ export function AdminPage() {
 																			variant="destructive"
 																			size="sm"
 																			disabled={deleteUser.isPending}
-																			onClick={() => {
-																				if (!window.confirm(t('admin.deleteConfirm', { username: item.username }))) return;
-																				const reason = window.prompt(t('admin.deleteReasonPrompt'));
-																				if (reason && reason.trim().length >= 4) {
-																					deleteUser.mutate({ userId: item.id, reason: reason.trim() });
-																				} else if (reason !== null) {
-																					window.alert(t('admin.reasonRequired'));
-																				}
-																			}}
+																		onClick={() => setDeleteTarget(item)}
 																			>
 																				{t('common.delete')}
 																			</Button>
@@ -478,11 +491,7 @@ export function AdminPage() {
 																				variant="ghost"
 																				size="sm"
 																				disabled={revokeSessions.isPending}
-																				onClick={() => {
-																				if (window.confirm(t('admin.revokeSessionsConfirm', { username: item.username }))) {
-																					revokeSessions.mutate(item.id);
-																				}
-																			}}
+																				onClick={() => setRevokeTarget(item)}
 																			>
 																				<UserRoundX />
 																				{t('admin.revokeSessions')}
@@ -676,6 +685,79 @@ export function AdminPage() {
 					</div>
 				</div>
 			</div>
+
+		<InfoDialog
+			open={credInfo !== null}
+			onOpenChange={(open) => { if (!open) setCredInfo(null); }}
+			title={t('admin.temporaryPassword')}
+			copyText={credInfo?.temporaryPassword}
+		>
+			{credInfo && (
+				<div className="space-y-1">
+					<div className="rounded-lg bg-muted/60 p-3 font-mono text-sm">{credInfo.temporaryPassword}</div>
+					<div className="text-xs text-muted-foreground">
+						{t('admin.expiresAt')}: {credInfo.expiresAt}
+					</div>
+				</div>
+			)}
+		</InfoDialog>
+
+		<InfoDialog
+			open={auditResult !== null}
+			onOpenChange={(open) => { if (!open) setAuditResult(null); }}
+			title={t('admin.auditOverviewResult')}
+		>
+			{auditResult && (
+				<pre className="max-h-72 overflow-auto rounded-lg bg-muted/60 p-3 text-xs">{auditResult}</pre>
+			)}
+		</InfoDialog>
+
+		<ConfirmDialog
+			open={resetTarget !== null}
+			onOpenChange={(open) => { if (!open) setResetTarget(null); }}
+			title={t('admin.resetPassword')}
+			variant="default"
+			loading={resetPassword.isPending}
+			requireSecret
+			secretLabel={t('admin.adminPasswordPrompt')}
+			secretPlaceholder={t('admin.adminPasswordPrompt')}
+			requireReason
+			reasonLabel={t('admin.resetPasswordReasonPrompt')}
+			reasonPlaceholder={t('admin.resetPasswordReasonPrompt')}
+			onConfirm={handleResetPasswordConfirm}
+		/>
+
+		<ConfirmDialog
+			open={auditTarget !== null}
+			onOpenChange={(open) => { if (!open) setAuditTarget(null); }}
+			title={t('admin.auditMember')}
+			loading={auditOverview.isPending}
+			requireReason
+			reasonLabel={t('admin.auditOverviewPrompt', { username: auditTarget?.username ?? '' })}
+			reasonPlaceholder={t('admin.auditOverviewPrompt', { username: auditTarget?.username ?? '' })}
+			onConfirm={handleAuditOverviewConfirm}
+		/>
+
+		<ConfirmDialog
+			open={deleteTarget !== null}
+			onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+			title={t('admin.deleteConfirm', { username: deleteTarget?.username ?? '' })}
+			variant="destructive"
+			loading={deleteUser.isPending}
+			requireReason
+			reasonLabel={t('admin.deleteReasonPrompt')}
+			reasonPlaceholder={t('admin.deleteReasonPrompt')}
+			onConfirm={handleDeleteConfirm}
+		/>
+
+		<ConfirmDialog
+			open={revokeTarget !== null}
+			onOpenChange={(open) => { if (!open) setRevokeTarget(null); }}
+			title={t('admin.revokeSessions')}
+			description={t('admin.revokeSessionsConfirm', { username: revokeTarget?.username ?? '' })}
+			loading={revokeSessions.isPending}
+			onConfirm={handleRevokeConfirm}
+		/>
 		</div>
 	);
 }

@@ -5,6 +5,8 @@ import { useLocation } from 'react-router-dom';
 
 import { AdminErrorNotice, AdminHeader, Pagination } from './shared';
 import { adminApi, type AdminUser } from '@/api';
+import { ConfirmDialog, type ConfirmDialogValues } from '@/components/dialog/ConfirmDialog';
+import { InfoDialog } from '@/components/dialog/InfoDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -41,6 +43,10 @@ export function AdminMembersPage() {
 	const [newPassword, setNewPassword] = useState('');
 	const [newPlanId, setNewPlanId] = useState('plan_basic');
 	const [bonusTokens, setBonusTokens] = useState('0');
+	const [credInfo, setCredInfo] = useState<{ temporaryPassword: string; expiresAt: string } | null>(null);
+	const [resetTarget, setResetTarget] = useState<AdminUser | null>(null);
+	const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
+	const [revokeTarget, setRevokeTarget] = useState<AdminUser | null>(null);
 	useEffect(() => {
 		setKeyword('');
 		setSearchEditable(false);
@@ -93,7 +99,7 @@ export function AdminMembersPage() {
 	const deleteUser = useMutation({ mutationFn: ({ userId, reason }: { userId: string; reason: string }) => adminApi.deleteUser(userId, reason), onSuccess: refresh });
 	const resetPassword = useMutation({
 		mutationFn: ({ userId, reason, admin_password }: { userId: string; reason: string; admin_password: string }) => adminApi.resetPassword(userId, { reason, admin_password }),
-		onSuccess: (data) => { window.alert(`${t('admin.temporaryPassword')}: ${data.temporary_password}\n${t('admin.expiresAt')}: ${data.expires_at}`); refresh(); },
+		onSuccess: (data) => { setCredInfo({ temporaryPassword: data.temporary_password, expiresAt: data.expires_at }); refresh(); },
 	});
 	const revokeSessions = useMutation({ mutationFn: adminApi.revokeSessions, onSuccess: refresh });
 	const error = [users.error?.message, plans.error?.message, createUser.error?.message, updateUser.error?.message, deleteUser.error?.message, resetPassword.error?.message, revokeSessions.error?.message].find((item): item is string => Boolean(item));
@@ -105,10 +111,25 @@ export function AdminMembersPage() {
 	};
 	const reset = () => setPage(1);
 	const handleResetPassword = (item: AdminUser) => {
-		const password = window.prompt(t('admin.adminPasswordPrompt'));
-		const reason = password ? window.prompt(t('admin.resetPasswordReasonPrompt')) : null;
-		if (!password || !reason || reason.trim().length < 4) { if (reason !== null) window.alert(t('admin.reasonRequired')); return; }
-		resetPassword.mutate({ userId: item.id, reason: reason.trim(), admin_password: password });
+		setResetTarget(item);
+	};
+
+	const handleResetPasswordConfirm = async ({ reason, secret }: ConfirmDialogValues) => {
+		if (!resetTarget || !secret) return;
+		resetPassword.mutate({ userId: resetTarget.id, reason: reason ?? '', admin_password: secret });
+		setResetTarget(null);
+	};
+
+	const handleDeleteConfirm = async ({ reason }: ConfirmDialogValues) => {
+		if (!deleteTarget || !reason) return;
+		deleteUser.mutate({ userId: deleteTarget.id, reason });
+		setDeleteTarget(null);
+	};
+
+	const handleRevokeConfirm = async () => {
+		if (!revokeTarget) return;
+		revokeSessions.mutate(revokeTarget.id);
+		setRevokeTarget(null);
 	};
 
 	return (
@@ -134,15 +155,62 @@ export function AdminMembersPage() {
 						<div className="overflow-x-auto rounded-lg border"><table className="w-full text-sm"><thead className="border-b bg-muted/40"><tr><th className="px-3 py-2 text-left font-medium">{t('admin.username')}</th><th className="px-3 py-2 text-left font-medium">{t('admin.status')}</th><th className="px-3 py-2 text-left font-medium">{t('admin.plan')}</th><th className="px-3 py-2 text-right font-medium">{t('admin.usage')}</th><th className="px-3 py-2 text-right font-medium">{t('admin.actions')}</th></tr></thead><tbody>
 						{users.isPending ? <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground"><Loader2 className="mx-auto size-4 animate-spin" /></td></tr> : items.map((item) => <tr key={item.id} className="border-b last:border-0"><td className="max-w-64 px-3 py-2"><div className="truncate font-medium" title={item.username}>{item.username}</div><div className="truncate font-mono text-xs text-muted-foreground" title={item.subject_id ?? item.id}>{t('auth.userId')}: {item.subject_id ?? item.id}</div></td><td className="px-3 py-2"><Badge variant={statusVariant(item.status)} className={statusClassName(item.status)}>{t(`admin.statusValues.${item.status}`)}</Badge></td><td className="px-3 py-2 text-muted-foreground">{item.plan_id === 'plan_none' ? t('billing.noPlan') : item.plan_name}</td><td className="px-3 py-2 text-right font-mono text-xs">{formatNumber(item.monthly_used)} / {formatNumber(item.monthly_quota)}</td><td className="px-3 py-2"><div className="flex flex-wrap justify-end gap-1">
 							<Button variant="default" size="sm" className={item.status === 'active' ? 'bg-red-600 text-white hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-800' : 'bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-700 dark:hover:bg-emerald-800'} disabled={updateUser.isPending || item.id === user?.id} title={item.id === user?.id ? t('admin.currentAdminProtected') : undefined} onClick={() => updateUser.mutate({ userId: item.id, status: item.status === 'active' ? 'banned' : 'active' })}>{item.status === 'active' ? t('admin.ban') : t('admin.activate')}</Button>
-							{!logtoEnabled && item.role !== 'admin' && <><Button variant="destructive" size="sm" disabled={deleteUser.isPending} onClick={() => { if (!window.confirm(t('admin.deleteConfirm', { username: item.username }))) return; const reason = window.prompt(t('admin.deleteReasonPrompt')); if (reason && reason.trim().length >= 4) deleteUser.mutate({ userId: item.id, reason: reason.trim() }); else if (reason !== null) window.alert(t('admin.reasonRequired')); }}>{t('common.delete')}</Button><Button variant="ghost" size="sm" disabled={resetPassword.isPending} onClick={() => handleResetPassword(item)}><KeyRound />{t('admin.resetPassword')}</Button><Button variant="ghost" size="sm" disabled={revokeSessions.isPending} onClick={() => { if (window.confirm(t('admin.revokeSessionsConfirm', { username: item.username }))) revokeSessions.mutate(item.id); }}><UserRoundX className="size-4" />{t('admin.revokeSessions')}</Button></>}
+							{!logtoEnabled && item.role !== 'admin' && <><Button variant="destructive" size="sm" disabled={deleteUser.isPending} onClick={() => setDeleteTarget(item)}>{t('common.delete')}</Button><Button variant="ghost" size="sm" disabled={resetPassword.isPending} onClick={() => handleResetPassword(item)}><KeyRound />{t('admin.resetPassword')}</Button><Button variant="ghost" size="sm" disabled={revokeSessions.isPending} onClick={() => setRevokeTarget(item)}><UserRoundX className="size-4" />{t('admin.revokeSessions')}</Button></>}
 						</div></td></tr>)}
 						{!users.isPending && items.length === 0 && <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">{t('admin.noMembers')}</td></tr>}
 					</tbody></table></div>
 					{users.data && <Pagination page={page} pageSize={users.data.page_size} total={users.data.total} onPageChange={setPage} loading={users.isFetching} />}
 				</CardContent>
 			</Card>
-			<div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{t('admin.pricingBoundaryNotice')}</div>
-			<PlanOrdersCard />
-		</>
-	);
+		<div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{t('admin.pricingBoundaryNotice')}</div>
+		<PlanOrdersCard />
+		<ConfirmDialog
+			open={Boolean(resetTarget)}
+			onOpenChange={(open) => { if (!open) setResetTarget(null); }}
+			title={t('admin.resetPassword')}
+			description={resetTarget ? t('admin.resetPasswordReasonPrompt') : undefined}
+			requireSecret
+			secretLabel={t('admin.adminPasswordPrompt')}
+			requireReason
+			reasonLabel={t('common.reason')}
+			reasonPlaceholder={t('admin.resetPasswordReasonPrompt')}
+			loading={resetPassword.isPending}
+			onConfirm={handleResetPasswordConfirm}
+		/>
+		<ConfirmDialog
+			open={Boolean(deleteTarget)}
+			onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+			title={deleteTarget ? t('admin.deleteConfirm', { username: deleteTarget.username }) : t('common.delete')}
+			variant="destructive"
+			requireReason
+			reasonLabel={t('common.reason')}
+			reasonPlaceholder={t('admin.deleteReasonPrompt')}
+			loading={deleteUser.isPending}
+			onConfirm={handleDeleteConfirm}
+		/>
+		<ConfirmDialog
+			open={Boolean(revokeTarget)}
+			onOpenChange={(open) => { if (!open) setRevokeTarget(null); }}
+			title={revokeTarget ? t('admin.revokeSessionsConfirm', { username: revokeTarget.username }) : t('admin.revokeSessions')}
+			variant="destructive"
+			loading={revokeSessions.isPending}
+			onConfirm={handleRevokeConfirm}
+		/>
+		<InfoDialog
+			open={Boolean(credInfo)}
+			onOpenChange={(open) => { if (!open) setCredInfo(null); }}
+			title={t('admin.temporaryPassword')}
+			copyText={credInfo?.temporaryPassword}
+		>
+			{credInfo && (
+				<div className="space-y-1.5">
+					<div className="text-xs text-muted-foreground">{t('admin.temporaryPassword')}</div>
+					<code className="block rounded-md border bg-muted/50 px-3 py-2 font-mono text-sm">{credInfo.temporaryPassword}</code>
+					<div className="text-xs text-muted-foreground">{t('admin.expiresAt')}</div>
+					<div className="font-mono text-sm">{credInfo.expiresAt}</div>
+				</div>
+			)}
+		</InfoDialog>
+	</>
+);
 }

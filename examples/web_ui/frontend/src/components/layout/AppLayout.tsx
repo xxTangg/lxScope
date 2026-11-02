@@ -6,7 +6,7 @@ import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
 export function AppLayout() {
 	return (
 		<div className="h-screen flex">
-			<SidebarProvider>
+			<SidebarProvider defaultOpen={true}>
 				<AppSidebar />
 				<SidebarInset className="flex-1 overflow-hidden bg-canvas">
 					<Outlet />

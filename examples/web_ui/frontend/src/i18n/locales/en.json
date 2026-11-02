@@ -8,6 +8,11 @@
 		"tasks": "My tasks",
 		"close": "Close",
 		"confirm": "Confirm",
+		"confirmSecretLabel": "Verification credential",
+		"copy": "Copy",
+		"copied": "Copied",
+		"reason": "Reason",
+		"reasonRequired": "The reason must contain at least 4 characters",
 		"create": "Create",
 		"creating": "Creating…",
 		"credential": "Credentials",
@@ -50,6 +55,9 @@
 		"my-mcp": "Installed MCPs",
 		"skill-hub": "Skill Hub",
 		"my-skill": "Installed skills",
+		"sidebarWorkspace": "Workspace",
+		"sidebarResources": "Resources",
+		"adminBadge": "Admin",
 		"message": "Message",
 		"llm": "LLM",
 		"tts": "TTS",
@@ -154,7 +162,8 @@
 			"setup": "The session could not be prepared — check the agent's model, tools and knowledge bases.",
 			"unknown": "The reply failed with an unknown error."
 		},
-		"copy": "Copy"
+		"copy": "Copy",
+		"copied": "Copied"
 	},
 	"chat": {
 		"inputPlaceholder": "Type a message...",
@@ -542,6 +551,15 @@
 	"schedule": {
 		"subtitle": "Schedule recurring or one-off tasks for your agents",
 		"calendar": "Calendar",
+		"nextUp": "Next up",
+		"nextUpEmpty": "No upcoming scheduled runs",
+		"nextUpIn": "in {value}",
+		"nextUpDue": "due now",
+		"viewDetail": "View details",
+		"daySheetEmpty": "Nothing scheduled on this day",
+		"daySheetCount": "{count} runs",
+		"createOnDay": "New on this day",
+		"tomorrow": "Tomorrow",
 		"createSchedule": {
 			"description": "Set up a recurring or one-time scheduled task for an agent.",
 			"descriptionLabel": "Description",
@@ -1431,6 +1449,10 @@
 		"noOperations": "No upgrade operations yet",
 		"fileAndVersionRequired": "Enter a version and choose a release package",
 		"passwordRequired": "Enter the administrator password",
+		"deleteBackup": "Delete backup",
+		"deleteBackupConfirm": "Delete this upgrade backup? You will no longer be able to roll back to it.",
+		"deleteBackupReason": "Why are you deleting this backup? (at least 4 characters)",
+		"reasonRequired": "The reason must contain at least 4 characters",
 		"states": {
 			"pending": "Queued",
 			"downloading": "Downloading",

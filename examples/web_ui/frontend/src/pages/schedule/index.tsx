@@ -13,6 +13,7 @@ import { CalendarTabPage } from '@/pages/schedule/calendar-tab-page';
 import { CreateScheduleDialog } from '@/pages/schedule/create-schedule-dialog';
 import { ListTabPage } from '@/pages/schedule/list-tab-page';
 import { ScheduleDetailDrawer } from '@/pages/schedule/schedule-detail-drawer';
+import { getNextFireTimes } from '@/pages/schedule/schedule-utils';
 
 function expandScheduleToEvents(
 	schedule: ScheduleRecord,
@@ -56,6 +57,14 @@ export function SchedulePage() {
 	const [currentDate, setCurrentDate] = React.useState(new Date());
 	const [selectedSchedule, setSelectedSchedule] = React.useState<ScheduleRecord | null>(null);
 	const [isCreateOpen, setIsCreateOpen] = React.useState(false);
+	const [createDefaultDate, setCreateDefaultDate] = React.useState<Date | null>(null);
+
+	// The Next Up bar counts down, so "now" has to move even when nothing else does.
+	const [now, setNow] = React.useState(() => new Date());
+	React.useEffect(() => {
+		const timer = setInterval(() => setNow(new Date()), 30_000);
+		return () => clearInterval(timer);
+	}, []);
 
 	const rangeStart = React.useMemo(
 		() => new Date(currentDate.getFullYear(), currentDate.getMonth(), 1),
@@ -72,10 +81,25 @@ export function SchedulePage() {
 			.flatMap((s) => expandScheduleToEvents(s, rangeStart, rangeEnd));
 	}, [schedules, rangeStart, rangeEnd]);
 
+	const nextUp = React.useMemo(
+		() => getNextFireTimes(schedules, now)[0] ?? null,
+		[schedules, now],
+	);
+
 	const handleEventClick = (event: ScheduleEvent) => {
 		const scheduleId = event.id.split(':')[0];
 		const schedule = schedules.find((s) => s.id === scheduleId);
 		if (schedule) setSelectedSchedule(schedule);
+	};
+
+	const handleOpenSchedule = (scheduleId: string) => {
+		const schedule = schedules.find((s) => s.id === scheduleId);
+		if (schedule) setSelectedSchedule(schedule);
+	};
+
+	const handleCreateOnDate = (date: Date) => {
+		setCreateDefaultDate(date);
+		setIsCreateOpen(true);
 	};
 
 	return (
@@ -89,9 +113,15 @@ export function SchedulePage() {
 						</div>
 					</div>
 					<div className="flex items-center gap-2">
-						<Button size="icon-sm" onClick={() => setIsCreateOpen(true)}>
-							<Plus />
-						</Button>
+					<Button
+						size="icon-sm"
+						onClick={() => {
+							setCreateDefaultDate(null);
+							setIsCreateOpen(true);
+						}}
+					>
+						<Plus />
+					</Button>
 						<Tabs
 							value={viewMode}
 							onValueChange={(value) => setViewMode(value as 'calendar' | 'list')}
@@ -118,6 +148,9 @@ export function SchedulePage() {
 							onEventClick={handleEventClick}
 							currentDate={currentDate}
 							onMonthChange={setCurrentDate}
+							nextUp={nextUp}
+							onOpenSchedule={handleOpenSchedule}
+							onCreateOnDate={handleCreateOnDate}
 						/>
 					)}
 					{viewMode === 'list' && <ListTabPage />}
@@ -134,7 +167,11 @@ export function SchedulePage() {
 			<CreateScheduleDialog
 				open={isCreateOpen}
 				onOpenChange={setIsCreateOpen}
-				onCreated={refetch}
+				onCreated={() => {
+					if (createDefaultDate) setCurrentDate(createDefaultDate);
+					refetch();
+				}}
+				defaultDate={createDefaultDate}
 			/>
 		</div>
 	);

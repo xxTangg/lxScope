@@ -8,6 +8,11 @@
 		"tasks": "我的任务",
 		"close": "关闭",
 		"confirm": "确认",
+		"confirmSecretLabel": "验证凭证",
+		"copy": "复制",
+		"copied": "已复制",
+		"reason": "原因",
+		"reasonRequired": "原因至少需要 4 个字符",
 		"create": "创建",
 		"creating": "创建中…",
 		"credential": "凭证",
@@ -50,6 +55,9 @@
 		"my-mcp": "已安装的 MCP",
 		"skill-hub": "技能中心",
 		"my-skill": "已安装的技能",
+		"sidebarWorkspace": "工作区",
+		"sidebarResources": "资源管理",
+		"adminBadge": "管理员",
 		"message": "消息",
 		"llm": "LLM",
 		"tts": "TTS",
@@ -154,7 +162,8 @@
 			"setup": "会话准备失败 —— 请检查该智能体的模型、工具和知识库配置。",
 			"unknown": "回复因未知错误失败。"
 		},
-		"copy": "复制"
+		"copy": "复制",
+		"copied": "已复制"
 	},
 	"chat": {
 		"inputPlaceholder": "输入消息...",
@@ -542,6 +551,15 @@
 	"schedule": {
 		"subtitle": "为智能体设置定时或一次性的计划任务",
 		"calendar": "日历",
+		"nextUp": "下一场",
+		"nextUpEmpty": "暂无即将执行的计划任务",
+		"nextUpIn": "还有 {value}",
+		"nextUpDue": "即将触发",
+		"viewDetail": "查看详情",
+		"daySheetEmpty": "这一天没有计划任务",
+		"daySheetCount": "共 {count} 次触发",
+		"createOnDay": "在这一天新建",
+		"tomorrow": "明天",
 		"createSchedule": {
 			"description": "为智能体设置定时或一次性的计划任务。",
 			"descriptionLabel": "描述",
@@ -1431,6 +1449,10 @@
 		"noOperations": "暂无升级操作",
 		"fileAndVersionRequired": "请填写版本并选择升级包",
 		"passwordRequired": "请输入管理员密码",
+		"deleteBackup": "删除备份",
+		"deleteBackupConfirm": "确定删除这个升级备份吗？删除后无法回滚到该版本。",
+		"deleteBackupReason": "请输入删除该备份的原因（至少 4 个字符）",
+		"reasonRequired": "原因至少需要 4 个字符",
 		"states": {
 			"pending": "排队中",
 			"downloading": "下载中",

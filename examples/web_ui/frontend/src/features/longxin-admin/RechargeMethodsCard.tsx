@@ -3,6 +3,7 @@ import { BadgeDollarSign, ChevronLeft, ChevronRight, Database, Loader2, RefreshC
 import { useState, type FormEvent } from 'react';
 
 import { adminApi } from '@/api';
+import { ConfirmDialog } from '@/components/dialog/ConfirmDialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -24,6 +25,7 @@ export function RechargeMethodsCard() {
 	const [rechargeAmount, setRechargeAmount] = useState('');
 	const [rechargeCode, setRechargeCode] = useState('');
 	const [rechargePage, setRechargePage] = useState(1);
+	const [redeemTarget, setRedeemTarget] = useState<string | null>(null);
 	const recharges = useQuery({
 		queryKey: ['admin', user?.id, 'recharges'],
 		queryFn: () => adminApi.rechargeRequests(20),
@@ -66,8 +68,14 @@ export function RechargeMethodsCard() {
 	const submitCode = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		const code = rechargeCode.trim();
-		if (!code || !window.confirm(t('admin.redeemCodeConfirm'))) return;
-		redeemCode.mutate(code);
+		if (!code) return;
+		setRedeemTarget(code);
+	};
+
+	const handleRedeemConfirm = () => {
+		if (!redeemTarget) return;
+		redeemCode.mutate(redeemTarget);
+		setRedeemTarget(null);
 	};
 
 	const error = [
@@ -263,6 +271,14 @@ export function RechargeMethodsCard() {
 					</div>
 				)}
 			</CardContent>
+			<ConfirmDialog
+				open={Boolean(redeemTarget)}
+				onOpenChange={(open) => { if (!open) setRedeemTarget(null); }}
+				title={t('admin.redeemRechargeCode')}
+				description={t('admin.redeemCodeConfirm')}
+				loading={redeemCode.isPending}
+				onConfirm={handleRedeemConfirm}
+			/>
 		</Card>
 	);
 }

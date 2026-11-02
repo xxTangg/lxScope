@@ -38,6 +38,8 @@ interface Props {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	onCreated?: () => void;
+	/** Pre-fills the date field when the dialog is opened from a calendar day. */
+	defaultDate?: Date | null;
 }
 
 type FreqType = 'once' | 'daily' | 'weekly' | 'monthly';
@@ -114,7 +116,12 @@ function DatePickerButton({
 	);
 }
 
-export function CreateScheduleDialog({ open, onOpenChange, onCreated }: Props) {
+export function CreateScheduleDialog({
+	open,
+	onOpenChange,
+	onCreated,
+	defaultDate,
+}: Props) {
 	const { t } = useTranslation();
 	const { create } = useSchedules();
 	const { agents } = useAgents();
@@ -124,10 +131,10 @@ export function CreateScheduleDialog({ open, onOpenChange, onCreated }: Props) {
 
 	React.useEffect(() => {
 		if (open) {
-			setForm(getDefaultForm());
+			setForm({ ...getDefaultForm(), date: defaultDate ?? getDefaultForm().date });
 			setError('');
 		}
-	}, [open]);
+	}, [open, defaultDate]);
 
 	React.useEffect(() => {
 		if (agents.length > 0 && !form.agentId) {
