@@ -89,8 +89,7 @@ export function AdminLayout() {
 						<BarChart3 className="size-4" />
 						<span className="font-heading text-sm font-semibold">{t('admin.analyticsTitle')}</span>
 					</div>
-					<div className="mt-0.5 space-y-1 border-l border-border pl-5">
-						{[observabilityGroup, ...observabilitySubItems].map(({ path, label, Icon }) => (
+					{[observabilityGroup, ...observabilitySubItems].map(({ path, label, Icon }) => (
 							<NavLink
 								key={path}
 								to={path}
@@ -105,8 +104,7 @@ export function AdminLayout() {
 								{label}
 							</NavLink>
 						))}
-					</div>
-				</nav>
+					</nav>
 				<div className="px-3 pb-3 md:hidden">
 					<select
 						value={location.pathname}
