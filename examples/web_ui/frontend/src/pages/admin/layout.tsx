@@ -85,26 +85,19 @@ export function AdminLayout() {
 						</NavLink>
 					))}
 					<div className="my-2 border-t border-border" />
-					<NavLink
-						to={observabilityGroup.path}
-						end
-						className={({ isActive }) =>
-							`flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${
-								isActive ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-							}`
-						}
-					>
+					<div className="flex items-center gap-2 px-3 pb-1 pt-1">
 						<BarChart3 className="size-4" />
-						{t('admin.analyticsTitle')}
-					</NavLink>
-					<div className="mt-1 space-y-0.5 border-l border-border pl-5">
-						{observabilitySubItems.map(({ path, label, Icon }) => (
+						<span className="font-heading text-sm font-semibold">{t('admin.analyticsTitle')}</span>
+					</div>
+					<div className="mt-0.5 space-y-1 border-l border-border pl-5">
+						{[observabilityGroup, ...observabilitySubItems].map(({ path, label, Icon }) => (
 							<NavLink
 								key={path}
 								to={path}
+								end={path === observabilityGroup.path}
 								className={({ isActive }) =>
-									`flex items-center gap-2 rounded-md py-1.5 pl-2 pr-3 text-sm transition-colors ${
-										isActive ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+									`flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${
+										isActive ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
 									}`
 								}
 							>
