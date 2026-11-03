@@ -97,24 +97,22 @@ export function AdminLayout() {
 						<BarChart3 className="size-4" />
 						{t('admin.analyticsTitle')}
 					</NavLink>
-					{isObservability && (
-						<div className="mt-1 space-y-0.5 border-l border-border pl-5">
-							{observabilitySubItems.map(({ path, label, Icon }) => (
-								<NavLink
-									key={path}
-									to={path}
-									className={({ isActive }) =>
-										`flex items-center gap-2 rounded-md py-1.5 pl-2 pr-3 text-sm transition-colors ${
-											isActive ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-										}`
-									}
-								>
-									<Icon className="size-4" />
-									{label}
-								</NavLink>
-							))}
-						</div>
-					)}
+					<div className="mt-1 space-y-0.5 border-l border-border pl-5">
+						{observabilitySubItems.map(({ path, label, Icon }) => (
+							<NavLink
+								key={path}
+								to={path}
+								className={({ isActive }) =>
+									`flex items-center gap-2 rounded-md py-1.5 pl-2 pr-3 text-sm transition-colors ${
+										isActive ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+									}`
+								}
+							>
+								<Icon className="size-4" />
+								{label}
+							</NavLink>
+						))}
+					</div>
 				</nav>
 				<div className="px-3 pb-3 md:hidden">
 					<select
