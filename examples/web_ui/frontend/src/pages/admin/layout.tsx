@@ -87,11 +87,14 @@ export function AdminLayout() {
 						</NavLink>
 					))}
 					<div className="my-2 border-t border-border" />
-					<div className="mt-1 flex items-center gap-2.5 border-y bg-primary/5 px-3 py-2.5">
-						<div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
-							<BarChart3 className="size-4" />
+					<div className="-mx-2 mt-1 flex items-center gap-2.5 border-y bg-primary/5 px-4 py-3.5">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+							<BarChart3 className="size-5" />
 						</div>
-						<span className="font-heading text-sm font-bold tracking-wide">{t('admin.analyticsTitle')}</span>
+						<div>
+							<div className="font-heading text-sm font-bold tracking-wide">{t('admin.analyticsTitle')}</div>
+							<div className="text-xs text-muted-foreground">{t('admin.nav.observabilitySubtitle')}</div>
+						</div>
 					</div>
 					{[observabilityGroup, ...observabilitySubItems].map(({ path, label, Icon }) => (
 							<NavLink
