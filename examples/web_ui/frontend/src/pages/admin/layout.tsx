@@ -87,9 +87,9 @@ export function AdminLayout() {
 						</NavLink>
 					))}
 					<div className="my-2 border-t border-border" />
-					<div className="flex items-center gap-2.5 px-3 pb-1.5 pt-2.5">
-						<div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-							<BarChart3 className="size-3.5" />
+					<div className="mt-1 flex items-center gap-2.5 border-y bg-primary/5 px-3 py-2.5">
+						<div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+							<BarChart3 className="size-4" />
 						</div>
 						<span className="font-heading text-sm font-bold tracking-wide">{t('admin.analyticsTitle')}</span>
 					</div>
