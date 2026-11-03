@@ -56,14 +56,14 @@ export function AdminLayout() {
 		{ path: observabilityGroup.path, label: observabilityGroup.label },
 		...observabilitySubItems.map((item) => ({ path: item.path, label: item.label })),
 	];
-	const panelTitle = isObservability ? t('admin.analyticsTitle') : t('admin.title');
-	const panelSubtitle = isObservability ? t('admin.nav.observabilitySubtitle') : t('admin.nav.subtitle');
+	const panelTitle = t('admin.title');
+	const panelSubtitle = t('admin.nav.subtitle');
 
 	return (
 		<div className="flex h-full min-h-0 flex-col overflow-hidden md:flex-row">
 			<aside className="shrink-0 border-b bg-muted/20 md:w-56 md:border-r md:border-b-0">
 				<div className="flex items-center gap-2 px-4 py-4">
-					{isObservability ? <BarChart3 className="size-5" /> : <ShieldCheck className="size-5" />}
+					<ShieldCheck className="size-5" />
 					<div>
 						<div className="font-heading text-sm font-semibold">{panelTitle}</div>
 						<div className="text-xs text-muted-foreground">{panelSubtitle}</div>
@@ -89,8 +89,8 @@ export function AdminLayout() {
 						to={observabilityGroup.path}
 						end
 						className={({ isActive }) =>
-							`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-								isActive ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-muted'
+							`flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${
+								isActive ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
 							}`
 						}
 					>
