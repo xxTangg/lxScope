@@ -62,10 +62,12 @@ export function AdminLayout() {
 	return (
 		<div className="flex h-full min-h-0 flex-col overflow-hidden md:flex-row">
 			<aside className="shrink-0 border-b bg-muted/20 md:w-56 md:border-r md:border-b-0">
-				<div className="flex items-center gap-2 px-4 py-4">
-					<ShieldCheck className="size-5" />
+				<div className="flex items-center gap-2.5 border-b bg-primary/5 px-4 py-3.5">
+					<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+						<ShieldCheck className="size-5" />
+					</div>
 					<div>
-						<div className="font-heading text-sm font-semibold">{panelTitle}</div>
+						<div className="font-heading text-sm font-bold tracking-wide">{panelTitle}</div>
 						<div className="text-xs text-muted-foreground">{panelSubtitle}</div>
 					</div>
 				</div>
@@ -85,9 +87,11 @@ export function AdminLayout() {
 						</NavLink>
 					))}
 					<div className="my-2 border-t border-border" />
-					<div className="flex items-center gap-2 px-3 pb-1 pt-1">
-						<BarChart3 className="size-4" />
-						<span className="font-heading text-sm font-semibold">{t('admin.analyticsTitle')}</span>
+					<div className="flex items-center gap-2.5 px-3 pb-1.5 pt-2.5">
+						<div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+							<BarChart3 className="size-3.5" />
+						</div>
+						<span className="font-heading text-sm font-bold tracking-wide">{t('admin.analyticsTitle')}</span>
 					</div>
 					{[observabilityGroup, ...observabilitySubItems].map(({ path, label, Icon }) => (
 							<NavLink
