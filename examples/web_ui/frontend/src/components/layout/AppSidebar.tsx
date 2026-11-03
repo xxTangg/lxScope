@@ -15,6 +15,7 @@ import {
 	UserRound,
 } from 'lucide-react';
 import { useOnborda } from 'onborda';
+import { useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 
 import AgentScope from '@/assets/images/agentscope.svg?react';
@@ -41,6 +42,7 @@ import {
 	SidebarMenuButton,
 	SidebarMenuItem,
 	SidebarTrigger,
+	useSidebar,
 } from '@/components/ui/sidebar';
 import { useAuth } from '@/hooks/useAuth';
 import i18n from '@/i18n';
@@ -53,6 +55,22 @@ export function AppSidebar() {
 	const { startOnborda } = useOnborda();
 	const { user, logout, switchAccount, logtoEnabled } = useAuth();
 	const isAdmin = user?.role === 'admin';
+	const { setOpen } = useSidebar();
+	const wasInAdmin = useRef(false);
+
+	// The admin center has its own inner navigation, so collapse the global
+	// rail while browsing it to give the content more width. Restore the
+	// expanded default when leaving. Only fire on module enter/leave — the
+	// user's manual toggle inside a module is never overridden.
+	useEffect(() => {
+		const inAdmin = location.pathname.startsWith('/admin');
+		if (inAdmin && !wasInAdmin.current) {
+			setOpen(false);
+		} else if (!inAdmin && wasInAdmin.current) {
+			setOpen(true);
+		}
+		wasInAdmin.current = inAdmin;
+	}, [location.pathname, setOpen]);
 
 	const handleStartTour = () => {
 		if (!location.pathname.startsWith('/chat')) {
@@ -121,7 +139,10 @@ export function AppSidebar() {
 									<SidebarMenuButton
 										tooltip={{ children: t('admin.title') }}
 										isActive={location.pathname.startsWith('/admin')}
-										onClick={() => navigate('/admin/overview')}
+										onClick={() => {
+											setOpen(false);
+											navigate('/admin/overview');
+										}}
 									>
 										<ShieldCheck />
 										<span>{t('admin.title')}</span>
