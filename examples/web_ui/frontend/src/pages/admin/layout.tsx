@@ -49,14 +49,13 @@ export function AdminLayout() {
 		{ path: '/admin/observability/failures', label: t('admin.nav.observabilityFailures'), Icon: TriangleAlert },
 	];
 	const isObservability = location.pathname.startsWith('/admin/observability');
-	const items = isObservability ? observabilityItems : adminItems;
-	const current = isObservability
-		? observabilityItems.find((item) =>
-			item.path === '/admin/observability'
-				? location.pathname === item.path
-				: location.pathname === item.path || location.pathname.startsWith(`${item.path}/`),
-		)?.path ?? '/admin/observability'
-		: adminItems.find((item) => location.pathname.startsWith(`/admin/${item.path}`))?.path ?? 'overview';
+	const observabilityGroup: AdminNavItem = observabilityItems[0];
+	const observabilitySubItems = observabilityItems.slice(1);
+	const mobileOptions: { path: string; label: string }[] = [
+		...adminItems.map((item) => ({ path: `/admin/${item.path}`, label: item.label })),
+		{ path: observabilityGroup.path, label: observabilityGroup.label },
+		...observabilitySubItems.map((item) => ({ path: item.path, label: item.label })),
+	];
 	const panelTitle = isObservability ? t('admin.analyticsTitle') : t('admin.title');
 	const panelSubtitle = isObservability ? t('admin.nav.observabilitySubtitle') : t('admin.nav.subtitle');
 
@@ -71,11 +70,10 @@ export function AdminLayout() {
 					</div>
 				</div>
 				<nav className="hidden space-y-1 px-2 pb-3 md:block">
-					{items.map(({ path, label, Icon }) => (
+					{adminItems.map(({ path, label, Icon }) => (
 						<NavLink
 							key={path}
-							to={isObservability ? path : `/admin/${path}`}
-							end={isObservability && path === '/admin/observability'}
+							to={`/admin/${path}`}
 							className={({ isActive }) =>
 								`flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${
 									isActive ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -86,52 +84,49 @@ export function AdminLayout() {
 							{label}
 						</NavLink>
 					))}
+					<div className="my-2 border-t border-border" />
+					<NavLink
+						to={observabilityGroup.path}
+						end
+						className={({ isActive }) =>
+							`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+								isActive ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-muted'
+							}`
+						}
+					>
+						<BarChart3 className="size-4" />
+						{t('admin.analyticsTitle')}
+					</NavLink>
+					{isObservability && (
+						<div className="mt-1 space-y-0.5 border-l border-border pl-5">
+							{observabilitySubItems.map(({ path, label, Icon }) => (
+								<NavLink
+									key={path}
+									to={path}
+									className={({ isActive }) =>
+										`flex items-center gap-2 rounded-md py-1.5 pl-2 pr-3 text-sm transition-colors ${
+											isActive ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+										}`
+									}
+								>
+									<Icon className="size-4" />
+									{label}
+								</NavLink>
+							))}
+						</div>
+					)}
 				</nav>
 				<div className="px-3 pb-3 md:hidden">
 					<select
-						value={current}
-						onChange={(event) => navigate(isObservability ? event.target.value : `/admin/${event.target.value}`)}
+						value={location.pathname}
+						onChange={(event) => navigate(event.target.value)}
 						className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
 					>
-						{items.map((item) => <option key={item.path} value={item.path}>{item.label}</option>)}
+						{mobileOptions.map((item) => <option key={item.path} value={item.path}>{item.label}</option>)}
 					</select>
 				</div>
 			</aside>
 			<main className="min-w-0 flex-1 overflow-auto">
-				<div className="border-b px-6">
-					<div className="mx-auto flex w-full max-w-6xl py-2.5" role="tablist" aria-label={t('admin.moduleSwitch')}>
-						<div className="inline-flex items-center gap-1 rounded-lg bg-muted p-1">
-							<button
-								type="button"
-								role="tab"
-								aria-selected={!isObservability}
-								onClick={() => navigate('/admin/overview')}
-								className={`flex items-center gap-2 rounded-md px-3.5 py-1.5 text-sm transition-colors ${
-									isObservability
-										? 'text-muted-foreground hover:bg-background hover:text-foreground'
-										: 'bg-primary font-medium text-primary-foreground shadow-sm'
-								}`}
-							>
-								<ShieldCheck className="size-4" />
-								{t('admin.title')}
-							</button>
-							<button
-								type="button"
-								role="tab"
-								aria-selected={isObservability}
-								onClick={() => navigate('/admin/observability')}
-								className={`flex items-center gap-2 rounded-md px-3.5 py-1.5 text-sm transition-colors ${
-									isObservability
-										? 'bg-primary font-medium text-primary-foreground shadow-sm'
-										: 'text-muted-foreground hover:bg-background hover:text-foreground'
-								}`}
-							>
-								<BarChart3 className="size-4" />
-								{t('admin.analyticsTitle')}
-							</button>
-						</div>
-					</div>
-				</div>
 				<div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">
 					<Outlet />
 				</div>
