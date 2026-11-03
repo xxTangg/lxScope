@@ -266,9 +266,16 @@ class ResourceAccessService:
         else:
             own = await self._storage.list_knowledge_bases(viewer_id)
 
-        views: list[BaseModel] = [
-            self._build_view(record, viewer_id, True) for record in own
-        ]
+        views: list[BaseModel] = []
+        for record in own:
+            if not await self._policy.can_read_owned(
+                viewer_id,
+                kind,
+                record.user_id,
+                self._storage,
+            ):
+                continue
+            views.append(self._build_view(record, viewer_id, True))
         seen = {(record.user_id, record.id) for record in own}
 
         for ref in await self._list_refs(viewer_id, kind):
@@ -344,7 +351,12 @@ class ResourceAccessService:
         for runtime provider calls.
         """
         own = await self._get_owned(kind, viewer_id, resource_id)
-        if own is not None:
+        if own is not None and await self._policy.can_read_owned(
+            viewer_id,
+            kind,
+            own.user_id,
+            self._storage,
+        ):
             # Owner-side reads bypass the ``team`` filter on purpose:
             # runtime paths legitimately load the owner's ``source ==
             # "team"`` agents, and we want a single call site.
@@ -386,7 +398,12 @@ class ResourceAccessService:
         (chat / embedding / TTS model construction).
         """
         record = await self._storage.get_credential(viewer_id, credential_id)
-        if record is not None:
+        if record is not None and await self._policy.can_read_owned(
+            viewer_id,
+            ResourceKind.CREDENTIAL,
+            record.user_id,
+            self._storage,
+        ):
             return record
 
         for ref in await self._list_refs(viewer_id, ResourceKind.CREDENTIAL):
@@ -502,7 +519,12 @@ class ResourceAccessService:
                   has ``READ`` permission on it.
         """
         own = await self._get_owned(kind, viewer_id, resource_id)
-        if own is not None:
+        if own is not None and await self._policy.can_read_owned(
+            viewer_id,
+            kind,
+            own.user_id,
+            self._storage,
+        ):
             return viewer_id, own
 
         for ref in await self._list_refs(viewer_id, kind):

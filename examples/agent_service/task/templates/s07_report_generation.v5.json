@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "template_id": "s07_report_generation",
+  "template_version": "5.0.0",
+  "title": "报告生成",
+  "description": "基于当前用户获准资料生成报告初稿；报告业务内容由通用 Task AI 验收器评估，知识库授权与来源访问仍由服务端控制。",
+  "category": "review",
+  "required_capabilities": [
+    "report.rag_retrieve",
+    "document.render"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_name",
+      "source_material_ids",
+      "required_chapters"
+    ],
+    "properties": {
+      "project_name": {
+        "type": "string",
+        "description": "项目名称。"
+      },
+      "source_material_ids": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string"
+        },
+        "description": "已授权资料标识。"
+      },
+      "required_chapters": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string"
+        },
+        "description": "要求生成的章节。"
+      },
+      "applicable_rules": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "经确认的适用规则标识。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "依据用户要求和本次授权检索资料生成报告初稿；由 Task 通用 task-verifier 按节点验收标准评估业务内容，不要求固定引用编号、引用 JSON 或逐条原文格式。需要专业判断或资料不足的内容明确标为待核实，并保留人工复核状态。",
+  "steps": [
+    {
+      "step_key": "collect_report_materials",
+      "title": "采集报告资料",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供报告范围、章节和已授权资料标识。",
+        "questions": [
+          {
+            "key": "project_name",
+            "label": "项目名称",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "source_material_ids",
+            "label": "已授权资料标识",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "required_chapters",
+            "label": "要求生成的章节",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "applicable_rules",
+            "label": "适用规则标识",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "确定报告范围和可用资料清单。",
+      "failure_handling": "范围或资料授权不明确时请求补充或阻断。",
+      "sensitive_information": "报告资料可能包含商业机密，仅读取获准资料。"
+    },
+    {
+      "step_key": "retrieve_report_evidence",
+      "title": "检索授权报告资料",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "report.rag_retrieve",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "request": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "仅从当前用户有权访问的知识库检索并保存原文证据快照。",
+      "failure_handling": "RAG 或资料权限缺失时阻断正式报告草稿生成，不补造引用。",
+      "sensitive_information": "检索结果限于用户授权的资料集合。"
+    },
+    {
+      "step_key": "draft_report_chapters",
+      "title": "生成章节草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "依据本次 TaskRun 的项目输入、用户要求和授权知识库检索结果撰写报告初稿。按 required_chapters 的业务主题和顺序覆盖内容，可使用自然的标题表达；不要求 [C1] 编号、task-citations 代码块、Evidence ID、哈希或逐字摘录映射。仅把本次授权检索实际返回的资料作为已检索资料；不得虚构来源或声称引用已通过核验。资料不能支持的事实、冲突信息和需要专业判断的内容明确标注待核实或待人工复核。报告保持草稿状态，不声称正式审核、合规结论、批准或签发。"
+      },
+      "output_requirement": "报告初稿应结合用户输入和本次授权检索结果，满足报告范围与章节业务要求；内容由 Task 通用 task-verifier 进行 AI 验收，不使用固定引用编号、引用区块或逐条摘录规则验收。",
+      "failure_handling": "Task 通用 task-verifier 按节点验收标准评估业务内容；知识库未授权、检索失败或服务不可用时由服务端阻断，不能用模型内容替代授权检索。",
+      "sensitive_information": "只纳入报告范围需要的项目资料。"
+    },
+    {
+      "step_key": "collect_report_review",
+      "title": "复核报告内容与补充意见",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请复核报告业务内容并提供更正或补充意见；此步骤不是审批或签发。",
+        "questions": [
+          {
+            "key": "report_feedback",
+            "label": "审核意见或待更正项",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "记录用户对报告内容的更正或补充意见；未提供意见时保留草稿和人工复核标记。",
+      "failure_handling": "未收到意见时保持草稿/待审核状态。",
+      "sensitive_information": "审核意见按项目资料授权范围访问。"
+    },
+    {
+      "step_key": "produce_report_draft",
+      "title": "整理报告草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "根据本次 TaskRun 的授权检索结果、报告初稿和用户复核意见整理最终报告草稿。应用用户提出的相关修改；没有修改意见时保留初稿的业务内容。来源清单只列出本次检索实际返回的资料；不得生成引用编号、task-citations JSON、Evidence ID、哈希或“引用已核验”等服务端状态。资料不足和争议内容保留待核实标记。报告保持草稿状态，不声称正式审核、合规结论、批准或签发。"
+      },
+      "output_requirement": "输出适合人工复核的报告草稿；业务内容由 Task 通用 task-verifier 按本节点标准进行 AI 验收。通过后由现有 Artifact Writer 生成 DOCX。",
+      "failure_handling": "Task 通用 task-verifier 判定内容未达到节点标准时由 SOP 处理；授权检索、用户权限、Workspace 访问或 DOCX 渲染失败时保留对应真实错误，不得伪报成功。",
+      "sensitive_information": "导出内容遵循项目资料权限和最小披露原则。",
+      "artifact": {
+        "format": "docx",
+        "filename": "评审报告草稿"
+      }
+    }
+  ],
+  "unsupported_capabilities": [
+    {
+      "capability_key": "report.formal_signoff",
+      "reason": "现有 Task InputStep 不具备签名、审批人授权和审计协议。"
+    },
+    {
+      "capability_key": "report.consistency_check",
+      "reason": "报告语义一致性没有可验证的确定性业务适配；由人工复核。"
+    },
+    {
+      "capability_key": "report.compliance_check",
+      "reason": "未接入权威适用规则库；Task 不自动作出合规结论。"
+    }
+  ]
+}

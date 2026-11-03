@@ -3,6 +3,7 @@ import {
 	BotMessageSquare,
 	Cable,
 	Calendars,
+	ClipboardList,
 	Compass,
 	KeyRound,
 	Languages,
@@ -10,13 +11,16 @@ import {
 	LogOut,
 	Repeat2,
 	Settings,
+	ShieldCheck,
 	UserRound,
 } from 'lucide-react';
 import { useOnborda } from 'onborda';
+import { useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 
 import AgentScope from '@/assets/images/agentscope.svg?react';
 import MCPSvg from '@/assets/images/mcp.svg?react';
+import { Badge } from '@/components/ui/badge';
 import { CHAT_TOUR_NAME } from '@/components/tour/chatTourSteps';
 import {
 	DropdownMenu,
@@ -32,10 +36,13 @@ import {
 	SidebarFooter,
 	SidebarGroup,
 	SidebarGroupContent,
+	SidebarGroupLabel,
 	SidebarHeader,
 	SidebarMenu,
 	SidebarMenuButton,
 	SidebarMenuItem,
+	SidebarTrigger,
+	useSidebar,
 } from '@/components/ui/sidebar';
 import { useAuth } from '@/hooks/useAuth';
 import i18n from '@/i18n';
@@ -46,7 +53,24 @@ export function AppSidebar() {
 	const location = useLocation();
 	const { t } = useTranslation();
 	const { startOnborda } = useOnborda();
-	const { user, logout } = useAuth();
+	const { user, logout, switchAccount, logtoEnabled } = useAuth();
+	const isAdmin = user?.role === 'admin';
+	const { setOpen } = useSidebar();
+	const wasInAdmin = useRef(false);
+
+	// The admin center has its own inner navigation, so collapse the global
+	// rail while browsing it to give the content more width. Restore the
+	// expanded default when leaving. Only fire on module enter/leave — the
+	// user's manual toggle inside a module is never overridden.
+	useEffect(() => {
+		const inAdmin = location.pathname.startsWith('/admin');
+		if (inAdmin && !wasInAdmin.current) {
+			setOpen(false);
+		} else if (!inAdmin && wasInAdmin.current) {
+			setOpen(true);
+		}
+		wasInAdmin.current = inAdmin;
+	}, [location.pathname, setOpen]);
 
 	const handleStartTour = () => {
 		if (!location.pathname.startsWith('/chat')) {
@@ -66,99 +90,149 @@ export function AppSidebar() {
 
 	const handleLogout = async () => {
 		await logout();
-		navigate('/login', { replace: true });
+		if (!logtoEnabled) navigate('/login', { replace: true });
+	};
+
+	const handleSwitchAccount = async () => {
+		await switchAccount();
+		if (!logtoEnabled) navigate('/login', { replace: true });
 	};
 
 	return (
-		<Sidebar
-			collapsible="none"
-			className="w-[calc(var(--sidebar-width-icon)+1px)]! bg-transparent"
-		>
+		<Sidebar collapsible="icon" className="bg-transparent">
 			<SidebarHeader>
-				<AgentScope className="mt-2 size-8" />
+				<div className="flex items-center gap-1.5 px-1 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+					<AgentScope className="size-8 shrink-0 group-data-[collapsible=icon]:hidden" />
+					<SidebarTrigger className="shrink-0" />
+				</div>
 			</SidebarHeader>
 			<SidebarContent>
 				<SidebarGroup>
+					<SidebarGroupLabel>{t('common.sidebarWorkspace')}</SidebarGroupLabel>
 					<SidebarGroupContent>
 						<SidebarMenu>
 							<SidebarMenuItem key={'chat'}>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.chat'), hidden: false }}
+									tooltip={{ children: t('common.chat') }}
 									isActive={
 										location.pathname === '/chat' ||
 										location.pathname.startsWith('/chat/')
 									}
 									onClick={() => navigate('/chat')}
-									className="justify-center"
 								>
 									<BotMessageSquare />
+									<span>{t('common.chat')}</span>
 								</SidebarMenuButton>
 							</SidebarMenuItem>
 							<SidebarMenuItem>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.schedule'), hidden: false }}
+									tooltip={{ children: t('common.tasks') }}
+									isActive={location.pathname.startsWith('/task')}
+									onClick={() => navigate('/task')}
+								>
+									<ClipboardList />
+									<span>{t('common.tasks')}</span>
+								</SidebarMenuButton>
+							</SidebarMenuItem>
+							{isAdmin && (
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										tooltip={{ children: t('admin.title') }}
+										isActive={location.pathname.startsWith('/admin')}
+										onClick={() => {
+											setOpen(false);
+											navigate('/admin/overview');
+										}}
+									>
+										<ShieldCheck />
+										<span>{t('admin.title')}</span>
+										<Badge
+											variant="secondary"
+											className="ml-auto shrink-0 px-1.5 text-[10px] font-medium group-data-[collapsible=icon]:hidden"
+										>
+											{t('common.adminBadge')}
+										</Badge>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+							)}
+							<SidebarMenuItem>
+								<SidebarMenuButton
+									tooltip={{ children: t('common.schedule') }}
 									isActive={location.pathname === '/schedule'}
 									onClick={() => navigate('/schedule')}
-									className="justify-center"
 								>
 									<Calendars />
+									<span>{t('common.schedule')}</span>
 								</SidebarMenuButton>
 							</SidebarMenuItem>
 							<SidebarMenuItem>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.channel'), hidden: false }}
+									tooltip={{ children: t('common.channel') }}
 									isActive={location.pathname === '/channel'}
 									onClick={() => navigate('/channel')}
-									className="px-2"
 								>
 									<Cable />
+									<span>{t('common.channel')}</span>
 								</SidebarMenuButton>
 							</SidebarMenuItem>
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>
 				<SidebarGroup>
+					<SidebarGroupLabel>{t('common.sidebarResources')}</SidebarGroupLabel>
 					<SidebarGroupContent>
 						<SidebarMenu>
+							{isAdmin && (
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										tooltip={{ children: t('common.credential') }}
+										isActive={location.pathname.startsWith('/credential')}
+										onClick={() => navigate('/credential')}
+									>
+										<KeyRound />
+										<span>{t('common.credential')}</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+							)}
 							<SidebarMenuItem>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.credential'), hidden: false }}
-									isActive={location.pathname === '/credential'}
-									onClick={() => navigate('/credential')}
-									className="justify-center"
-								>
-									<KeyRound />
-								</SidebarMenuButton>
-							</SidebarMenuItem>
-							<SidebarMenuItem>
-								<SidebarMenuButton
-									tooltip={{ children: t('common.mcp-hub'), hidden: false }}
+									tooltip={{
+											children:
+												isAdmin ? t('common.mcp-hub') : t('resources.mcpTitle'),
+										}}
 									// Stays lit while browsing a hub under /mcp/:hubId.
 									isActive={location.pathname.startsWith('/mcp')}
 									onClick={() => navigate('/mcp')}
-									className="justify-center"
 								>
 									<MCPSvg />
+									<span>
+										{isAdmin ? t('common.mcp-hub') : t('resources.mcpTitle')}
+									</span>
 								</SidebarMenuButton>
 							</SidebarMenuItem>
 							<SidebarMenuItem>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.skill-hub'), hidden: false }}
+									tooltip={{
+											children:
+												isAdmin ? t('common.skill-hub') : t('resources.skillTitle'),
+										}}
 									isActive={location.pathname.startsWith('/skill')}
 									onClick={() => navigate('/skill')}
-									className="justify-center"
 								>
 									<BookText />
+									<span>
+										{isAdmin ? t('common.skill-hub') : t('resources.skillTitle')}
+									</span>
 								</SidebarMenuButton>
 							</SidebarMenuItem>
 							<SidebarMenuItem>
 								<SidebarMenuButton
-									tooltip={{ children: t('common.knowledge'), hidden: false }}
+									tooltip={{ children: t('common.knowledge') }}
 									isActive={location.pathname === '/knowledge'}
 									onClick={() => navigate('/knowledge')}
-									className="justify-center"
 								>
 									<LibraryBig />
+									<span>{t('common.knowledge')}</span>
 								</SidebarMenuButton>
 							</SidebarMenuItem>
 						</SidebarMenu>
@@ -173,12 +247,11 @@ export function AppSidebar() {
 								<SidebarMenuButton
 									tooltip={{
 										children: user?.username ?? t('auth.accountCenter'),
-										hidden: false,
 									}}
 									isActive={location.pathname === '/account'}
-									className="justify-center"
 								>
 									<UserRound />
+									<span>{user?.username ?? t('auth.accountCenter')}</span>
 								</SidebarMenuButton>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent side="right" align="end" className="min-w-52">
@@ -186,6 +259,14 @@ export function AppSidebar() {
 									<div className="font-medium text-foreground">
 										{user?.username}
 									</div>
+									{user && (user.subject_id ?? user.id) !== user.username && (
+										<div
+											className="mt-0.5 truncate font-mono text-xs font-normal text-muted-foreground"
+											title={user.subject_id ?? user.id}
+										>
+											{t('auth.userId')}: {user.subject_id ?? user.id}
+										</div>
+									)}
 									<div className="mt-0.5 font-sans text-xs font-normal">
 										{t('auth.brand')}
 									</div>
@@ -200,7 +281,7 @@ export function AppSidebar() {
 									{t('common.settings')}
 								</DropdownMenuItem>
 								<DropdownMenuSeparator />
-								<DropdownMenuItem onSelect={() => void handleLogout()}>
+								<DropdownMenuItem onSelect={() => void handleSwitchAccount()}>
 									<Repeat2 />
 									{t('auth.switchAccount')}
 								</DropdownMenuItem>
@@ -220,21 +301,24 @@ export function AppSidebar() {
 								children: i18n.language.startsWith('zh')
 									? t('common.switchToEn')
 									: t('common.switchToZh'),
-								hidden: false,
 							}}
 							onClick={handleToggleLanguage}
-							className="justify-center"
 						>
 							<Languages />
+							<span>
+								{i18n.language.startsWith('zh')
+									? t('common.switchToEn')
+									: t('common.switchToZh')}
+							</span>
 						</SidebarMenuButton>
 					</SidebarMenuItem>
 					<SidebarMenuItem>
 						<SidebarMenuButton
-							tooltip={{ children: t('tour.trigger'), hidden: false }}
+							tooltip={{ children: t('tour.trigger') }}
 							onClick={handleStartTour}
-							className="justify-center"
 						>
 							<Compass />
+							<span>{t('tour.trigger')}</span>
 						</SidebarMenuButton>
 					</SidebarMenuItem>
 				</SidebarMenu>

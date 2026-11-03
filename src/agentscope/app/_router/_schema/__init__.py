@@ -45,6 +45,16 @@ from ._schedule import (
     ScheduleSessionsResponse,
     UpdateScheduleRequest,
 )
+from ._sop import (
+    CreateSOPRequest,
+    CreateSOPResponse,
+    ListSOPRunsResponse,
+    ListSOPsResponse,
+    SOPSchemaResponse,
+    StartSOPRunRequest,
+    SubmitVerdictRequest,
+    UpdateSOPRequest,
+)
 from ._agent import (
     AgentSchemaResponse,
     AgentSchemaV2Response,
@@ -77,6 +87,11 @@ from ._knowledge_base import (
     ListSupportedContentTypesResponse,
     SearchKnowledgeBaseRequest,
     SearchKnowledgeBaseResponse,
+    KnowledgeGraphSourceRefView,
+    KnowledgeGraphNodeView,
+    KnowledgeGraphEdgeView,
+    KnowledgeGraphResponse,
+    RebuildKnowledgeGraphResponse,
     UpdateKnowledgeBaseRequest,
     UploadKnowledgeDocumentResponse,
 )
@@ -115,6 +130,14 @@ __all__ = [
     "MCPClientStatus",
     "ToolInfo",
     # Agent
+    "CreateSOPRequest",
+    "CreateSOPResponse",
+    "ListSOPRunsResponse",
+    "ListSOPsResponse",
+    "SOPSchemaResponse",
+    "StartSOPRunRequest",
+    "SubmitVerdictRequest",
+    "UpdateSOPRequest",
     "AgentSchemaResponse",
     "AgentSchemaV2Response",
     "ListAgentsResponse",
@@ -159,6 +182,11 @@ __all__ = [
     "ListSupportedContentTypesResponse",
     "SearchKnowledgeBaseRequest",
     "SearchKnowledgeBaseResponse",
+    "KnowledgeGraphSourceRefView",
+    "KnowledgeGraphNodeView",
+    "KnowledgeGraphEdgeView",
+    "KnowledgeGraphResponse",
+    "RebuildKnowledgeGraphResponse",
     "UpdateKnowledgeBaseRequest",
     "UploadKnowledgeDocumentResponse",
     # Model

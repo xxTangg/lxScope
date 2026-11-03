@@ -1,10 +1,11 @@
-import { ApiError, client, getAccessToken, getBaseUrl } from './client';
+import { client, createApiError, getAccessToken, getBaseUrl } from './client';
 import type {
 	CreateKnowledgeBaseRequest,
 	CreateKnowledgeBaseResponse,
 	DocumentDownloadTokenResponse,
 	KbMiddlewareParametersSchemaResponse,
 	KnowledgeBaseView,
+	KnowledgeGraphResponse,
 	ListChunkersResponse,
 	ListDocumentChunksResponse,
 	ListKbEmbeddingModelsResponse,
@@ -128,21 +129,11 @@ function uploadDocumentXhr(
 				}
 				return;
 			}
-			let detail = xhr.responseText || xhr.statusText;
-			try {
-				const json = JSON.parse(xhr.responseText) as {
-					detail?: unknown;
-				};
-				if (typeof json.detail === 'string') detail = json.detail;
-				else if (json.detail !== undefined) detail = JSON.stringify(json.detail);
-			} catch {
-				// keep raw text
-			}
-			reject(new ApiError(xhr.status, detail));
+			reject(createApiError(xhr.status, xhr.responseText, xhr.statusText));
 		};
 		xhr.onerror = () => {
 			cleanup();
-			reject(new ApiError(0, 'Network error'));
+			reject(createApiError(0, ''));
 		};
 		xhr.onabort = () => {
 			cleanup();
@@ -262,12 +253,18 @@ export const knowledgeBaseApi = {
 	},
 
 	/**
-	 * Fetch the raw file as text through the authenticated client —
-	 * for markdown / plain-text previews that render in-app.
+	 * Fetch the raw file as text for markdown / plain-text previews.
+	 * The raw-file endpoint accepts a signed download token rather than
+	 * the app's bearer token, so mint one before requesting the content.
 	 */
 	fetchDocumentText: async (knowledgeBaseId: string, documentId: string) => {
+		const { token } = await knowledgeBaseApi.createDocumentDownloadToken(
+			knowledgeBaseId,
+			documentId,
+		);
 		const res = await client.stream(
 			`/knowledge_bases/${knowledgeBaseId}/documents/${documentId}`,
+			{ params: { token } },
 		);
 		return res.text();
 	},
@@ -303,5 +300,35 @@ export const knowledgeBaseApi = {
 		client.post<SearchKnowledgeBaseResponse>(
 			`/knowledge_bases/${knowledgeBaseId}/search`,
 			body,
+		),
+
+	getGraph: (
+		knowledgeBaseId: string,
+		params?: {
+			query?: string;
+			documentIds?: string[];
+			nodeLimit?: number;
+			edgeLimit?: number;
+		},
+	) =>
+		client.get<KnowledgeGraphResponse>(
+			`/knowledge_bases/${knowledgeBaseId}/graph`,
+			toQuery({
+				query: params?.query,
+				document_ids: params?.documentIds?.join(','),
+				node_limit: params?.nodeLimit,
+				edge_limit: params?.edgeLimit,
+			}),
+		),
+
+	updateGraphSettings: (knowledgeBaseId: string, enabled: boolean) =>
+		client.put<{ enabled: boolean }>(`/knowledge_bases/${knowledgeBaseId}/graph/settings`, { enabled }),
+
+	getGraphSettings: (knowledgeBaseId: string) =>
+		client.get<{ enabled: boolean }>(`/knowledge_bases/${knowledgeBaseId}/graph/settings`),
+
+	generateGraph: (knowledgeBaseId: string, force = false) =>
+		client.post<{ status: string; documents?: number; error?: string | null }>(
+			`/knowledge_bases/${knowledgeBaseId}/graph/generate`, { force },
 		),
 };

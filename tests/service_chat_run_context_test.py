@@ -137,12 +137,16 @@ class TestRunContextResolution(IsolatedAsyncioTestCase):
             team=team,
         )
         equipped: list[list] = []
+        system_prompts: list[str] = []
 
         class _Agent:
             """Capture the middlewares; reply without doing anything."""
 
-            def __init__(self, *, middlewares: list, **_: object) -> None:
+            def __init__(
+                self, *, middlewares: list, system_prompt: str, **_: object
+            ) -> None:
                 equipped.append(middlewares)
+                system_prompts.append(system_prompt)
 
             async def reply_stream(
                 self,
@@ -192,6 +196,12 @@ class TestRunContextResolution(IsolatedAsyncioTestCase):
                 None,
             )
 
+        self.assertEqual(len(system_prompts), 1)
+        self.assertIn("简体中文", system_prompts[0])
+        self.assertLess(
+            system_prompts[0].index("session (id=session-w)"),
+            system_prompts[0].index("智能体生成的所有用户可见自然语言"),
+        )
         self.assertDictEqual(
             {
                 "get_team_calls": storage.get_team_calls,

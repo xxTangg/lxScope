@@ -1,10 +1,11 @@
-FROM node:20-bookworm-slim
+FROM docker.io/library/node:20-bookworm-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app/src \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 
 WORKDIR /app
 
@@ -37,7 +38,7 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
     && /opt/venv/bin/pip install uv \
     && /opt/venv/bin/pip install \
-        ".[service,storage-redis,channel,vdb-qdrant]"
+        ".[service,storage-redis,observability-postgres,channel,vdb-qdrant]"
 
 # Runtime dependencies used by the installed office-document skills. Keeping
 # them in the image avoids slow, ephemeral package installs during a chat.

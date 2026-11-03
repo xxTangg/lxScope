@@ -136,10 +136,12 @@ export function EmbeddingSelect({
 					})
 				)}
 				<DropdownMenuSeparator />
-				<DropdownMenuItem onSelect={onAddCredential}>
-					<PlusCircle className="size-4" />
-					<span>{t('embedding-select.addCredential')}</span>
-				</DropdownMenuItem>
+				{onAddCredential && (
+					<DropdownMenuItem onSelect={onAddCredential}>
+						<PlusCircle className="size-4" />
+						<span>{t('embedding-select.addCredential')}</span>
+					</DropdownMenuItem>
+				)}
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);

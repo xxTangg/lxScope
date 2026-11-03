@@ -1,0 +1,9 @@
+{
+  "template_version": "3.0.0",
+  "inputs": {
+    "project_name": "[DEMO/SYNTHETIC] 澄湖科创园综合能源与设备台账优化咨询项目",
+    "source_material_ids": ["__REPLACE_WITH_SERVER_ISSUED_AUTHORIZED_DOCUMENT_ID__"],
+    "required_chapters": ["项目概况", "资料与基线", "设备台账现状", "分析方法", "实施计划", "费用边界", "风险与待核实事项"],
+    "applicable_rules": ["DEMO/SYNTHETIC: DEMO-SOURCE-003（演示核对清单，非正式制度）"]
+  }
+}

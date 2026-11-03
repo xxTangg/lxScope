@@ -43,6 +43,13 @@ from ._access import (
     ResourceAccessService,
 )
 
+
+def _sanitise_graph_error(exc: BaseException) -> str:
+    """Return a short graph error safe to expose through the API."""
+    text = str(exc).strip()
+    message = text.splitlines()[0] if text else "Graph build failed."
+    return message[:500]
+
 if TYPE_CHECKING:
     from ..rag.blob_store import BlobStoreBase
     from ..rag.knowledge_base_manager import KnowledgeBaseManagerBase
@@ -50,9 +57,14 @@ if TYPE_CHECKING:
     from ..storage import (
         EmbeddingModelConfig,
         KnowledgeBaseRecord,
+        KnowledgeGraphStoreBase,
         StorageBase,
     )
-    from ...rag import ChunkerBase, VectorSearchResult
+    from ...rag import (
+        ChunkerBase,
+        KnowledgeGraphExtractor,
+        VectorSearchResult,
+    )
 
 
 class KnowledgeBaseService:
@@ -74,6 +86,8 @@ class KnowledgeBaseService:
         message_bus: "MessageBus",
         resource_access_service: "ResourceAccessService",
         chunkers: "list[type[ChunkerBase]] | None" = None,
+        knowledge_graph_store: "KnowledgeGraphStoreBase | None" = None,
+        knowledge_graph_extractor: "KnowledgeGraphExtractor | None" = None,
     ) -> None:
         """Initialize the service.
 
@@ -103,12 +117,20 @@ class KnowledgeBaseService:
                 The chunker classes users can choose from when creating
                 a knowledge base; used to validate ``chunker_config``.
                 Defaults to ``[ApproxTokenChunker]``.
+            knowledge_graph_store (`KnowledgeGraphStoreBase | None`, optional):
+                Optional knowledge-base graph persistence. When omitted,
+                the existing vector-only service remains unchanged.
+            knowledge_graph_extractor (`KnowledgeGraphExtractor | None`,
+                optional):
+                Optional extractor used by the explicit graph rebuild route.
         """
         self._storage = storage
         self._manager = knowledge_base_manager
         self._blob_store = blob_store
         self._bus = message_bus
         self._access = resource_access_service
+        self._knowledge_graph_store = knowledge_graph_store
+        self._knowledge_graph_extractor = knowledge_graph_extractor
         self._chunkers_by_type = {
             cls.chunker_type: cls for cls in (chunkers or [ApproxTokenChunker])
         }
@@ -343,6 +365,8 @@ class KnowledgeBaseService:
         )
         for document in documents:
             await self._delete_blob_quietly(document.data.blob_uri)
+
+        await self._delete_graph_quietly(owner_id, knowledge_base_id)
 
         deleted = await self._manager.delete_knowledge_base(
             owner_id,
@@ -798,7 +822,150 @@ class KnowledgeBaseService:
             knowledge_base_id,
             document_id,
         )
+        await self._delete_document_graph_quietly(
+            owner_id,
+            knowledge_base_id,
+            document_id,
+        )
         await self._delete_blob_quietly(record.data.blob_uri)
+
+    async def get_knowledge_graph(
+        self,
+        user_id: str,
+        knowledge_base_id: str,
+        *,
+        query: str | None = None,
+        document_ids: list[str] | None = None,
+        node_limit: int = 300,
+        edge_limit: int = 600,
+    ) -> dict:
+        """Return the merged graph for a visible knowledge base."""
+        record = await self._access.resolve_knowledge_base(
+            user_id,
+            knowledge_base_id,
+        )
+        if self._knowledge_graph_store is None:
+            return {
+                "status": "disabled",
+                "error": None,
+                "nodes": [],
+                "edges": [],
+                "node_count": 0,
+                "edge_count": 0,
+                "version": 0,
+            }
+        return await self._knowledge_graph_store.get_graph(
+            record.user_id,
+            knowledge_base_id,
+            query=query,
+            document_ids=document_ids,
+            node_limit=node_limit,
+            edge_limit=edge_limit,
+        )
+
+    async def rebuild_knowledge_graph(
+        self,
+        user_id: str,
+        knowledge_base_id: str,
+    ) -> dict[str, int | str | None]:
+        """Build graph contributions for already-indexed documents.
+
+        This reads chunks from the existing vector index and therefore does
+        not re-parse or rewrite vectors. It is intended for the first graph
+        rollout and for an explicit rebuild after changing extraction rules.
+        """
+        owner_id = await self._require_edit(user_id, knowledge_base_id)
+        if (
+            self._knowledge_graph_store is None
+            or self._knowledge_graph_extractor is None
+        ):
+            return {
+                "status": "disabled",
+                "documents": 0,
+                "skipped": 0,
+                "error": None,
+            }
+
+        await self._knowledge_graph_store.delete_knowledge_base_graph(
+            owner_id,
+            knowledge_base_id,
+        )
+        await self._knowledge_graph_store.set_status(
+            owner_id,
+            knowledge_base_id,
+            "building",
+        )
+        knowledge = await self._resolve_knowledge(user_id, knowledge_base_id)
+        documents = await self._storage.list_knowledge_documents(
+            owner_id,
+            knowledge_base_id,
+        )
+        processed = 0
+        skipped = 0
+        try:
+            for document in documents:
+                if (
+                    document.status != "ready"
+                    or document.data.chunk_count <= 0
+                ):
+                    skipped += 1
+                    continue
+                chunks: list[Chunk] = []
+                offset = 0
+                while True:
+                    batch = await knowledge.list_chunks(
+                        document.id,
+                        offset=offset,
+                        limit=128,
+                    )
+                    if not batch:
+                        break
+                    chunks.extend(batch)
+                    offset += len(batch)
+                    if len(batch) < 128:
+                        break
+                graph = await self._knowledge_graph_extractor.extract(
+                    chunks,
+                    document_id=document.id,
+                    filename=document.data.filename,
+                )
+                await self._knowledge_graph_store.replace_document_graph(
+                    owner_id,
+                    knowledge_base_id,
+                    graph,
+                )
+                await self._knowledge_graph_store.set_status(
+                    owner_id,
+                    knowledge_base_id,
+                    "building",
+                )
+                processed += 1
+        except Exception as exc:  # noqa: BLE001 — surfaced in response
+            message = _sanitise_graph_error(exc)
+            await self._knowledge_graph_store.set_status(
+                owner_id,
+                knowledge_base_id,
+                "error",
+                error=message,
+            )
+            return {
+                "status": "error",
+                "documents": processed,
+                "skipped": skipped,
+                "error": message,
+            }
+
+        await self._knowledge_graph_store.set_status(
+            owner_id,
+            knowledge_base_id,
+            "ready",
+        )
+        return {
+            "status": "ready",
+            "documents": processed,
+            "skipped": skipped,
+            "error": None,
+        }
 
     # ------------------------------------------------------------------
     # Search
@@ -899,4 +1066,45 @@ class KnowledgeBaseService:
             logger.exception(
                 "Failed to delete blob %s",
                 blob_uri,
+            )
+
+    async def _delete_document_graph_quietly(
+        self,
+        user_id: str,
+        knowledge_base_id: str,
+        document_id: str,
+    ) -> None:
+        """Best-effort graph cleanup after document deletion."""
+        if self._knowledge_graph_store is None:
+            return
+        try:
+            await self._knowledge_graph_store.delete_document_graph(
+                user_id,
+                knowledge_base_id,
+                document_id,
+            )
+        except Exception:  # noqa: BLE001 — cleanup must not block deletion
+            logger.exception(
+                "Failed to delete graph contribution for %s/%s",
+                knowledge_base_id,
+                document_id,
+            )
+
+    async def _delete_graph_quietly(
+        self,
+        user_id: str,
+        knowledge_base_id: str,
+    ) -> None:
+        """Best-effort graph cleanup after knowledge-base deletion."""
+        if self._knowledge_graph_store is None:
+            return
+        try:
+            await self._knowledge_graph_store.delete_knowledge_base_graph(
+                user_id,
+                knowledge_base_id,
+            )
+        except Exception:  # noqa: BLE001 — cleanup must not block deletion
+            logger.exception(
+                "Failed to delete graph for knowledge base %s",
+                knowledge_base_id,
             )

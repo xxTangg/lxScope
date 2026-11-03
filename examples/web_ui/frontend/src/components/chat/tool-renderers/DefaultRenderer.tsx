@@ -1,5 +1,5 @@
 import type { ToolCallBlock } from '@agentscope-ai/agentscope/message';
-import * as mime from 'mime-types';
+import mime from 'mime';
 import type { ReactNode } from 'react';
 
 import { getResultText, toolArgClass, toolLabelClass } from './_shared';
@@ -66,7 +66,7 @@ export function defaultRenderBody(pair: ToolCallWithResult, t: TFunction): React
 			.map((b) => {
 				if (b.type === 'text') return b.text;
 				const mainType = b.source.media_type.split('/')[0].toUpperCase();
-				const ext = (mime.extension(b.source.media_type) || 'bin').toLowerCase();
+				const ext = (mime.getExtension(b.source.media_type) || 'bin').toLowerCase();
 				return `[${mainType}.${ext}]`;
 			})
 			.join('\n');

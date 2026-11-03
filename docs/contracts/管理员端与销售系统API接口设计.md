@@ -243,7 +243,6 @@ Idempotency-Key: idem_01J...
   "system_id": "lx_01J...",
   "pool_tokens": 4200000,
   "total_recharged": "999.00",
-  "test_default_tokens": 0,
   "account_count": 12,
   "admin_count": 1,
   "updated_at": "2026-09-15T08:30:00Z"
@@ -333,11 +332,12 @@ Idempotency-Key: idem_01J...
 | POST | `/admin/orders/{order_id}/approve` | 审批订单，原子扣减系统池并分配额度 |
 | POST | `/admin/orders/{order_id}/reject` | 拒绝待处理订单，不扣额度 |
 | GET | `/admin/quota` | 查询系统池和额度统计 |
-| PATCH | `/admin/quota` | 修改测试账号默认额度等系统配置 |
 | GET | `/admin/quota/ledger` | 查询额度账本，支持时间、类型、用户和订单过滤 |
 | POST | `/admin/quota/redeem-code` | 验证并兑换总部签发的离线/在线充值码 |
 | POST | `/admin/quota/recharge-requests` | 发起线上充值请求，由后端 SalesHub adapter 调总部 |
 | GET | `/admin/quota/recharge-requests` | 查看本地充值请求状态 |
+| POST | `/admin/quota/recharge-requests/sync` | 轮询总部已审批订单，兑换充值码并发送 ACK |
+| POST | `/admin/sales-hub/usage-report` | 发送当前系统额度和累计用量快照 |
 
 审批订单请求：
 
@@ -675,7 +675,11 @@ Ed25519 私钥仅在总部签发服务使用；离线码至少包含 `system_id`
             └─ 总部标记 delivered
 ```
 
-“总部审批成功”“客户本地兑换成功”“总部收到 ACK”是三个独立状态，不可合并为一个 `success`。
+“总部审批成功”“客户本地兑换成功”“总部收到 ACK”是三个独立状态，不可合并为一个 success。
+
+本项目只实现销售系统的客户端适配，不实现销售总部后台。管理员提交充值时，服务端通过 SalesHubClient 调用总部的
+`/api/v1/integration/recharge-requests`；同步时依次调用 poll、本地验签兑换和订单 ack；任何网络超时保留
+`unknown` 状态并允许使用相同幂等键重试。用量上报只发送合同规定的聚合快照，不发送任务、聊天、文档、密码或密钥。
 
 ### 11.3 远程重置与升级
 

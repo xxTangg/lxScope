@@ -303,6 +303,7 @@ async def parse_chat_attachment(
 )
 async def chat(
     request: ChatRequest,
+    http_request: Request,
     user_id: str = Depends(get_current_user_id),
     chat_service: ChatService = Depends(get_chat_service),
     chat_run_registry: ChatRunRegistry = Depends(get_chat_run_registry),
@@ -348,6 +349,13 @@ async def chat(
             Only direct-spawn paths (new messages / ``None``) can raise
             this; the enqueued resume path never does.
     """
+    # Optional application hook for plan/quota enforcement. AgentScope does
+    # not impose a billing model; a deployment can install this checker on
+    # ``app.state.chat_access_check`` without changing the generic service.
+    chat_access_check = getattr(http_request.app.state, "chat_access_check", None)
+    if chat_access_check is not None:
+        await chat_access_check(user_id)
+
     # ------------------------------------------------------------------
     # HITL resume — route to the owning session, then enqueue.
     #
@@ -382,6 +390,7 @@ async def chat(
             agent_id=run_agent_id,
             kind=MessageBusKeys.WAKEUP_KIND_RESUME,
             inputs=request.input,
+            skill_names=request.skill_names,
         )
         return ChatTriggerResponse(status="started", session_id=run_session_id)
 
@@ -396,6 +405,7 @@ async def chat(
                 session_id=request.session_id,
                 agent_id=request.agent_id,
                 input_msg=request.input,
+                skill_names=request.skill_names,
             ),
             session_id=request.session_id,
         )

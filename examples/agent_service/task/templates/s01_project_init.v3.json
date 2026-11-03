@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "template_id": "s01_project_init",
+  "template_version": "3.0.0",
+  "title": "项目立项",
+  "description": "检索相似项目与授权规则候选，由 Task 通用 AI verifier 按节点职责验收，形成供人工复核的立项建议；候选来源不代表规则适用或合规结论。",
+  "category": "review",
+  "required_capabilities": [
+    "project.similar_search",
+    "project.rule_check",
+    "project.authorization.read"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_name",
+      "project_brief"
+    ],
+    "properties": {
+      "project_name": {
+        "type": "string",
+        "description": "项目名称。"
+      },
+      "project_brief": {
+        "type": "string",
+        "description": "项目背景、目标与范围。"
+      },
+      "industry": {
+        "type": "string",
+        "description": "所属行业，可选。"
+      },
+      "scope": {
+        "type": "string",
+        "description": "拟评审范围，可选。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出立项信息卡、相似项目线索、规则候选分析和待人工核实项；所有规则适用性及事实结论均须基于本次授权来源或明确标为待核实，不得自动写入项目台账或宣称审批通过。",
+  "steps": [
+    {
+      "step_key": "collect_project_input",
+      "title": "收集项目资料",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供立项分析所需的项目资料。",
+        "questions": [
+          {
+            "key": "project_name",
+            "label": "项目名称",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "project_brief",
+            "label": "项目背景、目标与范围",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "industry",
+            "label": "所属行业（如适用）",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "scope",
+            "label": "拟评审范围（如适用）",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得项目名称和项目描述，缺失必填信息时不得继续。",
+      "failure_handling": "必填项缺失时继续请求用户补充，不生成推测值。",
+      "sensitive_information": "项目材料可能包含商业机密；仅使用用户提交或授权读取的资料。"
+    },
+    {
+      "step_key": "extract_project_profile",
+      "title": "识别立项字段",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "从已提供资料提取项目名称、背景、目标、行业和评审范围。只记录有依据的信息；不确定字段标为待核实，不补造事实。"
+      },
+      "output_requirement": "输出结构清晰的项目画像，并区分已知信息和待核实信息。",
+      "failure_handling": "资料不足或无法可靠提取时列出缺项并请求补充。",
+      "sensitive_information": "不得在结果中扩写或推断未提供的商业敏感信息。"
+    },
+    {
+      "step_key": "search_similar_projects",
+      "title": "检索相似项目",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "project.similar_search",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "query": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "返回可追溯的相似项目记录或明确的无结果状态。",
+      "failure_handling": "工具缺失、无权限或检索失败时阻断并说明原因，不以模型生成记录代替。",
+      "sensitive_information": "只查询当前用户有权访问的项目资料。"
+    },
+    {
+      "step_key": "check_project_rules",
+      "title": "核对立项规则",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "project.rule_check",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "project_profile": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "本节点仅负责授权规则资料检索。status=candidates_for_review 且返回本次检索的候选记录及服务端来源标识，或 status=not_found 且明确说明未检索到匹配来源，均可视为检索步骤完成。不要要求本节点逐条判断规则对项目的命中、不适用或合规性；这些分析由后续 Agent 按实际项目字段和候选原文完成。不得将候选来源描述成已核实适用规则。",
+      "failure_handling": "仅授权拒绝、知识库服务不可用或检索调用失败时阻断本节点。not_found 是明确的空检索结果，应传递给后续步骤；无正式规则来源或适用性依据不足时，只能形成待核实的草稿，不得给出正式立项或合规结论。",
+      "sensitive_information": "只读取获准的规则和项目字段，不返回内部访问凭据。"
+    },
+    {
+      "step_key": "draft_initiation_recommendation",
+      "title": "形成立项建议",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "综合项目画像、相似项目线索和规则候选，形成供人工复核的立项建议草稿。对候选规则逐项说明来源和与已提供项目字段的初步关系；仅在候选原文明示且项目资料足以支持时标为初步命中或不适用，否则标为待核实。候选检索状态不代表规则效力、现行性或适用性已核实。没有正式规则来源或依据不足时，明确说明并暂停正式立项/合规结论；不作审批决定，不补造事实。"
+      },
+      "output_requirement": "输出建议草稿、依据、风险、规则候选的逐项初步关系及待核实事项。来源不足时明确标为待核实，不输出正式规则适用、合规或审批结论。",
+      "failure_handling": "资料不足时保留待核实状态并说明缺少的依据；不得把候选规则或模型判断写成已核实结论。",
+      "sensitive_information": "仅向当前 Task 用户展示其有权限查看的内容。"
+    },
+    {
+      "step_key": "review_project_facts",
+      "title": "核对项目事实",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请核实项目事实及待确认字段。此步骤收集资料，不代表立项审批或授权。",
+        "questions": [
+          {
+            "key": "fact_corrections",
+            "label": "需要更正或补充的项目事实",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "记录用户补充的事实或明确无补充；不得将其解释为审批通过。",
+      "failure_handling": "未收到回复时保持待核实状态，不自动确认。",
+      "sensitive_information": "用户补充内容按项目资料处理，避免采集无关个人信息。"
+    },
+    {
+      "step_key": "produce_initiation_card",
+      "title": "输出立项信息卡",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "根据项目画像、相似项目线索、规则候选分析和用户复核意见整理立项信息卡。保留每项规则的实际来源标识及“候选/初步关系/待核实”状态；若未检索到正式规则来源，明确说明并将规则结论保持待核实。不得把检索命中写成规则已核实、合规已确认或审批通过；不写入外部台账，不新增无来源事实。"
+      },
+      "output_requirement": "生成便于业务人员复核的立项信息卡，保留相似项目线索、规则来源状态、风险和待核实项；不声称规则已正式核验、合规已确认或审批已通过。",
+      "failure_handling": "保留失败步骤与缺失项，等待用户修正后重试。",
+      "sensitive_information": "输出仅包含完成立项复核所需字段。",
+      "artifact": {
+        "format": "markdown",
+        "filename": "项目立项知识卡"
+      }
+    }
+  ],
+  "unsupported_capabilities": []
+}

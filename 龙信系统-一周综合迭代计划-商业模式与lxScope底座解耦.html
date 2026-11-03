@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>龙信系统一周综合迭代计划｜商业模式与 lxScope 底座解耦</title>
+  <style>
+    :root {
+      --ink: #162235; --muted: #66758a; --line: #dfe6ef; --bg: #f3f6fa; --paper: #fff;
+      --blue: #246bfe; --blue-dark: #163a70; --blue-soft: #eaf1ff;
+      --orange: #e97a24; --orange-soft: #fff2e7; --green: #149565; --green-soft: #e8f8f0;
+      --red: #c8435b; --shadow: 0 16px 45px rgba(26, 48, 84, .08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; line-height: 1.65; }
+    .page { max-width: 1240px; margin: auto; padding: 24px 20px 70px; }
+    .hero { position: relative; overflow: hidden; padding: 48px 50px 43px; border-radius: 27px; color: #fff; background: linear-gradient(124deg, #122743 0%, #1c4e8c 62%, #2b7cf0 100%); box-shadow: var(--shadow); }
+    .hero::after { content: ""; position: absolute; right: -135px; top: -200px; width: 440px; height: 440px; border: 1px solid rgba(255,255,255,.2); border-radius: 50%; box-shadow: 0 0 0 42px rgba(255,255,255,.05), 0 0 0 84px rgba(255,255,255,.04); }
+    .hero-content { position: relative; z-index: 1; max-width: 900px; }
+    .eyebrow { color: var(--blue); font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .hero .eyebrow { color: #b6d3ff; }
+    h1 { margin: 12px 0 15px; font-size: clamp(30px, 4.8vw, 56px); line-height: 1.12; letter-spacing: -.045em; }
+    h2 { margin: 8px 0 15px; font-size: 28px; line-height: 1.25; letter-spacing: -.025em; }
+    h3 { margin: 0 0 8px; font-size: 17px; }
+    p { margin: 0 0 12px; }
+    .hero-sub { max-width: 830px; color: #dbe9ff; font-size: 17px; }
+    .hero-line { display: inline-block; margin-top: 12px; padding: 11px 15px; border-left: 4px solid #ffb369; border-radius: 0 10px 10px 0; background: rgba(255,255,255,.12); }
+    .hero-line strong { color: #ffd29a; }
+    .tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 23px; }
+    .tag { padding: 6px 11px; border-radius: 999px; background: rgba(255,255,255,.13); color: #e0edff; font-size: 13px; }
+    .section { margin-top: 35px; }
+    .intro { max-width: 900px; color: var(--muted); }
+    .grid-4, .grid-3, .grid-2 { display: grid; gap: 16px; }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card { padding: 21px; border: 1px solid var(--line); border-radius: 17px; background: var(--paper); box-shadow: 0 7px 24px rgba(26,48,84,.04); }
+    .card p:last-child { margin-bottom: 0; }
+    .metric { min-height: 158px; }
+    .metric .icon { display: grid; place-items: center; width: 38px; height: 38px; margin-bottom: 14px; border-radius: 12px; color: #fff; background: var(--blue); font-weight: 800; }
+    .metric:nth-child(2) .icon { background: var(--orange); }
+    .metric:nth-child(3) .icon { background: var(--green); }
+    .metric:nth-child(4) .icon { background: var(--blue-dark); }
+    .metric strong { display: block; margin-bottom: 6px; font-size: 18px; }
+    .muted { color: var(--muted); font-size: 14px; }
+    .callout { margin-top: 17px; padding: 14px 17px; border: 1px solid #cddfff; border-radius: 13px; color: #214987; background: var(--blue-soft); }
+    .callout.orange { border-color: #ffd5b6; color: #814719; background: var(--orange-soft); }
+    .callout.green { border-color: #c7eedb; color: #176b49; background: var(--green-soft); }
+    .callout.red { border-color: #f2cbd2; color: #8c263c; background: #fff0f2; }
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 12px 11px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); background: #fafbfd; font-weight: 800; }
+    tr:last-child td { border-bottom: 0; }
+    .status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 800; }
+    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    .status.partial { color: #9a5b14; }.status.partial::before { background: var(--orange); }
+    .status.missing { color: var(--red); }.status.missing::before { background: var(--red); }
+    .architecture { display: grid; grid-template-columns: 1fr 1.15fr 1.2fr 1fr; gap: 0; margin-top: 20px; }
+    .layer { position: relative; min-height: 181px; padding: 20px; border: 1px solid var(--line); background: var(--paper); }
+    .layer:first-child { border-radius: 16px 0 0 16px; }.layer:last-child { border-radius: 0 16px 16px 0; }.layer + .layer { border-left: 0; }
+    .layer:not(:last-child)::after { content: "→"; position: absolute; top: 70px; right: -17px; z-index: 2; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: var(--blue); font-size: 20px; }
+    .layer .no { color: var(--blue); font-size: 12px; font-weight: 800; letter-spacing: .08em; }.layer strong { display: block; margin: 8px 0; font-size: 19px; }.layer span { color: var(--muted); font-size: 13px; }
+    .layer.adapter { background: #f2fbf7; border-color: #c9ead9; }.layer.adapter .no { color: var(--green); }
+    .layer.business { background: #fffaf5; border-color: #f3d2b6; }.layer.business .no { color: var(--orange); }
+    .principle { display: grid; gap: 10px; margin-top: 15px; }.principle div { padding: 13px 15px; border-left: 3px solid var(--blue); background: #fafcff; color: var(--muted); font-size: 14px; }.principle strong { color: var(--ink); }
+    .task-section { margin-top: 16px; }.task-section:first-child { margin-top: 0; }
+    .task-section > summary { cursor: pointer; padding: 15px 17px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); font-weight: 800; list-style-position: inside; }
+    .task-section[open] > summary { border-radius: 13px 13px 0 0; color: var(--blue); background: var(--blue-soft); }
+    .task-table { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 13px 13px; background: var(--paper); overflow-x: auto; }
+    .task-table table { min-width: 760px; }
+    .task-table input { width: 17px; height: 17px; accent-color: var(--blue); }
+    .task-table td:first-child { width: 34px; }.task-table td:nth-child(2) { width: 80px; white-space: nowrap; }.task-table td:nth-child(4) { width: 105px; white-space: nowrap; }.task-table td:nth-child(5) { width: 88px; white-space: nowrap; }
+    .task-table input:checked + span { color: #96a1af; text-decoration: line-through; }
+    .owner { color: var(--blue-dark); font-weight: 700; }.owner.me { color: var(--orange); }.owner.both { color: var(--green); }
+    .p0 { color: var(--red); font-weight: 800; }.p1 { color: var(--orange); font-weight: 800; }.p2 { color: var(--blue); font-weight: 800; }
+    .progress-wrap { margin-top: 17px; padding: 14px 17px; border-radius: 13px; color: #214987; background: var(--blue-soft); }.progress-head { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; }.progress { height: 9px; margin-top: 8px; overflow: hidden; border-radius: 999px; background: #d4e1f8; }.progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--blue); transition: width .2s ease; }
+    .day { min-height: 220px; }.day-tag { display: inline-block; margin-bottom: 13px; padding: 4px 9px; border-radius: 8px; color: #fff; background: var(--blue); font-size: 12px; font-weight: 800; }.day:nth-child(2) .day-tag { background: var(--orange); }.day:nth-child(3) .day-tag { background: var(--green); }.day:nth-child(4) .day-tag { background: var(--blue-dark); }
+    .day ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }.day li { margin: 6px 0; }
+    .role { min-height: 200px; }.role .role-name { display: inline-block; margin-bottom: 12px; padding: 5px 9px; border-radius: 8px; color: #fff; background: var(--blue); font-size: 12px; font-weight: 800; }.role:nth-child(2) .role-name { background: var(--orange); }.role:nth-child(3) .role-name { background: var(--green); }.role ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }.role li { margin: 7px 0; }
+    .calc { border-color: #efd1b8; background: linear-gradient(135deg, #fffaf6, #fff); }.calc-layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: 25px; }.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 13px; }label { display: block; color: var(--muted); font-size: 13px; font-weight: 700; }input[type="number"] { display: block; width: 100%; margin-top: 5px; padding: 10px 11px; border: 1px solid #d3dbe7; border-radius: 9px; color: var(--ink); background: #fff; font: inherit; font-size: 16px; outline: none; }input[type="number"]:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(36,107,254,.14); }
+    .results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.result { padding: 13px; border: 1px solid #efded0; border-radius: 12px; background: #fff; }.result-label { color: var(--muted); font-size: 12px; }.result-value { margin-top: 3px; color: #984b13; font-size: 23px; font-weight: 800; line-height: 1.2; }.result-unit { color: var(--muted); font-size: 12px; }.note { margin-top: 12px; color: var(--muted); font-size: 12px; }
+    .accept { display: grid; gap: 0; }.accept-row { display: grid; grid-template-columns: 145px 1fr; gap: 16px; padding: 13px 0; border-bottom: 1px solid var(--line); }.accept-row:last-child { border-bottom: 0; }.accept-row strong { color: var(--ink); }.accept-row span { color: var(--muted); font-size: 14px; }
+    .footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    @media (max-width: 980px) { .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }.architecture { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.layer, .layer:first-child, .layer:last-child { border-radius: 16px; border: 1px solid var(--line); }.layer:not(:last-child)::after { display: none; }.calc-layout { grid-template-columns: 1fr; } }
+    @media (max-width: 650px) { .page { padding: 13px 11px 45px; }.hero { padding: 33px 24px; border-radius: 20px; }.grid-4, .grid-3, .grid-2, .architecture, .form-grid, .results { grid-template-columns: 1fr; }h2 { font-size: 24px; }.accept-row { grid-template-columns: 1fr; gap: 3px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-content">
+        <div class="eyebrow">龙信系统 · 一周综合迭代计划</div>
+        <h1>借鉴老板的商业模式，补齐 lxScope 的产品短板。</h1>
+        <p class="hero-sub">老板的方案负责回答“这套系统怎么卖、怎么管理、怎么赚钱”；当前 lxScope 负责提供 Agent、任务、知识库和模型运行底座。本计划把两者解耦连接起来：商业模式 2～3 天可见，一周完成真实数据验证和综合演示。</p>
+        <div class="hero-line"><strong>对齐口径：</strong>不是另起炉灶，也不是只做商业页面，而是在现有 AI 项目上补一层独立的商业与管理能力。</div>
+        <div class="tags"><span class="tag">老板方案：业务方向</span><span class="tag">lxScope：技术底座</span><span class="tag">商业层：独立解耦</span><span class="tag">第 3 天：可演示</span><span class="tag">第 7 天：可验证</span></div>
+      </div>
+    </header>
+
+    <section class="section" aria-labelledby="goal-title">
+      <div class="eyebrow">先把目标说清楚</div>
+      <h2 id="goal-title">这次不是做一份差距报告，而是做一条能落地的承接路线</h2>
+      <div class="grid-4">
+        <article class="card metric"><div class="icon">B</div><strong>老板方案</strong><p class="muted">从 D:\龙信系统-3.8.1 提取商业模式、管理方式和产品方向。</p></article>
+        <article class="card metric"><div class="icon">A</div><strong>当前底座</strong><p class="muted">复用 lxScope 已有的 Agent、任务、知识库、权限、模型和文件能力。</p></article>
+        <article class="card metric"><div class="icon">↔</div><strong>解耦连接</strong><p class="muted">通过任务/用量适配器连接商业层，不把套餐和扣费写死在 Agent 核心。</p></article>
+        <article class="card metric"><div class="icon">7</div><strong>一周结果</strong><p class="muted">第 3 天看到商业闭环，第 7 天看到技术承接、真实数据和后续计划。</p></article>
+      </div>
+      <div class="callout"><strong>一句话：</strong>老板先看到“能卖、能管、能算账”，同时看到这套商业模式确实可以建立在我们当前项目上，而不是停留在 PPT 里。</div>
+    </section>
+
+    <section class="section" aria-labelledby="mapping-title">
+      <div class="eyebrow">老板方案如何落到当前项目</div>
+      <h2 id="mapping-title">借鉴商业模式，弥补当前 lxScope 的产品短板</h2>
+      <div class="card table-scroll">
+        <table>
+          <thead><tr><th>老板方案中的要求</th><th>当前 lxScope 可复用能力</th><th>需要新增/补齐</th><th>用户或老板能看到的结果</th></tr></thead>
+          <tbody>
+            <tr><td>Token 购买、套餐、会员</td><td>已有登录、用户身份和 Token 使用统计</td><td>Token 账户、套餐、订单、充值和扣费</td><td>用户能买套餐，管理员能管理额度</td></tr>
+            <tr><td>任务消耗和算力账</td><td>已有 Session、任务、模型调用和用量基础</td><td>按 task_id 记录 Token、耗时、成本和流水</td><td>知道一个任务花多少钱、还能做多少任务</td></tr>
+            <tr><td>系统管理</td><td>已有资源路由和权限访问扩展点</td><td>管理员、角色、用户、套餐和审计后台</td><td>老板能看到系统可运营、可管理</td></tr>
+            <tr><td>功能快速迭代</td><td>已有 Agent、知识库、文件、人工确认和 Pipeline</td><td>用户结果页、任务进度、每日可感知交付</td><td>用户每天都能感受到新变化</td></tr>
+            <tr><td>长期技术路线</td><td>已有 AgentScope 框架和多种扩展能力</td><td>商业层、适配层、核心层边界和稳定接口</td><td>后续换模型、支付或工作流时不推倒重来</td></tr>
+            <tr><td>企业化和可控</td><td>已有权限确认、资源作用域和沙箱选项</td><td>企业安全模式、租户隔离、审计和恢复</td><td>能进入企业场景，而不是只能做演示</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="base-title">
+      <div class="eyebrow">当前项目基线</div>
+      <h2 id="base-title">哪些能力直接复用，哪些短板必须补</h2>
+      <div class="card table-scroll">
+        <table>
+          <thead><tr><th>能力域</th><th>当前情况</th><th>状态</th><th>本周处理方式</th></tr></thead>
+          <tbody>
+            <tr><td>Agent / Session / SSE</td><td>有会话、消息流、状态、任务中断和运行控制</td><td><span class="status">已有</span></td><td>直接复用，增加 task_id 级用量事件</td></tr>
+            <tr><td>知识库和文档</td><td>支持 PDF、Word、Excel、PPT、图片解析和向量检索</td><td><span class="status">已有</span></td><td>作为第一批真实任务数据来源</td></tr>
+            <tr><td>权限与人工确认</td><td>有权限模式、HITL、外部执行确认和资源访问策略</td><td><span class="status partial">部分具备</span></td><td>接入商业层权限和审计</td></tr>
+            <tr><td>Token 统计</td><td>已有用户维度的输入、输出、缓存 Token 汇总</td><td><span class="status partial">基础具备</span></td><td>补成按任务的账本和扣费接口</td></tr>
+            <tr><td>套餐、购买、订单</td><td>没有 Token 账户、套餐、订单、余额和充值模型</td><td><span class="status missing">缺失</span></td><td>第 1～3 天优先补齐 MVP</td></tr>
+            <tr><td>管理后台</td><td>当前主要是用户侧工作台，没有商业管理控制台</td><td><span class="status missing">缺失</span></td><td>第 2～3 天做可演示版</td></tr>
+            <tr><td>工作流与 Office</td><td>有 Pipeline 和文件工作区，但缺少固定可恢复的产品流程</td><td><span class="status partial">底座具备</span></td><td>本周先做一个任务结果闭环，后续做 PPT/Word 工作流</td></tr>
+            <tr><td>企业安全</td><td>示例服务默认使用本地工作区，并默认挂载浏览器 MCP</td><td><span class="status missing">需整改</span></td><td>本周明确企业模式边界，禁止扩大默认权限</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="architecture-title">
+      <div class="eyebrow">解耦设计</div>
+      <h2 id="architecture-title">商业层独立，AI 核心保持可替换</h2>
+      <div class="architecture" aria-label="解耦架构示意">
+        <div class="layer"><div class="no">01 · EXISTING</div><strong>lxScope AI 核心</strong><span>Agent、Session、知识库、模型、文件、任务执行。</span></div>
+        <div class="layer adapter"><div class="no">02 · ADAPTER</div><strong>任务/用量适配器</strong><span>统一传递 user_id、task_id、状态、Token、耗时和结果文件。</span></div>
+        <div class="layer business"><div class="no">03 · NEW</div><strong>商业与管理层</strong><span>账户、套餐、订单、Token 流水、扣费、额度、并发、审计。</span></div>
+        <div class="layer"><div class="no">04 · PRODUCT</div><strong>用户与管理端</strong><span>购买、账户、任务消费、管理后台、成本和经营看板。</span></div>
+      </div>
+      <div class="principle">
+        <div><strong>不侵入核心：</strong>Agent 不关心“套餐多少钱”，只产生任务和用量事件。</div>
+        <div><strong>商业可替换：</strong>支付、订单、套餐规则可以先模拟，后续替换为正式服务。</div>
+        <div><strong>真实可验证：</strong>第一版页面可以使用模拟购买，但任务用量、用户隔离和 Token 流水必须真实可追踪。</div>
+      </div>
+      <div class="callout red"><strong>本周不做的事情：</strong>不把支付、财务结算、复杂总部系统和通用 BPMN 一起塞进 Agent 核心；先完成商业闭环和接口边界。</div>
+    </section>
+
+    <section class="section" aria-labelledby="tasks-title">
+      <div class="eyebrow">包含商业模式的完整任务清单</div>
+      <h2 id="tasks-title">任务、交付物、负责人和耗时</h2>
+      <p class="intro">负责人暂按“你 = 业务/产品负责人，我 = 技术分析与研发协作，双方 = 联合确认”划分。若有现有开发同事，可由其执行我标记的工程任务。</p>
+
+      <details class="task-section" open>
+        <summary>一、方向和规则对齐｜第 1 天，约 0.5～1 天</summary>
+        <div class="task-table"><table><thead><tr><th></th><th>优先级</th><th>任务与交付物</th><th>负责人</th><th>耗时</th><th>验收标准</th></tr></thead><tbody>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>整理老板文档中的商业对象：用户、会员、套餐、Token、订单、任务、管理。</span></td><td class="owner">你</td><td>0.25 天</td><td>形成一页业务对象表</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>确定第一版套餐：Token 数、价格、有效期、任务量、并发上限。</span></td><td class="owner">你</td><td>0.25 天</td><td>老板确认可演示参数</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>确定 Token 扣费规则：成功、失败、重试、取消、余额不足如何处理。</span></td><td class="owner both">双方</td><td>0.25 天</td><td>规则无歧义，可写成接口</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>选定一条演示任务，并定义“用户完成了什么”作为第一版验收目标。</span></td><td class="owner">你</td><td>0.25 天</td><td>有明确演示脚本</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>确认本周技术边界：复用 lxScope，不新建第二套 Agent 核心。</span></td><td class="owner both">双方</td><td>0.1 天</td><td>形成路线决策记录</td></tr>
+        </tbody></table></div>
+      </details>
+
+      <details class="task-section" open>
+        <summary>二、商业模式 MVP｜第 1～3 天完成，必须先让老板看见</summary>
+        <div class="task-table"><table><thead><tr><th></th><th>优先级</th><th>任务与交付物</th><th>负责人</th><th>耗时</th><th>验收标准</th></tr></thead><tbody>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>建立 Token 账户：余额、已使用、冻结、赠送、过期等字段。</span></td><td class="owner me">我</td><td>0.5 天</td><td>用户可查询账户</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>建立套餐模型：名称、价格、Token、有效期、任务量、并发量。</span></td><td class="owner me">我</td><td>0.3 天</td><td>管理员可配置套餐</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>建立订单和模拟充值：购买、到账、取消、退款状态。</span></td><td class="owner me">我</td><td>0.4 天</td><td>演示购买后余额增加</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>建立 Token 流水：充值、扣费、赠送、调账、退款。</span></td><td class="owner me">我</td><td>0.4 天</td><td>每笔变动可追溯</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>完成用户账户页面：当前套餐、余额、可做任务数、最近消耗。</span></td><td class="owner me">我</td><td>0.4 天</td><td>用户能看懂并操作</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>完成管理员页面：用户、套餐、充值、扣减、流水和统计。</span></td><td class="owner me">我</td><td>0.6 天</td><td>老板能看到管理闭环</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>增加余额不足、套餐过期和额度耗尽的用户提示。</span></td><td class="owner me">我</td><td>0.2 天</td><td>异常状态可感知</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>第 3 天完成商业闭环演示：套餐 → Token → 任务 → 扣费 → 管理。</span></td><td class="owner both">双方</td><td>0.2 天</td><td>现场可完整跑通</td></tr>
+        </tbody></table></div>
+      </details>
+
+      <details class="task-section" open>
+        <summary>三、与 lxScope 底座对接｜第 2～4 天</summary>
+        <div class="task-table"><table><thead><tr><th></th><th>优先级</th><th>任务与交付物</th><th>负责人</th><th>耗时</th><th>验收标准</th></tr></thead><tbody>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>统一 user_id、session_id、task_id 关联关系。</span></td><td class="owner me">我</td><td>0.3 天</td><td>任务可以追溯到用户</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>定义用量事件接口：任务开始、任务完成、任务失败、任务重试、Token 使用。</span></td><td class="owner me">我</td><td>0.4 天</td><td>商业层只依赖事件接口</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>把当前 Token 统计从用户汇总扩展为任务级记录。</span></td><td class="owner me">我</td><td>0.5 天</td><td>能看单个任务消耗</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>创建任务前检查余额，任务完成后进行扣费和流水写入。</span></td><td class="owner me">我</td><td>0.4 天</td><td>真实任务能扣费</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>处理失败、取消和重试的幂等逻辑，避免重复扣费。</span></td><td class="owner me">我</td><td>0.4 天</td><td>异常任务账目正确</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>把任务结果文件与消息、用户和用量记录关联起来。</span></td><td class="owner me">我</td><td>0.3 天</td><td>结果和成本能一起查看</td></tr>
+        </tbody></table></div>
+      </details>
+
+      <details class="task-section">
+        <summary>四、用户感知和原有产品能力｜第 3～5 天</summary>
+        <div class="task-table"><table><thead><tr><th></th><th>优先级</th><th>任务与交付物</th><th>负责人</th><th>耗时</th><th>验收标准</th></tr></thead><tbody>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>任务页面展示执行状态、耗时、Token 消耗和结果文件。</span></td><td class="owner me">我</td><td>0.5 天</td><td>用户做完任务能感知价值</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>将知识库资料分析作为第一类真实任务场景。</span></td><td class="owner both">双方</td><td>0.4 天</td><td>上传资料到结果完整可演示</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>保留现有人工确认和 Pipeline 能力，明确后续工作流入口。</span></td><td class="owner me">我</td><td>0.3 天</td><td>商业层不破坏原有任务流程</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>每天输出一个用户可见变化、截图/演示和一项数据。</span></td><td class="owner both">双方</td><td>持续</td><td>每日可同步结果</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p2">P2</td><td><span>确定后续 PPT/Word 工作流的第一条业务流程，不在本周扩展通用 BPMN。</span></td><td class="owner">你</td><td>0.2 天</td><td>形成下一阶段入口</td></tr>
+        </tbody></table></div>
+      </details>
+
+      <details class="task-section">
+        <summary>五、安全、运维和长期可维护｜第 5～6 天</summary>
+        <div class="task-table"><table><thead><tr><th></th><th>优先级</th><th>任务与交付物</th><th>负责人</th><th>耗时</th><th>验收标准</th></tr></thead><tbody>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>增加企业安全模式开关，默认关闭浏览器、外网、主机命令和任意文件能力。</span></td><td class="owner me">我</td><td>0.4 天</td><td>企业模式默认收敛权限</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>验证用户 A 无法查看、下载或修改用户 B 的任务、文件、凭证和流水。</span></td><td class="owner both">双方</td><td>0.3 天</td><td>跨用户测试通过</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>确认商业数据的持久化位置和备份范围，避免只存在前端或内存。</span></td><td class="owner me">我</td><td>0.2 天</td><td>重启后数据仍在</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>统一新增路由的 JWT、资源归属和管理员权限检查。</span></td><td class="owner me">我</td><td>0.3 天</td><td>商业接口不能越权</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>补充部署、恢复和后续支付接入边界说明。</span></td><td class="owner me">我</td><td>0.2 天</td><td>形成维护说明</td></tr>
+        </tbody></table></div>
+      </details>
+
+      <details class="task-section">
+        <summary>六、商业测算、演示和验收｜第 6～7 天</summary>
+        <div class="task-table"><table><thead><tr><th></th><th>优先级</th><th>任务与交付物</th><th>负责人</th><th>耗时</th><th>验收标准</th></tr></thead><tbody>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>采集不同类型任务的输入 Token、输出 Token、耗时、失败率和重试次数。</span></td><td class="owner both">双方</td><td>0.5 天</td><td>有第一批真实数据</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>测算单任务成本、会员额度可完成任务数和每日理论任务量。</span></td><td class="owner me">我</td><td>0.3 天</td><td>形成第一版经营账</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>进行稳定并发和任务耗时测试，区分理论上限与稳定上限。</span></td><td class="owner me">我</td><td>0.4 天</td><td>有并发结论和风险</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p0">P0</td><td><span>完成一次老板演示：套餐、购买、任务、扣费、流水、成本和并发。</span></td><td class="owner both">双方</td><td>0.3 天</td><td>完整闭环可现场跑通</td></tr>
+          <tr><td><input class="task-check" type="checkbox"></td><td class="p1">P1</td><td><span>根据反馈整理下一阶段清单：支付、正式订单、企业套餐、工作流和 Office。</span></td><td class="owner">你</td><td>0.2 天</td><td>有明确后续优先级</td></tr>
+        </tbody></table></div>
+      </details>
+      <div class="progress-wrap" aria-live="polite"><div class="progress-head"><span>任务清单完成度</span><strong id="taskProgress">0 / 34</strong></div><div class="progress"><i id="taskProgressBar"></i></div></div>
+    </section>
+
+    <section class="section" aria-labelledby="schedule-title">
+      <div class="eyebrow">一周节奏</div>
+      <h2 id="schedule-title">商业模式第 3 天可见，综合方案第 7 天可验证</h2>
+      <div class="grid-4">
+        <article class="card day"><div class="day-tag">DAY 1 · 定规则</div><h3>先对齐老板的账</h3><ul><li>确定用户、套餐、Token 和扣费规则</li><li>确定第一条演示任务</li><li>画出商业层与 lxScope 的边界</li><li>商业页面使用模拟数据先成形</li></ul></article>
+        <article class="card day"><div class="day-tag">DAY 2 · 接底座</div><h3>让商业层接上系统</h3><ul><li>建立账户、套餐、订单和流水</li><li>接入当前 JWT 用户和任务</li><li>定义任务/用量适配器</li><li>用户端和管理端可操作</li></ul></article>
+        <article class="card day"><div class="day-tag">DAY 3 · 可演示</div><h3>让老板看见闭环</h3><ul><li>模拟购买并获得 Token</li><li>完成一次真实任务并扣费</li><li>查看用户余额和管理员流水</li><li>展示成本、并发和任务量初算</li></ul></article>
+        <article class="card day"><div class="day-tag">DAY 4—7 · 验证</div><h3>让方案站得住</h3><ul><li>采集真实任务数据</li><li>补结果页、隔离和异常处理</li><li>完成测算、演示和反馈闭环</li><li>确定下一阶段工作流和支付路线</li></ul></article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="roles-title">
+      <div class="eyebrow">我们的分工</div>
+      <h2 id="roles-title">你负责把商业方向拍板，我负责把它拆成可落地的技术计划</h2>
+      <div class="grid-3">
+        <article class="card role"><div class="role-name">你 · 业务/产品负责人</div><h3>决定做什么、卖给谁</h3><ul><li>确认老板方案中的商业规则</li><li>确认套餐、价格和会员假设</li><li>提供真实业务任务和用户场景</li><li>判断每次迭代是否“用户能感知”</li><li>组织老板每 1～2 天对齐和拍板</li></ul></article>
+        <article class="card role"><div class="role-name">我 · 技术协作</div><h3>负责怎么接、怎么拆、怎么验证</h3><ul><li>盘点当前 lxScope 能力和短板</li><li>设计商业层、适配层和核心层边界</li><li>拆解数据模型、接口、页面和任务清单</li><li>在当前项目上实现或协助实现模块</li><li>输出每日结果、风险和下一步建议</li></ul></article>
+        <article class="card role"><div class="role-name">双方 · 快速闭环</div><h3>每次只对齐可验证结果</h3><ul><li>每天确认当天交付物和验收标准</li><li>每 1～2 天演示一次用户可见变化</li><li>用真实任务校准 Token 和算力数据</li><li>不因临时需求破坏解耦边界</li><li>第 7 天形成下一阶段清单</li></ul></article>
+      </div>
+      <div class="callout green"><strong>每日同步格式：</strong>今天完成了什么 → 用户看到了什么 → 产生了什么数据 → 还有什么风险 → 明天交付什么。</div>
+    </section>
+
+    <section class="section" aria-labelledby="measure-title">
+      <div class="eyebrow">商业测算</div>
+      <h2 id="measure-title">用真实任务把 Token、算力和套餐算清楚</h2>
+      <div class="card calc">
+        <div class="calc-layout">
+          <div><h3>可调整参数</h3><div class="form-grid">
+            <label>单任务输入 Token<input id="inputTokens" type="number" min="0" step="1000" value="35000"></label>
+            <label>单任务输出 Token<input id="outputTokens" type="number" min="0" step="1000" value="8000"></label>
+            <label>输入价格（元/百万）<input id="inputPrice" type="number" min="0" step="0.1" value="2"></label>
+            <label>输出价格（元/百万）<input id="outputPrice" type="number" min="0" step="0.1" value="8"></label>
+            <label>稳定并发槽位<input id="concurrency" type="number" min="1" step="1" value="20"></label>
+            <label>平均任务耗时（分钟）<input id="duration" type="number" min="0.1" step="0.5" value="8"></label>
+            <label>每日运行小时<input id="hours" type="number" min="0.1" step="0.5" value="8"></label>
+            <label>会员月 Token 额度<input id="memberQuota" type="number" min="0" step="10000" value="500000"></label>
+            <label>会员价格（元/月）<input id="memberPrice" type="number" min="0" step="1" value="99"></label>
+          </div><p class="note">默认数字仅用于演示，必须用第 4～7 天采集的真实任务数据校准。</p></div>
+          <div><h3>第一版测算结果</h3><div class="results" aria-live="polite">
+            <div class="result"><div class="result-label">单任务总 Token</div><div id="taskTokens" class="result-value">43,000</div><div class="result-unit">Token / 任务</div></div>
+            <div class="result"><div class="result-label">单任务模型成本</div><div id="taskCost" class="result-value">¥0.13</div><div class="result-unit">示例值</div></div>
+            <div class="result"><div class="result-label">每日理论任务量</div><div id="dailyCapacity" class="result-value">1,200</div><div class="result-unit">任务 / 天</div></div>
+            <div class="result"><div class="result-label">普通会员任务量</div><div id="memberTasks" class="result-value">11</div><div class="result-unit">任务 / 月</div></div>
+            <div class="result"><div class="result-label">会员预计模型成本</div><div id="memberCost" class="result-value">¥1.47</div><div class="result-unit">按额度用满估算</div></div>
+            <div class="result"><div class="result-label">会员毛利空间</div><div id="memberMargin" class="result-value">¥97.53</div><div class="result-unit">未计基础设施与运营</div></div>
+          </div><div class="callout orange"><strong>最终要回答：</strong>一个会员多少钱、能做多少任务；一个任务成本多少；当前算力支持多少并发；什么先成为瓶颈。</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="accept-title">
+      <div class="eyebrow">第 7 天验收</div>
+      <h2 id="accept-title">不是“写了很多代码”，而是四件事都能被看见</h2>
+      <div class="card accept">
+        <div class="accept-row"><strong>商业可见</strong><span>套餐、Token 账户、购买/充值、任务扣费、流水和管理员管理可以现场演示。</span></div>
+        <div class="accept-row"><strong>技术可承接</strong><span>商业层通过适配器接入 lxScope，Agent 核心不依赖套餐、订单和支付实现。</span></div>
+        <div class="accept-row"><strong>用户可感知</strong><span>用户能看到任务进度、结果文件、Token 消耗和剩余额度，而不是只看到后台代码。</span></div>
+        <div class="accept-row"><strong>经营可测算</strong><span>有第一批真实 Token、耗时、并发和成本数据，可以讨论套餐和任务量，而不是凭感觉定价。</span></div>
+        <div class="accept-row"><strong>后续可延展</strong><span>支付、企业套餐、工作流、Office 输出、安全模式和总部管理都有清晰的下一步入口。</span></div>
+      </div>
+      <div class="callout"><strong>给老板的最终表达：</strong>我们没有否定原来的商业模式，而是把它提前做成可见的业务层；同时基于现有 lxScope 技术底座，把购买、管理、用量和任务能力连接起来，三天看到闭环，一周拿数据验证。</div>
+    </section>
+
+    <footer class="footer">
+      <p>业务参考：D:\龙信系统-3.8.1；技术底座：D:\agentscope_lx\lxScope。</p>
+      <p>本文为一周快速迭代初版计划。商业规则由业务侧确认，价格、Token、并发和任务量必须通过真实运行数据持续校准。</p>
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      const checks = Array.from(document.querySelectorAll(".task-check"));
+      const progressText = document.getElementById("taskProgress");
+      const progressBar = document.getElementById("taskProgressBar");
+      function updateProgress() {
+        const done = checks.filter((item) => item.checked).length;
+        progressText.textContent = done + " / " + checks.length;
+        progressBar.style.width = (checks.length ? done / checks.length * 100 : 0) + "%";
+      }
+      checks.forEach((item) => item.addEventListener("change", updateProgress));
+      updateProgress();
+
+      const ids = ["inputTokens", "outputTokens", "inputPrice", "outputPrice", "concurrency", "duration", "hours", "memberQuota", "memberPrice"];
+      const fields = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
+      const outputIds = ["taskTokens", "taskCost", "dailyCapacity", "memberTasks", "memberCost", "memberMargin"];
+      const outputs = Object.fromEntries(outputIds.map((id) => [id, document.getElementById(id)]));
+      const num = (value) => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+      const fmt = (value, digits = 0) => new Intl.NumberFormat("zh-CN", { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value);
+      function calculate() {
+        const input = num(fields.inputTokens.value);
+        const output = num(fields.outputTokens.value);
+        const inputPrice = num(fields.inputPrice.value);
+        const outputPrice = num(fields.outputPrice.value);
+        const concurrency = Math.max(1, num(fields.concurrency.value));
+        const duration = Math.max(.1, num(fields.duration.value));
+        const hours = num(fields.hours.value);
+        const quota = num(fields.memberQuota.value);
+        const memberPrice = num(fields.memberPrice.value);
+        const tokens = input + output;
+        const cost = input / 1000000 * inputPrice + output / 1000000 * outputPrice;
+        const capacity = concurrency * hours * 60 / duration;
+        const memberTasks = tokens > 0 ? Math.floor(quota / tokens) : 0;
+        const memberCost = memberTasks * cost;
+        outputs.taskTokens.textContent = fmt(tokens);
+        outputs.taskCost.textContent = "¥" + fmt(cost, 2);
+        outputs.dailyCapacity.textContent = fmt(capacity);
+        outputs.memberTasks.textContent = fmt(memberTasks);
+        outputs.memberCost.textContent = "¥" + fmt(memberCost, 2);
+        outputs.memberMargin.textContent = "¥" + fmt(memberPrice - memberCost, 2);
+      }
+      ids.forEach((id) => fields[id].addEventListener("input", calculate));
+      calculate();
+    }());
+  </script>
+</body>
+</html>

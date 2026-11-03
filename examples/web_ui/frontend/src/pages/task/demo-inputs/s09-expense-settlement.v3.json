@@ -1,0 +1,10 @@
+{
+  "template_version": "3.0.0",
+  "inputs": {
+    "project_id": "DEMO-LXSCOPE-2025-001",
+    "expense_category": "技术咨询服务",
+    "accounting_period": "2025-11（演示期间）",
+    "invoice_records_json": "[{\"invoice_id\":\"DEMO-INVOICE-001\",\"invoice_code\":\"DEMO-CODE-2025-001\",\"invoice_number\":\"DEMO-NO-0001\",\"date\":\"2025-11-10\",\"seller\":\"虚构的澄湖演示咨询工作室\",\"expense_category\":\"技术咨询服务\",\"amount\":\"1200.00\",\"tax\":\"72.00\",\"total\":\"1272.00\"},{\"invoice_id\":\"DEMO-INVOICE-002\",\"invoice_code\":\"DEMO-CODE-2025-002\",\"invoice_number\":\"DEMO-NO-0002\",\"date\":\"2025-11-11\",\"seller\":\"虚构的澄湖演示文印工作室\",\"expense_category\":\"资料制作\",\"amount\":\"800.00\",\"tax\":\"48.00\",\"total\":\"848.00\"}]",
+    "expense_rules_json": "{\"rule_id\":\"DEMO-EXPENSE-RULE-2025-01\",\"currency\":\"CNY\",\"allowed_categories\":[\"技术咨询服务\",\"资料制作\"],\"max_per_invoice\":\"2000.00\",\"max_total\":\"5000.00\"}"
+  }
+}

@@ -13,7 +13,7 @@ import {
 	Users,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { ChatViewport } from './ChatViewport';
 import type { SessionRecord, SessionSourceKind } from '@/api';
@@ -91,6 +91,7 @@ const LAST_SESSION_KEY = 'chat_last_session';
 
 const ChatPageInner = () => {
 	const navigate = useNavigate();
+	const location = useLocation();
 	const {
 		agentId: urlAgentId,
 		sessionId: urlSessionId,
@@ -158,8 +159,8 @@ const ChatPageInner = () => {
 		if (urlAgentId || agents.length === 0) return;
 		const remembered = localStorage.getItem(LAST_AGENT_KEY);
 		const agent = agents.find((a) => a.id === remembered) ?? agents[0];
-		navigate(`/chat/${agent.id}`, { replace: true });
-	}, [agents, urlAgentId, navigate]);
+		navigate(`/chat/${agent.id}`, { replace: true, state: location.state });
+	}, [agents, urlAgentId, navigate, location.state]);
 
 	// Redirect: URL has an agent but no session, or its sessionId no
 	// longer exists for this agent → reopen the last session viewed
@@ -173,8 +174,11 @@ const ChatPageInner = () => {
 				? localStorage.getItem(LAST_SESSION_KEY)
 				: null;
 		const view = sessions.find((v) => v.session.id === remembered) ?? sessions[0];
-		navigate(`/chat/${urlAgentId}/${view.session.id}`, { replace: true });
-	}, [urlAgentId, urlSessionId, sessions, navigate]);
+		navigate(`/chat/${urlAgentId}/${view.session.id}`, {
+			replace: true,
+			state: location.state,
+		});
+	}, [urlAgentId, urlSessionId, sessions, navigate, location.state]);
 
 	/**
 	 * Create a new session under the currently selected agent and

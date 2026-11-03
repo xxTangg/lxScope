@@ -10,6 +10,7 @@ import {
 	UsersRound,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import type {
@@ -19,7 +20,7 @@ import type {
 	TTSModelConfig,
 	UpdateSessionRequest,
 } from '@/api';
-import { chatApi, sessionApi } from '@/api';
+import { chatApi, managementMcpApi, sessionApi } from '@/api';
 import MCPSvg from '@/assets/images/mcp.svg?react';
 import { ChatContent } from '@/components/chat/ChatContent.tsx';
 import { SubagentHitlCard } from '@/components/chat/SubagentHitlCard';
@@ -49,11 +50,13 @@ import {
 	ResizablePanelGroup,
 } from '@/components/ui/resizable.tsx';
 import { SidebarTrigger } from '@/components/ui/sidebar';
+import { useAuth } from '@/hooks/useAuth';
 import { useAvailableModels } from '@/hooks/useAvailableModels';
 import { useChatAttachmentContentTypes } from '@/hooks/useChatAttachmentContentTypes';
 import { useKnowledgeBaseMiddlewareSchema } from '@/hooks/useKnowledgeBaseMiddlewareSchema';
 import { useKnowledgeBases } from '@/hooks/useKnowledgeBases';
 import { useMessages } from '@/hooks/useMessages';
+import { usePublishedResources } from '@/hooks/usePublishedResources';
 import { useSessions } from '@/hooks/useSessions';
 import { useWorkspace } from '@/hooks/useWorkspace.ts';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
@@ -86,6 +89,8 @@ const MAX_PANELS_PER_COLUMN = 2;
 
 /** localStorage key holding the dock layout across page navigations. */
 const PANEL_LAYOUT_KEY = 'chat_panel_layout';
+const OPEN_SKILL_PANEL_KEY = 'chat_open_skill_panel';
+const SKILL_SELECTION_KEY_PREFIX = 'chat_skill_selection:';
 
 // Typed as a full Record so adding a PanelKey without listing it here
 // is a compile error rather than a silently unrestorable panel.
@@ -200,6 +205,9 @@ function closePanelInLayout(layout: PanelKey[][], key: PanelKey): PanelKey[][] {
  */
 export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatViewportProps) {
 	const { t } = useTranslation();
+	const location = useLocation();
+	const navigate = useNavigate();
+	const { user } = useAuth();
 	const { sessions, refetch: refetchSessions } = useSessions(agentId);
 	const { groups } = useAvailableModels();
 	const { mediaTypes: parserAttachmentMediaTypes, extensions: parserAttachmentExtensions } =
@@ -213,6 +221,8 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	const [selectedKnowledgeConfig, setSelectedKnowledgeConfig] =
 		useState<SessionKnowledgeConfig | null>(null);
 	const [selectedPermissionMode, setSelectedPermissionMode] = useState<string>('default');
+	const [selectedSkillNames, setSelectedSkillNames] = useState<string[] | undefined>(undefined);
+	const skillSelectionSessionRef = useRef<string | null>(null);
 	const [credentialOpen, setCredentialOpen] = useState(false);
 	const [credentialRefetchTrigger, setCredentialRefetchTrigger] = useState(0);
 	const [tasksContext, setTasksContext] = useState<TaskContext | null>(null);
@@ -222,10 +232,23 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	// panels stacked top→bottom. Open order determines placement.
 	// Persisted so leaving and returning to /chat keeps the same panels.
 	const [panelLayout, setPanelLayout] = useState<PanelKey[][]>(loadPanelLayout);
+	const mcpActivationAttempts = useRef(new Set<string>());
+	const pendingMcpPublicationId = (
+		location.state as { pendingMcpPublicationId?: string } | null
+	)?.pendingMcpPublicationId;
 
 	useEffect(() => {
 		localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(panelLayout));
 	}, [panelLayout]);
+
+	// The admin skill catalog can send a user directly to chat. Reveal the
+	// workspace skills panel there so the pre-seeded workflow is immediately
+	// discoverable without changing the user's persistent dock layout.
+	useEffect(() => {
+		if (!sessionId || localStorage.getItem(OPEN_SKILL_PANEL_KEY) !== '1') return;
+		localStorage.removeItem(OPEN_SKILL_PANEL_KEY);
+		setPanelLayout((layout) => openPanelInLayout(layout, 'skill'));
+	}, [sessionId]);
 
 	// When the viewport agent differs from the outer page's selected
 	// agent (i.e. user drilled into a team member), `refetchSessions`
@@ -292,19 +315,97 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		onTeamUpdated: handleTeamUpdated,
 		onStateUpdated: handleStateUpdated,
 		onSessionUpdated: handleSessionUpdated,
+		skillNames: selectedSkillNames,
 	});
 	const {
 		mcps,
 		loading: mcpsLoading,
+		refetch: refetchMcps,
 		addMcps,
 		addMcpsFromLibrary,
 		removeMcp,
 		skills,
 		skillsLoading,
-		uploadSkill,
-		addSkillsFromLibrary,
-		removeSkill,
 	} = useWorkspace(agentId, sessionId);
+
+	useEffect(() => {
+		if (!pendingMcpPublicationId || !agentId || !sessionId) return;
+		const key = `${agentId}:${sessionId}:${pendingMcpPublicationId}`;
+		if (mcpActivationAttempts.current.has(key)) return;
+		mcpActivationAttempts.current.add(key);
+
+		void managementMcpApi
+			.activate(agentId, sessionId, pendingMcpPublicationId)
+			.then(async (result) => {
+				await refetchMcps();
+				toast.success(
+					result.status === 'added'
+						? `${result.name} 已加入当前工作区`
+						: `${result.name} 已在当前工作区中`,
+				);
+			})
+			.catch((error) => toast.error(formatApiErrorForAlert(error)))
+			.finally(() => {
+				navigate(location.pathname, { replace: true, state: null });
+			});
+	}, [
+		agentId,
+		sessionId,
+		pendingMcpPublicationId,
+		refetchMcps,
+		navigate,
+		location.pathname,
+	]);
+	const { resources: publishedMcps } = usePublishedResources('mcp');
+	const {
+		resources: publishedSkills,
+		loading: publishedSkillsLoading,
+	} = usePublishedResources('skill');
+	const visibleMcps =
+		user?.role === 'admin'
+			? mcps
+			: mcps.filter((mcp) => publishedMcps.some((resource) => resource.name === mcp.name));
+	const skillsPanelLoading =
+		skillsLoading || publishedSkillsLoading;
+	const skillSelectionKey =
+		agentId && sessionId
+			? `${SKILL_SELECTION_KEY_PREFIX}${agentId}:${sessionId}`
+			: null;
+
+	// A skill choice belongs to one conversation. New sessions start with the
+	// complete user-visible catalog selected; revisiting a session restores the
+	// last choice without changing the workspace's installed skills.
+	useEffect(() => {
+		if (!skillSelectionKey) {
+			skillSelectionSessionRef.current = null;
+			setSelectedSkillNames(undefined);
+			return;
+		}
+		if (skillSelectionSessionRef.current === skillSelectionKey) return;
+		if (skillsPanelLoading) {
+			setSelectedSkillNames(undefined);
+			return;
+		}
+
+		const availableNames = publishedSkills.map((skill) => skill.name);
+		let nextSelection = availableNames;
+		try {
+			const stored = JSON.parse(localStorage.getItem(skillSelectionKey) ?? 'null');
+			if (Array.isArray(stored)) {
+				nextSelection = availableNames.filter((name) => stored.includes(name));
+			}
+		} catch {
+			// A corrupt local selection falls back to the safe default: all.
+		}
+		setSelectedSkillNames(nextSelection);
+		skillSelectionSessionRef.current = skillSelectionKey;
+	}, [skillSelectionKey, skillsPanelLoading, publishedSkills]);
+
+	useEffect(() => {
+		if (!skillSelectionKey || skillSelectionSessionRef.current !== skillSelectionKey) return;
+		if (selectedSkillNames === undefined) return;
+		localStorage.setItem(skillSelectionKey, JSON.stringify(selectedSkillNames));
+	}, [skillSelectionKey, selectedSkillNames]);
 	const { knowledgeBases, loading: knowledgeBasesLoading } = useKnowledgeBases();
 	const { schema: kbMiddlewareSchema } = useKnowledgeBaseMiddlewareSchema();
 
@@ -419,7 +520,8 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 				icon: <MCPSvg className="size-4" />,
 				content: (
 					<McpPanel
-						mcps={mcps}
+						mcps={visibleMcps}
+						readOnly={user?.role !== 'admin'}
 						loading={mcpsLoading}
 						onAdd={addMcps}
 						onAddFromLibrary={addMcpsFromLibrary}
@@ -431,12 +533,13 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 				title: t('panel.skill.title'),
 				icon: <BookText className="size-4" />,
 				content: (
-					<SkillPanel
-						skills={skills}
-						loading={skillsLoading}
-						onUpload={uploadSkill}
-						onAddFromLibrary={addSkillsFromLibrary}
-						onRemove={removeSkill}
+									<SkillPanel
+										skills={skills}
+										publishedSkills={publishedSkills}
+										selectedSkillNames={selectedSkillNames}
+										onSelectedSkillNamesChange={setSelectedSkillNames}
+										readOnly
+										loading={skillsPanelLoading}
 					/>
 				),
 			},
@@ -500,16 +603,15 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		[
 			t,
 			tasksContext,
-			mcps,
+			visibleMcps,
 			mcpsLoading,
 			addMcps,
 			addMcpsFromLibrary,
 			removeMcp,
 			skills,
-			skillsLoading,
-			uploadSkill,
-			addSkillsFromLibrary,
-			removeSkill,
+			publishedSkills,
+			skillsPanelLoading,
+			user?.role,
 			permissionContext,
 			knowledgeBases,
 			knowledgeBasesLoading,
@@ -859,7 +961,11 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 										className="font-mono text-muted-foreground hover:text-foreground"
 										value={selectedModel}
 										onChange={handleLlmChange}
-										onAddCredential={() => setCredentialOpen(true)}
+										onAddCredential={
+										user?.role === 'admin'
+											? () => setCredentialOpen(true)
+											: undefined
+									}
 										refetchTrigger={credentialRefetchTrigger}
 										disabled={configPending}
 									/>
@@ -869,11 +975,11 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 										onChange={handleParametersChange}
 										selectedFallbackModel={selectedFallbackModel}
 										onFallbackChange={handleFallbackChange}
-										selectedTTSModel={selectedTTSModel}
-										onTTSChange={handleTTSChange}
-										disabled={configPending}
-									/>
-									<PermissionModeSelect
+												selectedTTSModel={selectedTTSModel}
+												onTTSChange={handleTTSChange}
+												disabled={configPending}
+											/>
+											<PermissionModeSelect
 										id="tour-permission-mode"
 										variant={'ghost'}
 										className="font-mono text-muted-foreground hover:text-foreground"
@@ -996,11 +1102,13 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 					<PanelDock layout={panelLayout} panels={panels} onClosePanel={closePanel} />
 				</ResizablePanelGroup>
 			</main>
-			<CreateCredentialDialog
-				open={credentialOpen}
-				onOpenChange={setCredentialOpen}
-				onCreated={() => setCredentialRefetchTrigger((n) => n + 1)}
-			/>
+			{user?.role === 'admin' && (
+				<CreateCredentialDialog
+					open={credentialOpen}
+					onOpenChange={setCredentialOpen}
+					onCreated={() => setCredentialRefetchTrigger((n) => n + 1)}
+				/>
+			)}
 		</>
 	);
 }

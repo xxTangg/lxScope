@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "template_id": "s04_meeting_preparation",
+  "template_version": "1.0.0",
+  "title": "会前准备",
+  "description": "整理会议参数、核算费用、生成物料并检查内容，为经授权的通知流程准备材料。",
+  "category": "review",
+  "required_capabilities": [
+    "meeting.cost_calculate",
+    "meeting.material_generate",
+    "meeting.material_check",
+    "notification.send"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["meeting_topic", "meeting_date", "participant_count"],
+    "properties": {
+      "meeting_topic": {"type": "string", "description": "会议主题。"},
+      "meeting_date": {"type": "string", "description": "会议日期和时间。"},
+      "location": {"type": "string", "description": "会议地点或线上会议方式。"},
+      "participant_count": {"type": "integer", "minimum": 1, "description": "参会人数。"},
+      "expert_fee_rules_id": {"type": "string", "description": "已授权的费用规则标识。"}
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出会议物料草稿、费用计算依据和通知准备状态。当前没有真实审批、发送授权和外部回执等待协议，相关动作不得作为成功完成。",
+  "steps": [
+    {
+      "step_key": "collect_meeting_parameters",
+      "title": "获取会议参数",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {"type": "input", "reason": "请提供会议安排和费用核算所需参数。", "questions": [{"key": "meeting_topic", "label": "会议主题", "required": true, "options": []}, {"key": "meeting_date", "label": "会议日期和时间", "required": true, "options": []}, {"key": "location", "label": "会议地点或线上方式", "required": false, "options": []}, {"key": "participant_count", "label": "参会人数", "required": true, "options": []}, {"key": "expert_fee_rules_id", "label": "已授权费用规则标识", "required": false, "options": []}]},
+      "output_requirement": "获得会议时间、主题和人数等必要参数。",
+      "failure_handling": "参数缺失或格式不明时请求补充，不猜测费用。",
+      "sensitive_information": "避免收集与会议组织无关的个人资料。"
+    },
+    {
+      "step_key": "calculate_meeting_costs",
+      "title": "核算会议费用",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "meeting.cost_calculate",
+      "config": {"type": "tool", "arguments": {"meeting": "{{previous_output}}"}},
+      "output_requirement": "按获准的费用规则返回明细、规则版本和计算结果。",
+      "failure_handling": "费用规则或计算工具缺失时阻断，不估算或编造金额。",
+      "sensitive_information": "费用数据仅向有权限的会议组织人员展示。"
+    },
+    {
+      "step_key": "generate_meeting_materials",
+      "title": "生成会议物料",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "meeting.material_generate",
+      "config": {"type": "tool", "arguments": {"meeting": "{{previous_output}}"}},
+      "output_requirement": "生成议程、通知草稿和所需物料清单草稿。",
+      "failure_handling": "物料生成能力缺失时保留已收集参数并说明阻断原因。",
+      "sensitive_information": "物料仅包含会议组织所需的最小参会信息。"
+    },
+    {
+      "step_key": "check_meeting_materials",
+      "title": "检查会前材料",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "meeting.material_check",
+      "config": {"type": "tool", "arguments": {"materials": "{{previous_output}}"}},
+      "output_requirement": "列出缺失字段、冲突时间和待人工确认内容。",
+      "failure_handling": "检查能力不可用时不得将材料标记为完整。",
+      "sensitive_information": "检查结果避免复制不必要的参会人信息。"
+    },
+    {
+      "step_key": "collect_material_corrections",
+      "title": "收集材料修改意见",
+      "kind": "input",
+      "required": false,
+      "editable": true,
+      "capability_key": null,
+      "config": {"type": "input", "reason": "可补充会议材料修改意见；此处不是发送授权或企业审批。", "questions": [{"key": "material_feedback", "label": "材料修改意见", "required": false, "options": []}]},
+      "output_requirement": "记录修改建议；不将用户输入解释为消息发送授权。",
+      "failure_handling": "未收到修改意见时保留材料待核验状态。",
+      "sensitive_information": "不要在意见中附加无关参会人的个人信息。"
+    },
+    {
+      "step_key": "prepare_notification",
+      "title": "准备通知草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {"type": "agent", "prompt": "整理会议通知草稿、费用明细和材料清单。明确标示尚未审批、尚未发送和未收到回执的状态，不调用外部发送动作。"},
+      "output_requirement": "输出待人工核验的通知草稿及费用、物料清单。",
+      "failure_handling": "缺少检查结果时标出缺项并停止生成可发送状态。",
+      "sensitive_information": "通知草稿只包含必要的会议信息和经授权的收件字段。"
+    },
+    {
+      "step_key": "send_meeting_notification",
+      "title": "发送会议通知（能力未接入时阻断）",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "notification.send",
+      "config": {"type": "tool", "arguments": {"draft": "{{previous_output}}"}},
+      "output_requirement": "只有真实通知工具、权限检查、人工授权及幂等保护全部具备后，才允许记录发送结果。",
+      "failure_handling": "当前 capability 未绑定或未完成授权/幂等校验时必须阻断，不得发送。",
+      "sensitive_information": "不得把收件人资料或消息凭据写入模板。"
+    }
+  ],
+  "unsupported_capabilities": [
+    {"capability_key": "meeting.business_approval", "reason": "现有 InputStep 不验证审批身份、权限或审计状态。"},
+    {"capability_key": "notification.receipt_wait", "reason": "现有 Task 没有持久化外部回执等待与恢复协议。"}
+  ]
+}

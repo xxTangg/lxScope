@@ -1,13 +1,28 @@
 # -*- coding: utf-8 -*-
 """The example script to start the agent service."""
 from contextlib import asynccontextmanager
+import asyncio
+import copy
 import os
 import sys
+from uuid import uuid4
 
-from pydantic import SecretStr
+# Load local configuration (.env) before any module reads environment vars.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:  # pragma: no cover - python-dotenv is optional
+    pass
+
 import uvicorn
+from fastapi import HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry.trace import StatusCode
 
 from agentscope.app import create_app, SubAgentTemplate
 from agentscope.app.channel import (
@@ -22,8 +37,20 @@ from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
 from agentscope.app.storage import RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import OpenAICredential
+from agentscope.model import ModelCard
+# Local-only Redis substitute: fakeredis is a pure-Python, in-process Redis
+# implementation. No external Redis server is required to run the service on
+# a developer machine. The upstream RedisStorage is kept untouched; we only
+# inject an in-memory connection pool. local_redis adds a disk snapshot so
+# restarting the service no longer wipes agents/sessions/messages.
+from local_redis import create_persistent_redis, start_autosave, stop_autosave
+from agentscope._logging import logger
 from agentscope.mcp import MCPClient, StdioMCPConfig
-from agentscope.middleware import AgenticMemoryMiddleware, MiddlewareBase
+from agentscope.middleware import (
+    AgenticMemoryMiddleware,
+    MiddlewareBase,
+    TracingMiddleware,
+)
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.rag import (
     ApproxTokenChunker,
@@ -37,7 +64,50 @@ from agentscope.rag import (
 )
 from agentscope.workspace import WorkspaceBase
 
-from auth import load_auth_from_env
+from admin_api import AdminService, admin_router, resource_router, sales_hub_router
+from auth import AuthUser, load_auth_from_env
+from identity import TenantScopedStorage, reset_identity, set_identity
+from longxin_admin.credential_policy import AdminManagedCredentialPolicy
+from longxin_admin.user_credential_provisioning import (
+    provision_siliconflow_credential,
+)
+from longxin_admin.plan_billing import PlanBillingService, plan_billing_router
+from longxin_admin.upgrade import UpgradeService, upgrade_router
+from skill_analytics_api import skill_analytics_router
+from skill_observability import (
+    SkillReconcileSummary,
+    SkillUsageMiddleware,
+    log_skill_reconcile_completed,
+    log_skill_reconcile_started,
+    persist_skill_observation,
+    _reconcile_event,
+)
+from skill_observability_store import (
+    BestEffortSkillObservationSink,
+    NullSkillObservationSink,
+    PostgresSkillObservationStore,
+    SkillObservationSink,
+)
+from project_observability_store import PostgresProjectObservabilityStore
+from project_observability import (
+    ProjectObservability,
+    new_request_id,
+    observability_router,
+)
+from observability_analytics_api import observability_analytics_router
+from mcp_management import management_mcp_router
+from mcp_access import reconcile_workspace_mcps
+from knowledge_graph import knowledge_graph_router
+from persistence import ApplicationDatabase
+from task import (
+    AgentScopeTaskExecutor,
+    AgentScopeTaskPlanner,
+    PostgresTaskStore,
+    RedisTaskStore,
+    TaskService,
+    TaskStore,
+    task_router,
+)
 
 playwright_mcp_command = os.getenv("PLAYWRIGHT_MCP_COMMAND", "npx")
 playwright_browsers_path = os.getenv(
@@ -50,68 +120,323 @@ playwright_mcp_args = (
     else ["-y", "@playwright/mcp@latest"]
 )
 
-default_mcps = [
-    MCPClient(
-        name="browser-use",
-        mcp_config=StdioMCPConfig(
-            command=playwright_mcp_command,
-            args=playwright_mcp_args,
-            # Explicitly pass this to the child process. Some Playwright MCP
-            # launch paths do not reliably inherit the container environment
-            # and otherwise fall back to /root/.cache/ms-playwright.
-            env={"PLAYWRIGHT_BROWSERS_PATH": playwright_browsers_path},
-        ),
-        is_stateful=True,
-    ),
-]
+# Local run: skip the Playwright MCP to avoid an implicit `npx @playwright/mcp`
+# download (and Chromium fetch) on first workspace use. Re-enable by
+# uncommenting the block below if browser automation is needed.
+default_mcps = []  # type: ignore[var-annotated]
+# default_mcps = [
+#     MCPClient(
+#         name="playwright",
+#         mcp_config=StdioMCPConfig(
+#             command=playwright_mcp_command,
+#             args=playwright_mcp_args,
+#             env={"PLAYWRIGHT_BROWSERS_PATH": playwright_browsers_path},
+#         ),
+#         is_stateful=True,
+#     ),
+# ]
 
-storage = RedisStorage(
-    host=os.getenv("REDIS_HOST", "localhost"),
-    port=int(os.getenv("REDIS_PORT", "6379")),
-    password=os.getenv("REDIS_PASSWORD") or None,
+# Local-only Redis backend: inject an in-process fakeredis connection pool so
+# the upstream RedisStorage works without an external Redis server.  The
+# snapshot file keeps the data across restarts (fakeredis alone is memory only).
+_fake_redis, _local_redis_server, _local_redis_snapshot = create_persistent_redis()
+storage = TenantScopedStorage(
+    RedisStorage(connection_pool=_fake_redis.connection_pool),
 )
+
+# Skill analysis persistence is an application-level optional sink.  The
+# default keeps the existing stdout-only diagnostics when PostgreSQL is not
+# configured, so Redis-only deployments remain backwards compatible.
+skill_observation_sink: SkillObservationSink = NullSkillObservationSink()
+skill_observation_store: PostgresSkillObservationStore | None = None
+project_observability_store: PostgresProjectObservabilityStore | None = None
+application_database: ApplicationDatabase | None = None
+project_observability = ProjectObservability()
+_default_publication_tenants: set[str] = set()
+_default_publication_seed_lock = asyncio.Lock()
+
+# Product-owned office skills are seeded into every new workspace. They do
+# not become user-installed library records, so every account can use them
+# without downloading or installing anything first.
+builtin_skills_dir = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "builtin_skills",
+)
+builtin_skill_paths = [
+    os.path.join(builtin_skills_dir, name)
+    for name in sorted(os.listdir(builtin_skills_dir))
+    if os.path.isdir(os.path.join(builtin_skills_dir, name))
+]
 
 # Qdrant must be persistent in a service deployment.  The previous
 # ``:memory:`` configuration made every API restart look like an empty
 # knowledge base because all vectors disappeared with the process.
 vector_store = QdrantStore(
-    path=os.getenv("QDRANT_PATH", "/app/qdrant_data"),
+    path=os.getenv("QDRANT_PATH", "./qdrant_data"),
 )
 
 
-async def _ensure_siliconflow_credential(user_ids: tuple[str, ...]) -> None:
-    """Make the configured SiliconFlow credential available in the UI.
+async def _provision_registered_user(user_id: str) -> None:
+    """Provision deployment-managed model access for a new account."""
+    await provision_siliconflow_credential(storage, (user_id,))
 
-    SiliconFlow exposes an OpenAI-compatible API, so the existing OpenAI
-    credential/model implementation is the correct adapter. The record is
-    provisioned for every configured authenticated user.
+
+def _install_local_chat_model_catalog() -> None:
+    """Advertise the configured SiliconFlow model ids instead of OpenAI's.
+
+    SiliconFlow speaks the OpenAI wire protocol, so its credential is stored as
+    a plain ``OpenAICredential``.  That class also carries the *public OpenAI*
+    model catalogue, and the Web UI seeds a brand-new session with the first
+    entry of whatever catalogue it sees.  With a SiliconFlow key that default
+    becomes ``gpt-4.1-mini``, which SiliconFlow does not host, so every chat
+    turn came back as ``invalid_request`` ("The request to the model was
+    rejected as invalid").
+
+    For this local deployment the OpenAI-compatible credential always points at
+    SiliconFlow, so the advertised catalogue is replaced by the ids configured
+    in ``.env``.
     """
-    api_key = os.getenv("SILICONFLOW_API_KEY")
-    if not api_key:
+    model_name = os.getenv("SILICONFLOW_CHAT_MODEL", "").strip()
+    if not model_name or not os.getenv("SILICONFLOW_API_KEY", "").strip():
         return
 
-    credential = OpenAICredential(
-        id=os.getenv("SILICONFLOW_CREDENTIAL_ID", "siliconflow"),
-        name="SiliconFlow",
-        api_key=SecretStr(api_key),
-        base_url=os.getenv(
-            "SILICONFLOW_BASE_URL",
-            "https://api.siliconflow.cn/v1",
-        ),
+    chat_cls = OpenAICredential.get_chat_model_class()
+    builtin_catalog = chat_cls.list_models
+
+    @classmethod
+    def _siliconflow_catalog(cls) -> list[ModelCard]:
+        template = builtin_catalog()
+        if not template:  # pragma: no cover - the builtin list is never empty
+            return []
+        card = copy.deepcopy(template[0])
+        card.name = model_name
+        card.label = model_name.split("/")[-1]
+        card.context_size = int(
+            os.getenv("SILICONFLOW_CONTEXT_SIZE", "131072"),
+        )
+        card.output_size = int(os.getenv("SILICONFLOW_OUTPUT_SIZE", "8192"))
+        return [card]
+
+    chat_cls.list_models = _siliconflow_catalog
+    logger.info(
+        "local model catalog: openai_credential advertises %s",
+        model_name,
     )
-    for user_id in user_ids:
-        await storage.upsert_credential(user_id, credential)
 
 
-async def _provision_registered_user(user_id: str) -> None:
-    """Give a newly registered account the configured default credential."""
-    await _ensure_siliconflow_credential((user_id,))
+_install_local_chat_model_catalog()
+
+
+def _classify_insufficient_balance_as_quota() -> None:
+    """Report provider "out of credit" (HTTP 402) as a quota problem.
+
+    The upstream classifier maps only 401/403/429 and treats every other 4xx
+    as ``INVALID_REQUEST`` ("the request was rejected as invalid").  SiliconFlow
+    answers an empty wallet with ``402 {"code": 30001, "message": "Sorry, your
+    account balance is insufficient"}``, so a top-up problem surfaced as a
+    malformed-request problem and sent people looking for a config bug.
+    """
+    try:
+        from agentscope.app._service._errors import _STATUS_MAP
+        from agentscope.types import ErrorType
+    except Exception:  # pragma: no cover - internal module moved upstream
+        return
+    _STATUS_MAP.setdefault(402, ErrorType.RATE_LIMIT)
+
+
+_classify_insufficient_balance_as_quota()
 
 
 auth = load_auth_from_env(
     storage=storage,
     on_registered=_provision_registered_user,
+    on_authenticated=lambda user: provision_siliconflow_credential(
+        storage,
+        (),
+        tenant_ids=(user.tenant_id,) if user.tenant_id else (),
+    ),
 )
+
+
+_builtin_skill_paths_by_id = {
+    os.path.basename(path): path
+    for path in builtin_skill_paths
+}
+
+
+async def _sync_current_user_skills(
+    user_id: str,
+    agent_id: str,
+    workspace: WorkspaceBase,
+    session_id: str | None = None,
+) -> SkillReconcileSummary:
+    """Align one live workspace with this user's published skill scope.
+
+    This is an application-level reconciliation before the AgentScope
+    toolkit is assembled. It deliberately uses the existing workspace and
+    skill-hub APIs instead of changing the AgentScope core skill loader.
+    """
+
+    summary = SkillReconcileSummary(
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        observation_sink=skill_observation_sink,
+    )
+    log_skill_reconcile_started(summary)
+    await persist_skill_observation(
+        summary,
+        _reconcile_event(
+            summary,
+            event_name="skill.reconcile.started",
+            result="started",
+        ),
+    )
+    try:
+        account = await auth._account_by_id(user_id)
+        application = globals().get("app")
+        if account is None or account.status != "active" or application is None:
+            summary.result = "skipped"
+            summary.error_code = "account_not_active"
+            return summary
+
+        admin_service = application.state.admin_service
+        current_user = auth._public_user(account)
+        visible_resources = await admin_service.published_resources(
+            current_user,
+            "skill",
+        )
+        visible_names = {
+            resource.name for resource in visible_resources.resources
+        }
+        summary.visible_count = len(visible_names)
+        managed_names = await admin_service.managed_resource_names("skill")
+
+        current_skills = await workspace.list_skills(agent_id=agent_id)
+        summary.before_count = len(current_skills)
+        current_names = {skill.name for skill in current_skills}
+
+        # Keep user-created/local skills intact. Only remove skills that the
+        # administrator publication catalog controls and has revoked for this
+        # particular user.
+        for skill in current_skills:
+            if skill.name in managed_names and skill.name not in visible_names:
+                await workspace.remove_skill(skill.name, agent_id=agent_id)
+                current_names.discard(skill.name)
+                summary.removed_count += 1
+
+        # Built-ins are seeded by the workspace manager. If a previous scope
+        # reconciliation removed one and it becomes visible again, restore it
+        # from the product-owned source directory.
+        for resource in visible_resources.resources:
+            source_id = resource.id.removeprefix("skill:")
+            builtin_path = _builtin_skill_paths_by_id.get(source_id)
+            if builtin_path is None or resource.name in current_names:
+                continue
+            try:
+                await workspace.add_skill(builtin_path, agent_id=agent_id)
+                current_names.add(resource.name)
+                summary.restored_count += 1
+            except Exception:
+                summary.failure_count += 1
+                logger.exception(
+                    "Unable to restore builtin skill %s",
+                    resource.name,
+                )
+
+        # Installed skills are already copied into the user's library when an
+        # administrator publishes them. Missing visible skills are downloaded
+        # into this workspace only when this user actually starts a turn here.
+        skill_hubs = getattr(application.state, "skill_hubs", {})
+        workspace_service = getattr(application.state, "workspace_service", None)
+        if workspace_service is None:
+            final_skills = await workspace.list_skills(agent_id=agent_id)
+            summary.after_count = len(final_skills)
+            summary.skill_names = tuple(
+                sorted(skill.name for skill in final_skills)
+            )
+            summary.result = "partial"
+            summary.error_code = "workspace_service_unavailable"
+            return summary
+        for record in await storage.list_skills(user_id):
+            if record.name not in visible_names or record.name in current_names:
+                continue
+            hub = skill_hubs.get(record.hub_id or "")
+            if hub is None:
+                summary.failure_count += 1
+                summary.error_code = "skill_hub_not_found"
+                continue
+            try:
+                archive = await hub.download(
+                    user_id,
+                    record.card_id or record.name,
+                    record.version,
+                )
+                await workspace_service.install_skill(
+                    workspace,
+                    archive.stream,
+                    archive.format,
+                    record.name,
+                    agent_id=agent_id,
+                )
+                current_names.add(record.name)
+                summary.installed_count += 1
+            except Exception:
+                summary.failure_count += 1
+                summary.error_code = "skill_install_failed"
+                logger.exception(
+                    "Unable to equip published skill %s",
+                    record.name,
+                )
+
+        # This is the application-level provisioned check. It does not replace
+        # AgentScope's loader; it confirms the workspace is ready before the
+        # generic toolkit builder receives it.
+        final_skills = await workspace.list_skills(agent_id=agent_id)
+        summary.after_count = len(final_skills)
+        summary.skill_names = tuple(sorted(skill.name for skill in final_skills))
+        return summary
+    except Exception:
+        summary.result = "failed"
+        summary.error_code = summary.error_code or "unknown_error"
+        logger.exception(
+            "skill.reconcile.failed user_id=%s agent_id=%s session_id=%s",
+            user_id,
+            agent_id,
+            session_id,
+        )
+        raise
+    finally:
+        summary.finish()
+        log_skill_reconcile_completed(summary)
+        await persist_skill_observation(
+            summary,
+            _reconcile_event(
+                summary,
+                event_name="skill.reconcile.completed",
+                result=summary.result,
+            ),
+        )
+
+
+async def _reconcile_task_workspace_mcps(
+    user_id: str,
+    agent_id: str,
+    workspace: WorkspaceBase,
+    session_id: str,
+) -> None:
+    """Apply managed-MCP revocations before a Task reads workspace tools."""
+
+    account = await auth._account_by_id(user_id)
+    if account is None or account.status != "active":
+        return
+    await reconcile_workspace_mcps(
+        admin_service=app.state.admin_service,
+        user=auth._public_user(account),
+        workspace=workspace,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
 
 
 async def longterm_memory_factory(
@@ -122,13 +447,30 @@ async def longterm_memory_factory(
 ) -> list[MiddlewareBase]:
     """Attach Markdown-file long-term memory, stored under the session's
     workspace so it is reachable through whichever backend is bound."""
-    del user_id, agent_id, session_id
-    return [
+    summary = await _sync_current_user_skills(
+        user_id,
+        agent_id,
+        workspace,
+        session_id=session_id,
+    )
+    middlewares: list[MiddlewareBase] = [
         AgenticMemoryMiddleware(
             workdir=workspace.workdir,
             backend=workspace.get_backend(),
         ),
     ]
+    if project_observability.settings.enabled:
+        # Application-owned measurements are attached through AgentScope's
+        # public middleware extension point. No framework internals are
+        # changed for this service-level integration.
+        middlewares.extend(
+            [
+                project_observability.agent_middleware(),
+                TracingMiddleware(),
+            ],
+        )
+    middlewares.append(SkillUsageMiddleware(summary))
+    return middlewares
 
 
 app = create_app(
@@ -150,6 +492,8 @@ app = create_app(
         ),
         # The default MCP servers that will be added into the workspace
         default_mcps=default_mcps,
+        # All users start with the product-owned office skills available.
+        skill_paths=builtin_skill_paths,
     ),
     # Knowledge base feature — backed by a persistent local Qdrant store. The
     # CollectionPerKbManager allocates one collection per knowledge base,
@@ -177,6 +521,7 @@ app = create_app(
     # only raises the rate limit.
     mcp_hubs=[GitHubMCPHub()],
     skill_hubs=[ClawSkillHub(api_token=os.getenv("CLAWHUB_API_TOKEN"))],
+    resource_access_policy=AdminManagedCredentialPolicy(auth),
     # Customize your own subagent templates
     custom_subagent_templates=[
         SubAgentTemplate(
@@ -233,7 +578,201 @@ so anything you want them to see MUST be sent through `TeamSay`.""",
     ],
     download_secret=os.getenv("AGENTSCOPE_DOWNLOAD_SECRET"),
 )
+
+# Task is an application-level module.  It owns its repository and execution
+# port so the generic AgentScope application factory remains unchanged.
+app.state.task_store = TaskStore()
+app.state.observability = project_observability
+
+
+async def _request_identity(request: Request) -> AuthUser | None:
+    """Resolve the request identity for tenancy and project event context."""
+    authorization = request.headers.get("authorization")
+    auth = getattr(request.app.state, "auth", None)
+    if not authorization or auth is None:
+        return None
+    try:
+        return await auth.get_current_user(authorization)
+    except Exception:
+        # Authentication dependencies remain the source of truth.  The
+        # observability path must not turn an unauthenticated request into a
+        # service failure.
+        return None
+
+
+_ADMIN_ONLY_WORKSPACE_MCP_WRITES = {
+    ("POST", "/workspace/mcp"),
+    ("POST", "/workspace/mcp/from-library"),
+    ("DELETE", "/workspace/mcp"),
+}
+
+
+async def _reject_unmanaged_mcp_write(request: Request) -> JSONResponse | None:
+    """Keep normal users on the publication-authorized MCP path.
+
+    AgentScope's generic workspace routes remain intact for administrators;
+    this product-level guard prevents ordinary users from bypassing the
+    publication scope by calling them directly.
+    """
+
+    is_delete = request.method == "DELETE" and request.url.path.startswith(
+        "/workspace/mcp/",
+    )
+    if (request.method, request.url.path) not in _ADMIN_ONLY_WORKSPACE_MCP_WRITES and not is_delete:
+        return None
+    try:
+        user = await request.app.state.auth.get_current_user(
+            request.headers.get("authorization"),
+        )
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if user.role == "admin":
+        return None
+    return JSONResponse(
+        status_code=403,
+        content={
+            "detail": {
+                "code": "workspace_mcp_admin_managed",
+                "message": "MCP resources are managed by your administrator.",
+            },
+        },
+    )
+
+
+@app.middleware("http")
+async def observability_middleware(request: Request, call_next):
+    """Correlate and measure every HTTP request at the app boundary."""
+    identity = await _request_identity(request)
+    identity_token = set_identity(identity)
+    blocked = await _reject_unmanaged_mcp_write(request)
+    if blocked is not None:
+        reset_identity(identity_token)
+        return blocked
+    request_id = new_request_id(request)
+    request.state.request_id = request_id
+    started_at = asyncio.get_running_loop().time()
+    response = None
+    status_code = 500
+    user_id = identity.id if identity is not None else ""
+    try:
+        if identity is not None and identity.tenant_id:
+            async with _default_publication_seed_lock:
+                if identity.tenant_id not in _default_publication_tenants:
+                    await request.app.state.admin_service.ensure_default_builtin_publications()
+                    _default_publication_tenants.add(identity.tenant_id)
+        with project_observability.http_span(request) as span:
+            request.state.trace_id = project_observability.trace_id(span)
+            with project_observability.context(
+                request_id,
+                request.state.trace_id,
+                user_id,
+            ):
+                try:
+                    response = await call_next(request)
+                    status_code = response.status_code
+                    span.set_attribute("http.response.status_code", status_code)
+                    route = getattr(request.scope.get("route"), "path", None)
+                    if route:
+                        span.set_attribute("http.route", route)
+                    if status_code >= 500:
+                        span.set_status(StatusCode.ERROR)
+                except BaseException as exc:
+                    span.record_exception(exc)
+                    span.set_status(StatusCode.ERROR)
+                    raise
+    finally:
+        duration_seconds = asyncio.get_running_loop().time() - started_at
+        route = getattr(request.scope.get("route"), "path", None) or "__unmatched__"
+        project_observability.record_http(
+            method=request.method,
+            route=route,
+            status_code=status_code,
+            duration_seconds=duration_seconds,
+            request_id=request_id,
+            trace_id=getattr(request.state, "trace_id", ""),
+            user_id=user_id,
+        )
+        reset_identity(identity_token)
+
+    assert response is not None
+    response.headers["X-Request-ID"] = request_id
+    trace_id = getattr(request.state, "trace_id", "")
+    if trace_id:
+        response.headers["X-Trace-ID"] = trace_id
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def admin_error_handler(request: Request, exc: HTTPException):
+    """Add the contract correlation ID only to the product API domains."""
+    if not (
+        request.url.path.startswith("/admin")
+        or request.url.path.startswith("/integration/sales/v1")
+    ):
+        return await http_exception_handler(request, exc)
+    if not isinstance(exc.detail, dict):
+        return await http_exception_handler(request, exc)
+    detail = dict(exc.detail)
+    detail.setdefault("request_id", getattr(request.state, "request_id", ""))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": detail},
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def admin_validation_error_handler(request: Request, exc: RequestValidationError):
+    if not (
+        request.url.path.startswith("/admin")
+        or request.url.path.startswith("/integration/sales/v1")
+    ):
+        from fastapi.exception_handlers import request_validation_exception_handler
+
+        return await request_validation_exception_handler(request, exc)
+    fields: dict[str, str] = {}
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error.get("loc", ()))
+        fields[location or "request"] = str(error.get("msg", "Invalid request."))
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "code": "validation_error",
+                "message": "The request payload is invalid.",
+                "fields": fields,
+                "request_id": getattr(request.state, "request_id", ""),
+            },
+        },
+    )
+
+
+app.state.auth = auth
+app.state.plan_billing_service = PlanBillingService(storage, auth)
+app.state.credential_access_check = auth.is_admin_user
+app.state.chat_access_check = app.state.plan_billing_service.ensure_chat_allowed
+app.state.admin_service = AdminService(
+    storage,
+    auth,
+    plan_billing=app.state.plan_billing_service,
+    workspace_service_provider=lambda: getattr(app.state, "workspace_service", None),
+)
+app.state.upgrade_service = UpgradeService(storage, auth)
+app.state.sales_hub_authorizer = app.state.admin_service.authorize_hub
 app.include_router(auth.router)
+app.include_router(admin_router)
+app.include_router(skill_analytics_router)
+app.include_router(observability_analytics_router)
+app.include_router(resource_router)
+app.include_router(sales_hub_router)
+app.include_router(plan_billing_router)
+app.include_router(upgrade_router)
+# Application-owned, opt-in knowledge graph.  This router deliberately
+# lives outside AgentScope so document indexing remains graph-free.
+app.include_router(knowledge_graph_router)
+app.include_router(task_router)
+app.include_router(observability_router)
+app.include_router(management_mcp_router)
 app.dependency_overrides[get_current_user_id] = auth.get_current_user_id
 
 # Seed the env-backed credential only after AgentScope has entered its normal
@@ -244,12 +783,234 @@ _base_lifespan = app.router.lifespan_context
 
 @asynccontextmanager
 async def _application_lifespan(app_instance):
-    async with _base_lifespan(app_instance):
-        await _ensure_siliconflow_credential(auth.user_ids)
-        yield
+    global skill_observation_sink, skill_observation_store
+    global project_observability_store, application_database
+
+    # Persist the in-process fakeredis database every few seconds so restarting
+    # the service does not wipe agents, sessions and messages.
+    local_redis_autosave = start_autosave(
+        _local_redis_server,
+        _local_redis_snapshot,
+    )
+
+    # Configure the application-owned observability layer before the
+    # AgentScope lifespan creates the ChatService and its runtime agents.
+    # The integration uses only public extension points.
+    project_observability.configure()
+
+    task_store_backend = os.getenv(
+        "LXSCOPE_TASK_STORE_BACKEND",
+        "redis",
+    ).strip().lower()
+    application_database_url = os.getenv(
+        "LXSCOPE_DATABASE_URL",
+        "",
+    ).strip()
+    local_application_database: ApplicationDatabase | None = None
+    if application_database_url:
+        local_application_database = ApplicationDatabase(application_database_url)
+        try:
+            await local_application_database.initialize()
+            application_database = local_application_database
+            logger.info(
+                "lxscope.persistence.database_ready backend=postgres "
+                "schema=longxin_app",
+            )
+        except Exception:
+            logger.exception("lxscope.persistence.database_unavailable")
+            await local_application_database.close()
+            local_application_database = None
+            application_database = None
+            if task_store_backend == "postgres":
+                raise
+    elif task_store_backend == "postgres":
+        raise RuntimeError(
+            "LXSCOPE_TASK_STORE_BACKEND=postgres requires LXSCOPE_DATABASE_URL.",
+        )
+
+    project_url = (
+        os.getenv("PROJECT_OBSERVABILITY_DATABASE_URL", "").strip()
+        or os.getenv("SKILL_OBSERVABILITY_DATABASE_URL", "").strip()
+        or application_database_url
+    )
+    local_project_store: PostgresProjectObservabilityStore | None = None
+    if project_url:
+        local_project_store = PostgresProjectObservabilityStore(project_url)
+        try:
+            await local_project_store.initialize()
+            project_observability.set_persistent_store(local_project_store)
+            restored_count = await project_observability.restore_persisted_events()
+            logger.info(
+                "project.observability.store_ready backend=postgres "
+                "table=project_observability_events restored=%s",
+                restored_count,
+            )
+        except Exception:
+            logger.exception(
+                "project.observability.store_unavailable backend=postgres",
+            )
+            await local_project_store.close()
+            local_project_store = None
+
+    project_observability_store = local_project_store
+
+    # The database is deliberately opt-in.  A failed optional observability
+    # backend falls back to stdout diagnostics and must not prevent the
+    # business service from starting.
+    configured_url = (
+        os.getenv("SKILL_OBSERVABILITY_DATABASE_URL", "").strip()
+        or application_database_url
+    )
+    local_store: PostgresSkillObservationStore | None = None
+    local_sink: SkillObservationSink = NullSkillObservationSink()
+    if configured_url:
+        local_store = PostgresSkillObservationStore(configured_url)
+        try:
+            await local_store.initialize()
+            local_sink = BestEffortSkillObservationSink(local_store)
+            logger.info(
+                "skill.observation.store_ready backend=postgres "
+                "table=skill_observability_events",
+            )
+        except Exception:
+            logger.exception(
+                "skill.observation.store_unavailable backend=postgres",
+            )
+            await local_store.close()
+            local_store = None
+
+    skill_observation_store = local_store
+    skill_observation_sink = local_sink
+    app_instance.state.skill_observation_store = local_store
+    app_instance.state.skill_observation_sink = local_sink
+
+    try:
+        async with _base_lifespan(app_instance):
+            if os.getenv("LXSCOPE_AUTH_PROVIDER", "logto").strip().lower() != "logto":
+                await app_instance.state.admin_service.ensure_default_builtin_publications()
+            accounts = await auth.list_accounts()
+            await provision_siliconflow_credential(
+                storage,
+                (account.id for account in accounts if account.status == "active"),
+            )
+            if (
+                task_store_backend == "postgres"
+                and local_application_database is not None
+            ):
+                app_instance.state.task_store = PostgresTaskStore(
+                    local_application_database.engine,
+                    tenant_code=os.getenv("LXSCOPE_TENANT_CODE", "default"),
+                    tenant_name=os.getenv(
+                        "LXSCOPE_TENANT_NAME",
+                        "Default Tenant",
+                    ),
+                    tenant_id=os.getenv("LXSCOPE_TENANT_ID") or None,
+                )
+                await app_instance.state.task_store.initialize()
+                logger.info(
+                    "lxscope.persistence.task_store_ready backend=postgres",
+                )
+            else:
+                # Keep AgentScope Core on its managed Redis Storage and use a
+                # separate namespace for the application Task store.
+                app_instance.state.task_store = RedisTaskStore(
+                    storage.get_client(),
+                )
+            app_instance.state.task_service = TaskService(
+                app_instance.state.task_store,
+                message_bus=app_instance.state.message_bus,
+                agentscope_executor=AgentScopeTaskExecutor(
+                    storage=storage,
+                    resource_access_service=(
+                        app_instance.state.resource_access_service
+                    ),
+                    workspace_manager=app_instance.state.workspace_manager,
+                    scheduler_manager=app_instance.state.scheduler_manager,
+                    background_task_manager=(
+                        app_instance.state.background_task_manager
+                    ),
+                    message_bus=app_instance.state.message_bus,
+                    extra_agent_tools=app_instance.state.extra_agent_tools,
+                    sub_agent_templates=(
+                        app_instance.state.custom_subagent_templates
+                    ),
+                    mcp_reconciler=lambda user_id, agent_id, workspace, session_id: (
+                        _reconcile_task_workspace_mcps(
+                            user_id,
+                            agent_id,
+                            workspace,
+                            session_id,
+                        )
+                    ),
+                ),
+                planner=AgentScopeTaskPlanner(
+                    storage=storage,
+                    resource_access_service=(
+                        app_instance.state.resource_access_service
+                    ),
+                ),
+            )
+            recharge_sync_task = asyncio.create_task(
+                _sales_hub_recharge_sync_loop(app_instance.state.admin_service),
+            )
+            try:
+                yield
+            finally:
+                await app_instance.state.task_service.shutdown()
+                recharge_sync_task.cancel()
+                await asyncio.gather(recharge_sync_task, return_exceptions=True)
+    finally:
+        await project_observability.close_persistent_store()
+        project_observability_store = None
+        if local_store is not None:
+            await local_store.close()
+        if local_application_database is not None:
+            await local_application_database.close()
+        application_database = None
+        project_observability.shutdown()
+        skill_observation_store = None
+        # Write the final local-redis snapshot before the process exits.
+        await stop_autosave(
+            local_redis_autosave,
+            _local_redis_server,
+            _local_redis_snapshot,
+        )
+        skill_observation_sink = NullSkillObservationSink()
 
 
 app.router.lifespan_context = _application_lifespan
+
+
+async def _sales_hub_recharge_sync_loop(service: AdminService) -> None:
+    """Poll approved Sales Hub orders so delivery status advances automatically."""
+    try:
+        interval = max(
+            5.0,
+            float(os.getenv("LONGXIN_RECHARGE_SYNC_INTERVAL_SECONDS", "30")),
+        )
+    except ValueError:
+        interval = 30.0
+    actor = AuthUser(
+        id="system-sales-hub-sync",
+        username="system-sales-hub-sync",
+        role="admin",
+    )
+    while True:
+        try:
+            config = await service.hub_config()
+            if config.get("hub_url") and config.get("token_masked"):
+                await service.sync_recharge(
+                    actor,
+                    request_id=f"req-auto-sync-{uuid4().hex}",
+                    idempotency_key=f"idem-auto-sync-{uuid4().hex}",
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The next cycle retries.  Credentials and response bodies are
+            # intentionally not logged by this background task.
+            pass
+        await asyncio.sleep(interval)
 
 
 if __name__ == "__main__":

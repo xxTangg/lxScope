@@ -1,4 +1,4 @@
-import { ApiError, client, getAccessToken, getBaseUrl } from './client';
+import { client, createApiError, getAccessToken, getBaseUrl } from './client';
 import type { UploadProgress } from './knowledgeBase';
 import type {
 	AddFromLibraryResponse,
@@ -10,6 +10,11 @@ import type {
 	Skill,
 	WorkspaceDownloadTokenResponse,
 } from './types';
+
+export interface ActivatePublishedMcpResponse {
+	status: 'added' | 'already_attached';
+	name: string;
+}
 
 export interface UploadOptions {
 	/** Fired with byte-level progress while the body is streamed. */
@@ -78,19 +83,11 @@ function uploadSkillXhr(
 				resolve();
 				return;
 			}
-			let detail = xhr.responseText || xhr.statusText;
-			try {
-				const json = JSON.parse(xhr.responseText) as { detail?: unknown };
-				if (typeof json.detail === 'string') detail = json.detail;
-				else if (json.detail !== undefined) detail = JSON.stringify(json.detail);
-			} catch {
-				// keep raw text
-			}
-			reject(new ApiError(xhr.status, detail));
+			reject(createApiError(xhr.status, xhr.responseText, xhr.statusText));
 		};
 		xhr.onerror = () => {
 			cleanup();
-			reject(new ApiError(0, 'Network error'));
+			reject(createApiError(0, ''));
 		};
 		xhr.onabort = () => {
 			cleanup();
@@ -157,6 +154,17 @@ export const workspaceApi = {
 				session_id: sessionId,
 			}),
 
+		/**
+		 * Re-probe an MCP already attached to this workspace using the
+		 * management-owned fresh lifecycle adapter.
+		 */
+		probe: (agentId: string, sessionId: string, name: string) =>
+			client.post<MCPClientStatus>(
+				'/management/mcp/probe',
+				undefined,
+				{ agent_id: agentId, session_id: sessionId, name },
+				{ silent: true },
+			),
 		add: (agentId: string, sessionId: string, mcp: MCPClient) =>
 			client.post<void>('/workspace/mcp', mcp, { agent_id: agentId, session_id: sessionId }),
 
@@ -211,4 +219,14 @@ export const workspaceApi = {
 				session_id: sessionId,
 			}),
 	},
+};
+
+/** Product-level endpoint for users to equip an administrator-authorized MCP. */
+export const managementMcpApi = {
+	activate: (agentId: string, sessionId: string, publicationId: string) =>
+		client.post<ActivatePublishedMcpResponse>(
+			'/management/mcp/activate',
+			{ publication_id: publicationId },
+			{ agent_id: agentId, session_id: sessionId },
+		),
 };

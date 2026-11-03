@@ -1,0 +1,60 @@
+{
+  "logto_tenant_id": "${LOGTO_TENANT_ID:-default}",
+  "browser_application": {
+    "enabled": true,
+    "id_env": "VITE_LOGTO_APP_ID",
+    "name": "lxScope Web",
+    "description": "lxScope browser application",
+    "public_url": "${LXSCOPE_PUBLIC_URL:-http://localhost:8000}",
+    "redirect_paths": [
+      "/auth/callback"
+    ],
+    "post_logout_redirect_paths": [
+      "/"
+    ]
+  },
+  "organizations": [
+    {
+      "code": "A",
+      "name": "A",
+      "description": "lxScope demo organization A",
+      "users": [
+        {
+          "username": "user_1",
+          "primary_email": "user_1@example.com",
+          "name": "user_1",
+          "password_env": "LOGTO_DEMO_USER_1_PASSWORD",
+          "role": "lxscope_admin"
+        },
+        {
+          "username": "user_2",
+          "primary_email": "user_2@example.com",
+          "name": "user_2",
+          "password_env": "LOGTO_DEMO_USER_2_PASSWORD",
+          "role": "lxscope_member"
+        },
+        {
+          "username": "user_3",
+          "primary_email": "user_3@example.com",
+          "name": "user_3",
+          "password_env": "LOGTO_DEMO_USER_3_PASSWORD",
+          "role": "lxscope_member"
+        }
+      ]
+    },
+    {
+      "code": "B",
+      "name": "B",
+      "description": "lxScope demo organization B",
+      "users": [
+        {
+          "username": "user_3",
+          "primary_email": "user_3@example.com",
+          "name": "user_3",
+          "password_env": "LOGTO_DEMO_USER_3_PASSWORD",
+          "role": "lxscope_admin"
+        }
+      ]
+    }
+  ]
+}

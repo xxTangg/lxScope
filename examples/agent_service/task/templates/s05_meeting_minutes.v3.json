@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "template_id": "s05_meeting_minutes",
+  "template_version": "3.0.0",
+  "title": "会议召开与纪要",
+  "description": "处理用户提供的已转写会议文本，形成议题摘要和待办草稿，并收集人工修改意见；本版本不处理音频。",
+  "category": "review",
+  "required_capabilities": [
+    "meeting.transcript_import",
+    "document.render"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "meeting_id",
+      "transcript_text"
+    ],
+    "properties": {
+      "meeting_id": {
+        "type": "string",
+        "description": "会议记录标识。"
+      },
+      "language": {
+        "type": "string",
+        "description": "转写文本主要语言，可选。"
+      },
+      "agenda": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "会议议题，可选。"
+      },
+      "transcript_text": {
+        "type": "string",
+        "description": "用户已转写的会议文本；Task 不调用 ASR。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出带议题和待办标记的纪要草稿及转写来源状态；转写内容需人工复核后使用。",
+  "steps": [
+    {
+      "step_key": "collect_transcript_text",
+      "title": "提交已转写会议文本",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供会议记录标识和已转写文本；本步骤不读取音频文件。",
+        "questions": [
+          {
+            "key": "meeting_id",
+            "label": "会议记录标识",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "language",
+            "label": "转写文本主要语言",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "agenda",
+            "label": "会议议题（如有）",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "transcript_text",
+            "label": "已转写会议文本（不上传音频）",
+            "required": true,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得用户提交的转写原文及会议上下文，不读取本地文件。",
+      "failure_handling": "转写文本缺失时阻断，不推测会议内容。",
+      "sensitive_information": "转写文本可能包含个人发言和内部讨论，仅收集纪要所需内容。"
+    },
+    {
+      "step_key": "import_meeting_transcript",
+      "title": "导入已转写文本（不执行 ASR）",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "meeting.transcript_import",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "transcript": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "保留用户提供的转写原文和来源声明；明确未调用 ASR。",
+      "failure_handling": "转写文本缺失或超长时阻断，不用模型臆造发言内容。",
+      "sensitive_information": "转写文本按会议内部资料管理，不扩散发言人身份信息。"
+    },
+    {
+      "step_key": "segment_meeting_topics",
+      "title": "议题分段与摘要",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "依据转写文本和已提供议题整理议题分段与摘要。保留时间线索；识别不确定或听不清的内容并标记待核实。"
+      },
+      "output_requirement": "每个议题段落均保留摘要和可定位的转写依据。",
+      "failure_handling": "转写缺失、噪声较大或议题不清时列出不确定区间。",
+      "sensitive_information": "只总结完成纪要所需的发言内容。"
+    },
+    {
+      "step_key": "extract_meeting_actions",
+      "title": "提取待办事项",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "从议题摘要和转写中提取明确的决定、待办、责任角色和时间要求。未明确指派的责任人或日期标记为未指定，不推测。"
+      },
+      "output_requirement": "输出有依据的决定和待办清单，并标明缺少的责任人或期限。",
+      "failure_handling": "没有明确决定或待办时如实说明，不从讨论内容推导正式决议。",
+      "sensitive_information": "避免输出与会议任务无关的发言人个人信息。"
+    },
+    {
+      "step_key": "review_minutes_draft",
+      "title": "人工复核纪要草稿",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请复核识别结果、决定和待办。此步骤收集修改意见，不是正式签发。",
+        "questions": [
+          {
+            "key": "minutes_corrections",
+            "label": "需要更正的内容",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "保存用户提出的修改；没有回复时保留草稿和待复核状态。",
+      "failure_handling": "不把未回复或输入为空视为纪要确认。",
+      "sensitive_information": "修改意见按会议内部资料处理。"
+    },
+    {
+      "step_key": "produce_meeting_minutes",
+      "title": "整理会议纪要",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "整理会议基本信息、议题摘要、决定、待办事项、引用时间和人工修改意见。保留草稿状态和不确定标记，不将其表述为已签发纪要。"
+      },
+      "output_requirement": "生成可供编辑的纪要草稿；导出能力由 Task 文件输出配置提供。",
+      "failure_handling": "若关键复核项未解决，输出待确认清单并保留草稿状态。",
+      "sensitive_information": "导出内容不包含与纪要无关的转写文本或个人资料。",
+      "artifact": {
+        "format": "docx",
+        "filename": "会议纪要草稿"
+      }
+    }
+  ],
+  "unsupported_capabilities": [
+    {
+      "capability_key": "meeting.formal_signoff",
+      "reason": "现有 InputStep 不构成正式签发、签名或审批。"
+    },
+    {
+      "capability_key": "meeting.audio_transcribe",
+      "reason": "Task 只处理用户提交的已转写文本，未接入音频资产授权或 ASR 服务。"
+    }
+  ]
+}

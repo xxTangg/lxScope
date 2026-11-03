@@ -41,6 +41,7 @@ import {
 	SidebarMenuItem,
 } from '@/components/ui/sidebar.tsx';
 import { Spinner } from '@/components/ui/spinner.tsx';
+import { useAuth } from '@/hooks/useAuth';
 import { useMCPHubCards } from '@/hooks/useMCPHubCards.ts';
 import { useMCPHubs } from '@/hooks/useMCPHubs.ts';
 import { useMCPs } from '@/hooks/useMCPs.ts';
@@ -48,6 +49,7 @@ import { useResourceDrawer } from '@/hooks/useResourceDrawer.ts';
 import { useTranslation } from '@/i18n/useI18n';
 import { cn } from '@/lib/utils';
 import { avatarTint, formatTime } from '@/utils/common';
+import { PublishedResourcePage } from '@/pages/resources/PublishedResourcePage';
 
 /**
  * The drawer body: the server's README where a skill shows its `SKILL.md`,
@@ -57,19 +59,21 @@ import { avatarTint, formatTime } from '@/utils/common';
  * from the install form, so this is the template, never the filled-in
  * config with its secrets.
  */
-function MCPDetailBody({ card }: { card: MCPCard | null }) {
+function MCPDetailBody({ card, canConfigure }: { card: MCPCard | null; canConfigure: boolean }) {
 	const { t } = useTranslation();
 
 	if (!card) return null;
 
 	return (
 		<div className="flex flex-col gap-y-6">
-			<div className="flex flex-col gap-y-2">
-				<span className="text-xs text-muted-foreground">{t('mcp.configLabel')}</span>
-				<pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs">
-					{JSON.stringify(card.config_template, null, 2)}
-				</pre>
-			</div>
+			{canConfigure && (
+				<div className="flex flex-col gap-y-2">
+					<span className="text-xs text-muted-foreground">{t('mcp.configLabel')}</span>
+					<pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs">
+						{JSON.stringify(card.config_template, null, 2)}
+					</pre>
+				</div>
+			)}
 			{card.readme && <Markdown>{card.readme}</Markdown>}
 		</div>
 	);
@@ -78,6 +82,7 @@ function MCPDetailBody({ card }: { card: MCPCard | null }) {
 interface CardItemProps {
 	card: MCPCard;
 	installed: boolean;
+	canConfigure: boolean;
 	/** "Now" in epoch seconds, pinned by the panel so every row in a
 	 *  render agrees and the age does not shift on unrelated re-renders. */
 	now: number;
@@ -85,7 +90,7 @@ interface CardItemProps {
 	onOpen: () => void;
 }
 
-function CardItem({ card, installed, now, onInstall, onOpen }: CardItemProps) {
+function CardItem({ card, installed, canConfigure, now, onInstall, onOpen }: CardItemProps) {
 	const { t } = useTranslation();
 
 	return (
@@ -168,7 +173,7 @@ function CardItem({ card, installed, now, onInstall, onOpen }: CardItemProps) {
 							<Check className="size-3" />
 							{t('mcp.installed')}
 						</span>
-					) : (
+					) : canConfigure ? (
 						<Button
 							className="h-7 rounded-full px-3.5 text-xs font-normal hover:opacity-86"
 							// Installing straight from the row must not also
@@ -180,6 +185,8 @@ function CardItem({ card, installed, now, onInstall, onOpen }: CardItemProps) {
 						>
 							{t('mcp.install')}
 						</Button>
+					) : (
+						<span className="text-xs text-muted-foreground">{t('mcp.adminOnlyConfig')}</span>
 					)}
 				</div>
 			</ItemActions>
@@ -191,10 +198,11 @@ interface HubPanelProps {
 	hubId: string;
 	hub?: HubInfo;
 	installedNames: Set<string>;
+	canConfigure: boolean;
 	onInstalled: () => void;
 }
 
-function HubPanel({ hubId, hub, installedNames, onInstalled }: HubPanelProps) {
+function HubPanel({ hubId, hub, installedNames, canConfigure, onInstalled }: HubPanelProps) {
 	const { t } = useTranslation();
 	const [query, setQuery] = useState('');
 	const [installing, setInstalling] = useState<MCPCard | null>(null);
@@ -270,6 +278,7 @@ function HubPanel({ hubId, hub, installedNames, onInstalled }: HubPanelProps) {
 								key={`${card.hub_id}:${card.id}`}
 								card={card}
 								installed={installedNames.has(card.name)}
+								canConfigure={canConfigure}
 								now={now}
 								onInstall={() => setInstalling(card)}
 								onOpen={() => drawer.open(card)}
@@ -290,9 +299,9 @@ function HubPanel({ hubId, hub, installedNames, onInstalled }: HubPanelProps) {
 				onOpenChange={(open) => {
 					if (!open) drawer.close();
 				}}
-				body={<MCPDetailBody card={drawer.opened as MCPCard | null} />}
+				body={<MCPDetailBody card={drawer.opened as MCPCard | null} canConfigure={canConfigure} />}
 				action={
-					<Button
+					canConfigure ? <Button
 						disabled={drawer.opened !== null && installedNames.has(drawer.opened.name)}
 						onClick={() => {
 							// One overlay at a time: the install form replaces
@@ -311,17 +320,17 @@ function HubPanel({ hubId, hub, installedNames, onInstalled }: HubPanelProps) {
 								? 'mcp.installed'
 								: 'mcp.install',
 						)}
-					</Button>
+					</Button> : null
 				}
 			/>
 
-			<InstallMCPDialog
+			{canConfigure && <InstallMCPDialog
 				card={installing}
 				onOpenChange={(open) => {
 					if (!open) setInstalling(null);
 				}}
 				onInstalled={onInstalled}
-			/>
+			/>}
 		</ResourcePanel>
 	);
 }
@@ -329,11 +338,12 @@ function HubPanel({ hubId, hub, installedNames, onInstalled }: HubPanelProps) {
 interface MinePanelProps {
 	mcps: MCPView[];
 	loading: boolean;
+	canConfigure: boolean;
 	onEdit: (mcp: MCPView) => void;
 	onRemove: (mcpId: string) => void;
 }
 
-function MinePanel({ mcps, loading, onEdit, onRemove }: MinePanelProps) {
+function MinePanel({ mcps, loading, canConfigure, onEdit, onRemove }: MinePanelProps) {
 	const { t } = useTranslation();
 	const [query, setQuery] = useState('');
 
@@ -446,7 +456,7 @@ function MinePanel({ mcps, loading, onEdit, onRemove }: MinePanelProps) {
 										{mcp.version}
 									</span>
 								)}
-								{mcp.hub_id && mcp.card_id && (
+								{canConfigure && mcp.hub_id && mcp.card_id && (
 									<Button
 										size="icon-sm"
 										variant="ghost"
@@ -457,7 +467,7 @@ function MinePanel({ mcps, loading, onEdit, onRemove }: MinePanelProps) {
 										<Pencil />
 									</Button>
 								)}
-								<Button
+								{canConfigure && <Button
 									size="icon-sm"
 									variant="ghost"
 									className="text-muted-foreground"
@@ -465,7 +475,7 @@ function MinePanel({ mcps, loading, onEdit, onRemove }: MinePanelProps) {
 									title={t('common.delete')}
 								>
 									<Trash2 />
-								</Button>
+								</Button>}
 							</ItemActions>
 						</Item>
 					))}
@@ -475,9 +485,11 @@ function MinePanel({ mcps, loading, onEdit, onRemove }: MinePanelProps) {
 	);
 }
 
-export function MCPHubPage() {
+function AdminMCPHubPage() {
 	const { t } = useTranslation();
+	const { user } = useAuth();
 	const navigate = useNavigate();
+	const canConfigure = user?.role === 'admin';
 	// No `hubId` in the URL means the "mine" tab, which is the default.
 	const { hubId } = useParams<{ hubId?: string }>();
 	const { hubs, loading: hubsLoading, error: hubsError, refetch } = useMCPHubs();
@@ -491,7 +503,7 @@ export function MCPHubPage() {
 	const [editingCard, setEditingCard] = useState<MCPCard | null>(null);
 
 	useEffect(() => {
-		if (!editing?.hub_id || !editing.card_id) return;
+		if (!canConfigure || !editing?.hub_id || !editing.card_id) return;
 		let current = true;
 		hubApi.mcp
 			.getCard(editing.hub_id, editing.card_id)
@@ -506,7 +518,7 @@ export function MCPHubPage() {
 		return () => {
 			current = false;
 		};
-	}, [editing]);
+	}, [canConfigure, editing]);
 
 	return (
 		<div className="flex size-full p-2 gap-2">
@@ -516,6 +528,11 @@ export function MCPHubPage() {
 						{t('common.mcp-hub')}
 					</div>
 					<div className="text-text-tertiary text-xs">{t('mcp.subtitle')}</div>
+					{!canConfigure && (
+						<div className="text-[11px] text-muted-foreground">
+							{t('mcp.adminOnlyConfig')}
+						</div>
+					)}
 				</SidebarHeader>
 				<SidebarContent>
 					<SidebarGroup className="mt-6 px-2 py-0">
@@ -628,29 +645,40 @@ export function MCPHubPage() {
 						hubId={hubId}
 						hub={hubs.find((h) => h.hub_id === hubId)}
 						installedNames={installedNames}
+						canConfigure={canConfigure}
 						onInstalled={refetchMcps}
 					/>
 				) : (
 					<MinePanel
 						mcps={mcps}
 						loading={mcpsLoading}
+						canConfigure={canConfigure}
 						onEdit={setEditing}
 						onRemove={remove}
 					/>
 				)}
 			</main>
 
-			<InstallMCPDialog
-				card={editing ? editingCard : null}
-				editing={editing}
-				onOpenChange={(open) => {
-					if (!open) {
-						setEditing(null);
-						setEditingCard(null);
-					}
-				}}
-				onInstalled={refetchMcps}
-			/>
+			{canConfigure && (
+				<InstallMCPDialog
+					card={editing ? editingCard : null}
+					editing={editing}
+					onOpenChange={(open) => {
+						if (!open) {
+							setEditing(null);
+							setEditingCard(null);
+						}
+					}}
+					onInstalled={refetchMcps}
+				/>
+			)}
 		</div>
 	);
+}
+
+/** Administrators browse/install from hubs; regular users see only the
+ * catalog entries published to them by an administrator. */
+export function MCPHubPage() {
+	const { user } = useAuth();
+	return user?.role === 'admin' ? <AdminMCPHubPage /> : <PublishedResourcePage kind="mcp" />;
 }

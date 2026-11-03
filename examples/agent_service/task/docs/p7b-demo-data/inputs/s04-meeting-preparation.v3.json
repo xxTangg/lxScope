@@ -1,0 +1,11 @@
+{
+  "template_version": "3.0.0",
+  "inputs": {
+    "meeting_topic": "DEMO/SYNTHETIC：DEMO-LXSCOPE-2025-001 项目策划与设备台账优化咨询会（DEMO-MTG-2025-001）",
+    "meeting_date": "2025-11-06 09:00（演示日期，Asia/Shanghai）",
+    "location": "虚构：澄湖科创园演示会议室 A / 本地演示会议",
+    "participant_count": 8,
+    "expert_fee_rules_id": "DEMO-FEE-RULE-2025-01",
+    "fee_rates_json": "{\"rule_id\":\"DEMO-FEE-RULE-2025-01\",\"currency\":\"CNY\",\"rates\":{\"venue_fixed\":\"800.00\",\"catering_per_person\":\"180.00\",\"materials_per_person\":\"45.00\",\"transport_per_person\":\"120.00\"}}"
+  }
+}

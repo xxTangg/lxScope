@@ -18,6 +18,7 @@ import { FlipCard } from '@/components/chat/FlipCard.tsx';
 import { TextInput } from '@/components/chat/TextInput.tsx';
 import { WorkingDirectoryDialog } from '@/components/dialog/WorkingDirectoryDialog';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert.tsx';
+import { Badge } from '@/components/ui/badge';
 import { Marker, MarkerContent } from '@/components/ui/marker';
 import {
 	MessageScroller,
@@ -41,6 +42,78 @@ const SPINNER_DELAY_MS = 150;
  * merely paused to read the last reply.
  */
 const TIME_MARKER_GAP_MS = 10 * 60 * 1000;
+
+function isInternalTaskMessage(message: Msg): boolean {
+	return (
+		message.metadata?.scope === 'task' &&
+		message.metadata?.visibility === 'internal'
+	);
+}
+
+interface TaskSummary {
+	key: string;
+	taskId: string;
+	runId: string;
+	nodeCount: number;
+	latestText: string;
+	status: 'running' | 'succeeded' | 'failed';
+	createdAt: string;
+}
+
+function taskMetadataText(message: Msg, key: string): string | null {
+	const value = message.metadata?.[key];
+	return typeof value === 'string' && value ? value : null;
+}
+
+function taskMessageText(message: Msg): string {
+	return getContentBlocks(message, 'text')
+		.map((block) => block.text)
+		.join('\n')
+		.trim();
+}
+
+function TaskSummaryCard({ summary }: { summary: TaskSummary }) {
+	const statusLabel =
+		summary.status === 'running'
+			? '执行中'
+			: summary.status === 'succeeded'
+				? '已完成'
+				: '执行失败';
+	return (
+		<div className="rounded-2xl border border-primary/15 bg-primary/[0.03] p-4">
+			<div className="flex items-center gap-2">
+				<div className="min-w-0 flex-1">
+					<div className="text-sm font-medium">任务执行</div>
+					<div className="mt-1 text-xs text-muted-foreground">
+						已处理 {summary.nodeCount} 个 AI 节点 · Run {summary.runId.slice(0, 8)}
+					</div>
+				</div>
+				<Badge
+					className={
+						summary.status === 'failed'
+							? 'bg-red-100 text-red-700'
+							: summary.status === 'running'
+								? 'bg-amber-100 text-amber-700'
+								: 'bg-emerald-100 text-emerald-700'
+					}
+				>
+					{statusLabel}
+				</Badge>
+			</div>
+			{summary.latestText && (
+				<div className="mt-3 line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-foreground/85">
+					{summary.latestText}
+				</div>
+			)}
+			<div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+				<span>节点 Prompt 和完整输出已收纳到任务详情</span>
+				<a className="shrink-0 hover:text-foreground" href={`/task/${summary.taskId}`}>
+					查看任务详情
+				</a>
+			</div>
+		</div>
+	);
+}
 
 /**
  * Stamp for a resumed conversation. The time alone is enough while the
@@ -132,10 +205,42 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 	onRefreshGit,
 }) => {
 	const { t, i18n } = useTranslation();
+	const visibleMsgs = useMemo(
+		() => msgs.filter((message) => !isInternalTaskMessage(message)),
+		[msgs],
+	);
+	const taskSummaries = useMemo(() => {
+		const grouped = new Map<string, TaskSummary>();
+		for (const message of msgs) {
+			if (!isInternalTaskMessage(message)) continue;
+			const taskId = taskMetadataText(message, 'task_id');
+			const runId = taskMetadataText(message, 'run_id');
+			if (!taskId || !runId) continue;
+			const key = `${taskId}:${runId}`;
+			const current = grouped.get(key) ?? {
+				key,
+				taskId,
+				runId,
+				nodeCount: 0,
+				latestText: '',
+				status: 'running',
+				createdAt: message.created_at,
+			};
+			if (message.role === 'assistant') {
+				if (taskMetadataText(message, 'node_id')) current.nodeCount += 1;
+				current.latestText = taskMessageText(message) || current.latestText;
+				current.status = message.error ? 'failed' : message.finished_at ? 'succeeded' : 'running';
+			}
+			grouped.set(key, current);
+		}
+		return [...grouped.values()].sort(
+			(a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+		);
+	}, [msgs]);
 	// Only a session that finished loading with nothing in it is empty.
 	// Treating "no messages yet" as empty would flash the greeting over
 	// every session that does have history.
-	const isEmpty = !loading && msgs.length === 0;
+	const isEmpty = !loading && visibleMsgs.length === 0 && taskSummaries.length === 0;
 
 	// A spinner that appears and vanishes inside a couple of frames reads
 	// as a flicker, not as feedback — so hold it back until the load has
@@ -152,19 +257,21 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 	}, [loading]);
 
 	const toConfirmedToolCalls = useMemo(() => {
-		if (msgs.length === 0) return [];
+		if (visibleMsgs.length === 0) return [];
 
-		const lastMsg = msgs[msgs.length - 1];
+		const lastMsg = visibleMsgs[visibleMsgs.length - 1];
 		return getContentBlocks(lastMsg, 'tool_call')
 			.filter((tc) => tc.state === 'asking')
 			.map((tc) => ({ replyId: lastMsg.id, toolCall: tc }));
-	}, [msgs]);
+	}, [visibleMsgs]);
 
 	// REPLY_START can arrive noticeably later than the accepted chat
 	// request. Keep feedback in the message flow during that interval;
 	// once an assistant message appears, its own running footer takes over.
 	const waitingForReply =
-		phase !== 'idle' && msgs.length > 0 && msgs[msgs.length - 1].role === 'user';
+		phase !== 'idle' &&
+		visibleMsgs.length > 0 &&
+		visibleMsgs[visibleMsgs.length - 1].role === 'user';
 
 	// On an empty session the prompt and the input centre together, so every box
 	// down to the message list shrinks to its content instead of filling.
@@ -189,8 +296,13 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 					<MessageScroller>
 						<MessageScrollerViewport>
 							<MessageScrollerContent>
-								{msgs.map((message, index) => {
-									const previous = msgs[index - 1];
+								{taskSummaries.map((summary) => (
+									<MessageScrollerItem key={summary.key} messageId={summary.key}>
+										<TaskSummaryCard summary={summary} />
+									</MessageScrollerItem>
+								))}
+								{visibleMsgs.map((message, index) => {
+									const previous = visibleMsgs[index - 1];
 									const at = new Date(message.created_at);
 									const previousAt = previous
 										? new Date(previous.finished_at ?? previous.created_at)
@@ -239,8 +351,8 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 										</div>
 									</MessageScrollerItem>
 								)}
-								{msgs.length > 0 &&
-									msgs[msgs.length - 1].finished_reason ===
+								{visibleMsgs.length > 0 &&
+									visibleMsgs[visibleMsgs.length - 1].finished_reason ===
 										ReplyFinishedReason.EXCEED_MAX_ITERS &&
 									phase === 'idle' && (
 										<Alert

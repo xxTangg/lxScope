@@ -1,7 +1,10 @@
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Plus } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 import type { ScheduleEvent } from './event';
+import { DaySheet } from './day-sheet';
+import { NextUpBar } from './next-up-bar';
+import type { NextFire } from './schedule-utils';
 import { Button } from '@/components/ui/button';
 import {
 	DropdownMenu,
@@ -10,6 +13,7 @@ import {
 	DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import i18n from '@/i18n';
 import { useTranslation } from '@/i18n/useI18n';
 
 interface DateCellProps {
@@ -17,7 +21,10 @@ interface DateCellProps {
 	isToday: boolean;
 	events: ScheduleEvent[];
 	onEventClick: (event: ScheduleEvent) => void;
+	onDayClick: () => void;
+	onCreateClick: () => void;
 	moreText: string;
+	createHint: string;
 }
 
 /**
@@ -27,10 +34,22 @@ interface DateCellProps {
  * @param root0.isToday
  * @param root0.events
  * @param root0.onEventClick
+ * @param root0.onDayClick
+ * @param root0.onCreateClick
  * @param root0.moreText
+ * @param root0.createHint
  * @returns A calendar date cell element.
  */
-function DateCell({ day, isToday, events, onEventClick, moreText }: DateCellProps) {
+function DateCell({
+	day,
+	isToday,
+	events,
+	onEventClick,
+	onDayClick,
+	onCreateClick,
+	moreText,
+	createHint,
+}: DateCellProps) {
 	const cellRef = useRef<HTMLDivElement>(null);
 	const [maxVisibleEvents, setMaxVisibleEvents] = useState(3);
 
@@ -66,7 +85,10 @@ function DateCell({ day, isToday, events, onEventClick, moreText }: DateCellProp
 	return (
 		<div
 			ref={cellRef}
-			className="border-border! border-r border-b p-2 hover:bg-accent cursor-pointer overflow-hidden"
+			className={`group border-border! relative cursor-pointer overflow-hidden border-r border-b p-2 hover:bg-accent ${
+				isToday ? 'bg-primary/5' : ''
+			}`}
+			onClick={onDayClick}
 		>
 			<div className="flex items-start justify-between mb-1">
 				<div className="w-6 h-6 flex items-center justify-center">
@@ -80,6 +102,24 @@ function DateCell({ day, isToday, events, onEventClick, moreText }: DateCellProp
 						{day}
 					</div>
 				</div>
+				<TooltipProvider>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								aria-label={createHint}
+								className="flex size-5 items-center justify-center rounded opacity-0 transition-opacity group-hover:opacity-100 hover:bg-primary/15 focus-visible:opacity-100"
+								onClick={(e) => {
+									e.stopPropagation();
+									onCreateClick();
+								}}
+							>
+								<Plus className="size-3.5 text-muted-foreground" />
+							</button>
+						</TooltipTrigger>
+						<TooltipContent>{createHint}</TooltipContent>
+					</Tooltip>
+				</TooltipProvider>
 			</div>
 			{/* Event indicators */}
 			<div className="space-y-1">
@@ -97,13 +137,16 @@ function DateCell({ day, isToday, events, onEventClick, moreText }: DateCellProp
 							<div className="w-1 min-w-1 max-w-1 bg-primary border-primary h-full rounded" />
 							<span className="truncate">{event.title}</span>
 						</div>
-						<span>{event.time}</span>
+						<span className="font-mono">{event.time}</span>
 					</div>
 				))}
 				{events.length > maxVisibleEvents && (
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild>
-							<div className="text-xs text-muted-foreground px-1 cursor-pointer hover:text-foreground hover:underline">
+							<div
+								className="text-xs text-muted-foreground px-1 cursor-pointer hover:text-foreground hover:underline"
+								onClick={(e) => e.stopPropagation()}
+							>
 								+{events.length - maxVisibleEvents} {moreText}
 							</div>
 						</DropdownMenuTrigger>
@@ -131,6 +174,9 @@ interface Props {
 	onEventClick: (event: ScheduleEvent) => void;
 	currentDate: Date;
 	onMonthChange: (date: Date) => void;
+	nextUp: NextFire | null;
+	onOpenSchedule: (scheduleId: string) => void;
+	onCreateOnDate: (date: Date) => void;
 }
 
 /**
@@ -141,10 +187,27 @@ interface Props {
  * @param root0.onEventClick - Callback when an event is clicked.
  * @param root0.currentDate - The currently displayed date.
  * @param root0.onMonthChange - Callback when the month is changed.
+ * @param root0.nextUp - Soonest upcoming firing, shown in the Next Up bar.
+ * @param root0.onOpenSchedule - Callback to open a schedule by id.
+ * @param root0.onCreateOnDate - Callback to create a schedule pre-filled with a date.
  * @returns A CalendarTabPage component.
  */
-export function CalendarTabPage({ events, onEventClick, currentDate, onMonthChange }: Props) {
+export function CalendarTabPage({
+	events,
+	onEventClick,
+	currentDate,
+	onMonthChange,
+	nextUp,
+	onOpenSchedule,
+	onCreateOnDate,
+}: Props) {
 	const { t } = useTranslation();
+	const [selectedDay, setSelectedDay] = useState<Date | null>(null);
+	const [daySheetOpen, setDaySheetOpen] = useState(false);
+
+	const year = currentDate.getFullYear();
+	const month = currentDate.getMonth();
+
 	const goToPrevMonth = () => {
 		onMonthChange(new Date(year, month - 1, 1));
 	};
@@ -164,9 +227,6 @@ export function CalendarTabPage({ events, onEventClick, currentDate, onMonthChan
 	const goToToday = () => {
 		onMonthChange(new Date());
 	};
-
-	const year = currentDate.getFullYear();
-	const month = currentDate.getMonth();
 
 	// Get the first and last day of the current month
 	const firstDay = new Date(year, month, 1);
@@ -211,67 +271,79 @@ export function CalendarTabPage({ events, onEventClick, currentDate, onMonthChan
 		return events.filter((event) => event.date === dateStr);
 	};
 
+	const openDay = (date: Date) => {
+		setSelectedDay(date);
+		setDaySheetOpen(true);
+	};
+
 	return (
 		<div className="flex flex-col size-full">
-			<div className="flex items-center justify-between p-4">
-				<h2 className="text-xl font-semibold">
-					{new Date(year, month).toLocaleDateString('en-US', {
-						year: 'numeric',
-						month: 'long',
-					})}
-				</h2>
-				<div className="flex items-center gap-2">
-					<Button variant="outline" size="sm" onClick={goToToday}>
-						{t('schedule.today')}
-					</Button>
-					<TooltipProvider>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button variant="outline" size="icon-sm" onClick={goToPrevYear}>
-									<ChevronsLeft className="h-4 w-4" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								<p>{t('schedule.previousYear')}</p>
-							</TooltipContent>
-						</Tooltip>
-					</TooltipProvider>
-					<TooltipProvider>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button variant="outline" size="icon-sm" onClick={goToPrevMonth}>
-									<ChevronLeft className="h-4 w-4" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								<p>{t('schedule.previousMonth')}</p>
-							</TooltipContent>
-						</Tooltip>
-					</TooltipProvider>
-					<TooltipProvider>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button variant="outline" size="icon-sm" onClick={goToNextMonth}>
-									<ChevronRight className="h-4 w-4" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								<p>{t('schedule.nextMonth')}</p>
-							</TooltipContent>
-						</Tooltip>
-					</TooltipProvider>
-					<TooltipProvider>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button variant="outline" size="icon-sm" onClick={goToNextYear}>
-									<ChevronsRight className="h-4 w-4" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								<p>{t('schedule.nextYear')}</p>
-							</TooltipContent>
-						</Tooltip>
-					</TooltipProvider>
+			<div className="flex flex-col gap-3 p-4">
+				<NextUpBar
+					next={nextUp}
+					onOpen={onOpenSchedule}
+					onCreate={() => onCreateOnDate(new Date())}
+				/>
+				<div className="flex items-center justify-between">
+					<h2 className="text-base font-semibold text-muted-foreground">
+						{new Date(year, month).toLocaleDateString(i18n.language, {
+							year: 'numeric',
+							month: 'long',
+						})}
+					</h2>
+					<div className="flex items-center gap-2">
+						<Button variant="outline" size="sm" onClick={goToToday}>
+							{t('schedule.today')}
+						</Button>
+						<TooltipProvider>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button variant="outline" size="icon-sm" onClick={goToPrevYear}>
+										<ChevronsLeft className="h-4 w-4" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>
+									<p>{t('schedule.previousYear')}</p>
+								</TooltipContent>
+							</Tooltip>
+						</TooltipProvider>
+						<TooltipProvider>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button variant="outline" size="icon-sm" onClick={goToPrevMonth}>
+										<ChevronLeft className="h-4 w-4" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>
+									<p>{t('schedule.previousMonth')}</p>
+								</TooltipContent>
+							</Tooltip>
+						</TooltipProvider>
+						<TooltipProvider>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button variant="outline" size="icon-sm" onClick={goToNextMonth}>
+										<ChevronRight className="h-4 w-4" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>
+									<p>{t('schedule.nextMonth')}</p>
+								</TooltipContent>
+							</Tooltip>
+						</TooltipProvider>
+						<TooltipProvider>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button variant="outline" size="icon-sm" onClick={goToNextYear}>
+										<ChevronsRight className="h-4 w-4" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>
+									<p>{t('schedule.nextYear')}</p>
+								</TooltipContent>
+							</Tooltip>
+						</TooltipProvider>
+					</div>
 				</div>
 			</div>
 
@@ -297,7 +369,8 @@ export function CalendarTabPage({ events, onEventClick, currentDate, onMonthChan
 					{prevMonthDays.map((day, index) => (
 						<div
 							key={`prev-${index}`}
-							className="border-r border-b border-border! p-2 text-muted-foreground/50"
+							className="border-border! cursor-pointer border-r border-b p-2 text-muted-foreground/50 hover:bg-accent"
+							onClick={goToPrevMonth}
 						>
 							<div className="text-sm">{day}</div>
 						</div>
@@ -319,7 +392,10 @@ export function CalendarTabPage({ events, onEventClick, currentDate, onMonthChan
 								isToday={isToday}
 								events={dayEvents}
 								onEventClick={onEventClick}
+								onDayClick={() => openDay(date)}
+								onCreateClick={() => onCreateOnDate(date)}
 								moreText={t('schedule.more')}
+								createHint={t('schedule.createOnDay')}
 							/>
 						);
 					})}
@@ -328,13 +404,29 @@ export function CalendarTabPage({ events, onEventClick, currentDate, onMonthChan
 					{nextMonthDays.map((day, index) => (
 						<div
 							key={`next-${index}`}
-							className="border-border! border-r border-b p-2 text-muted-foreground/50"
+							className="border-border! cursor-pointer border-r border-b p-2 text-muted-foreground/50 hover:bg-accent"
+							onClick={goToNextMonth}
 						>
 							<div className="text-sm">{day}</div>
 						</div>
 					))}
 				</div>
 			</div>
+
+			<DaySheet
+				date={selectedDay}
+				events={selectedDay ? getEventsForDate(selectedDay) : []}
+				open={daySheetOpen}
+				onOpenChange={setDaySheetOpen}
+				onEventClick={(event) => {
+					setDaySheetOpen(false);
+					onEventClick(event);
+				}}
+				onCreateOnDate={(date) => {
+					setDaySheetOpen(false);
+					onCreateOnDate(date);
+				}}
+			/>
 		</div>
 	);
 }

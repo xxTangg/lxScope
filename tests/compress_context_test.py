@@ -5,9 +5,11 @@ import hashlib
 import json
 import os
 import tempfile
+from datetime import datetime
 from typing import Any
 
 from unittest.async_case import IsolatedAsyncioTestCase
+from unittest.mock import patch
 
 from utils import MockModel, AnyString
 
@@ -1513,6 +1515,79 @@ class ContextCompressionTest(IsolatedAsyncioTestCase):
             any(msg.get_content_blocks("hint") for msg in agent.state.context),
         )
 
+    async def test_context_compression_resolves_current_time_placeholder(
+        self,
+    ) -> None:
+        """The compression prompt reaches the model with the injection time."""
+        model = RecordingStructuredMockModel(
+            context_size=100,
+            fail_structured_output_times=1,
+            force_compression_overflow=True,
+        )
+        agent = Agent(
+            name="Friday",
+            system_prompt="".join(["0" for _ in range(20 * 4)]),
+            model=model,
+            context_config=ContextConfig(
+                trigger_ratio=0.7,
+                reserve_ratio=0.4,
+                compression_prompt="Now is {current_time}. Keep {braces}.",
+            ),
+            injection_config=InjectionConfig(
+                timezone="Asia/Shanghai",
+                time_format="%Y-%m-%d %H:%M",
+            ),
+            state=AgentState(
+                session_id="123",
+                context=[
+                    UserMsg(
+                        "User",
+                        "".join(["1" for _ in range(30 * 4)]),
+                        id="1",
+                    ),
+                    AssistantMsg(
+                        "Friday",
+                        "".join(["2" for _ in range(10 * 4)]),
+                        id="2",
+                    ),
+                    UserMsg(
+                        "User",
+                        "".join(["3" for _ in range(10 * 4)]),
+                        id="3",
+                    ),
+                ],
+            ),
+            toolkit=Toolkit(),
+        )
+
+        model.set_structured_response(
+            StructuredResponse(
+                content={
+                    "task_overview": "1",
+                    "current_state": "2",
+                    "important_discoveries": "3",
+                    "next_steps": "4",
+                    "context_to_preserve": "5",
+                },
+            ),
+        )
+
+        # The first call fails under overflow, so the retry path runs too
+        with patch("agentscope.agent._agent.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2026, 7, 1, 12, 0)
+            await agent.compress_context()
+
+        self.assertListEqual(
+            [
+                msgs[-1].get_text_content()
+                for msgs in model.recorded_structured_messages
+            ],
+            [
+                "Now is 2026-07-01 12:00 (Asia/Shanghai). Keep {braces}.",
+                "Now is 2026-07-01 12:00 (Asia/Shanghai). Keep {braces}.",
+            ],
+        )
+
     async def test_context_compression_overflow_retry_keeps_instructions(
         self,
     ) -> None:
@@ -2661,6 +2736,81 @@ class ContextCompressionTest(IsolatedAsyncioTestCase):
                         "output_tokens": 45,
                         "cache_input_tokens": 0,
                         "cache_creation_input_tokens": 0,
+                    },
+                },
+            ],
+        )
+
+    async def test_context_compression_preserves_current_reply_usage(
+        self,
+    ) -> None:
+        """Compression preserves usage from a fully compressed reply."""
+        model = MockModel(context_size=100)
+        agent = Agent(
+            name="Friday",
+            system_prompt="hi",
+            model=model,
+            context_config=ContextConfig(
+                trigger_ratio=0.5,
+                reserve_ratio=0.4,
+            ),
+            injection_config=InjectionConfig(inject_runtime_state=False),
+            toolkit=Toolkit(),
+        )
+        agent.state.reply_id = "current-reply"
+        agent.state.context = [
+            AssistantMsg(
+                "Friday",
+                [TextBlock(text="x" * 1000)],
+                id="current-reply",
+                usage=Usage(
+                    input_tokens=80,
+                    output_tokens=40,
+                    cache_input_tokens=5,
+                    cache_creation_input_tokens=2,
+                ),
+            ),
+        ]
+        model.set_structured_response(
+            StructuredResponse(
+                content={
+                    "task_overview": "1",
+                    "current_state": "2",
+                    "important_discoveries": "3",
+                    "next_steps": "4",
+                    "context_to_preserve": "5",
+                },
+                usage=ChatUsage(
+                    input_tokens=10,
+                    output_tokens=5,
+                    time=0.1,
+                    cache_input_tokens=1,
+                    cache_creation_input_tokens=1,
+                ),
+            ),
+        )
+
+        await agent.compress_context()
+
+        self.assertListEqual(
+            [_.model_dump() for _ in agent.state.context],
+            [
+                {
+                    "id": "current-reply",
+                    "created_at": AnyString(),
+                    "finished_at": None,
+                    "finished_reason": None,
+                    "structured_output": None,
+                    "error": None,
+                    "name": "Friday",
+                    "role": "assistant",
+                    "content": [],
+                    "metadata": {},
+                    "usage": {
+                        "input_tokens": 90,
+                        "output_tokens": 45,
+                        "cache_input_tokens": 6,
+                        "cache_creation_input_tokens": 3,
                     },
                 },
             ],

@@ -468,6 +468,8 @@ export interface ChatRequest {
 	agent_id: string;
 	session_id: string;
 	input: Msg | Msg[] | UserConfirmResultEvent | ExternalExecutionResultEvent | null;
+	/** Skill names exposed while assembling this chat turn. */
+	skill_names?: string[];
 }
 
 export interface ListChatAttachmentContentTypesResponse {
@@ -742,6 +744,40 @@ export interface SkillRecord extends SkillView {
 	markdown: string;
 }
 
+export type ResourceKind = 'mcp' | 'skill';
+export type PublicationScope = 'all' | 'selected' | 'none';
+
+/** Safe administrator publication metadata; MCP secrets never appear here. */
+export interface ResourcePublication {
+	id: string;
+	kind: ResourceKind;
+	source_id: string;
+	source_record_id: string | null;
+	name: string;
+	display_name: string | null;
+	description: string;
+	tags: string[];
+	author: string | null;
+	icon_url: string | null;
+	version: string | null;
+	scope: PublicationScope;
+	user_ids: string[];
+	enabled: boolean;
+	updated_at: string;
+}
+
+export interface PublishedResource {
+	id: string;
+	kind: ResourceKind;
+	name: string;
+	display_name: string | null;
+	description: string;
+	tags: string[];
+	author: string | null;
+	icon_url: string | null;
+	version: string | null;
+}
+
 // ─── Schedule ─────────────────────────────────────────────────────────────────
 
 export type PermissionMode =
@@ -1008,6 +1044,50 @@ export interface KnowledgeDocumentView {
 	chunk_count: number;
 	created_at: string;
 	updated_at: string;
+}
+
+export interface KnowledgeGraphSourceRef {
+	document_id: string;
+	chunk_index?: number | null;
+	filename?: string | null;
+	metadata?: Record<string, unknown>;
+}
+
+export interface KnowledgeGraphNode {
+	id: string;
+	label: string;
+	type: string;
+	properties: Record<string, unknown>;
+	aliases: string[];
+	source_refs: KnowledgeGraphSourceRef[];
+}
+
+export interface KnowledgeGraphEdge {
+	id: string;
+	source: string;
+	target: string;
+	label: string;
+	properties: Record<string, unknown>;
+	source_refs: KnowledgeGraphSourceRef[];
+}
+
+export interface KnowledgeGraphResponse {
+	enabled?: boolean;
+	status: 'disabled' | 'empty' | 'building' | 'ready' | 'error' | string;
+	error?: string | null;
+	nodes: KnowledgeGraphNode[];
+	edges: KnowledgeGraphEdge[];
+	node_count: number;
+	edge_count: number;
+	version: number;
+	updated_at?: string | null;
+}
+
+export interface RebuildKnowledgeGraphResponse {
+	status: 'disabled' | 'ready' | 'error' | string;
+	documents: number;
+	skipped: number;
+	error?: string | null;
 }
 
 /** Query parameters accepted by `GET /knowledge_bases/{id}/documents`. */

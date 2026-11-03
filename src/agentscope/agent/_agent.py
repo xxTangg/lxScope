@@ -590,12 +590,20 @@ class Agent:
                 ),
             )
 
+        # Same time text as the runtime injection; keeps other braces intact
+        timezone = self.injection_config.timezone
+        now = datetime.now(_resolve_timezone(timezone))
+        compression_prompt = cfg.compression_prompt.replace(
+            "{current_time}",
+            f"{now.strftime(self.injection_config.time_format)} ({timezone})",
+        )
+
         messages = (
             msgs_system
             + msgs_to_compress
             + instruction_msgs
             + [
-                UserMsg(name="user", content=cfg.compression_prompt),
+                UserMsg(name="user", content=compression_prompt),
             ]
         )
 
@@ -650,7 +658,7 @@ class Agent:
                         + [
                             UserMsg(
                                 name="user",
-                                content=cfg.compression_prompt,
+                                content=compression_prompt,
                             ),
                         ]
                     )
@@ -735,9 +743,19 @@ class Agent:
             # Clear the read tool cache
             await self._clear_unreserved_read_cache(msgs_to_reserve)
 
+            # The current reply msg may be fully compressed, so keep its usage
+            current_reply_usage = self._get_reply_usage()
+
             # Update the context and summary
             self.state.summary = new_summary
             self.state.context = msgs_to_reserve
+
+            if (
+                current_reply_usage is not None
+                and self._get_reply_usage() is None
+            ):
+                self.state.append_context(self.name, [])
+                self.state.context[-1].usage = current_reply_usage
 
             # The compression call is not covered by the model call events,
             # so record its cost on the context tail to keep it in the token
@@ -1203,14 +1221,8 @@ class Agent:
                             yield evt
 
                         if interrupted:
-                            end_event = ReplyEndEvent(
-                                session_id=self.state.session_id,
-                                reply_id=self.state.reply_id,
-                                finished_reason=(
-                                    ReplyFinishedReason.INTERRUPTED
-                                ),
-                            )
-                            return
+                            # Handled by the CancelledError branch below
+                            raise asyncio.CancelledError()
 
                     case Acting(tool_calls=tool_calls):
                         made_progress = True
@@ -1264,14 +1276,8 @@ class Agent:
                                     break_execution_for_interruption = True
 
                             if break_execution_for_interruption:
-                                end_event = ReplyEndEvent(
-                                    session_id=self.state.session_id,
-                                    reply_id=self.state.reply_id,
-                                    finished_reason=(
-                                        ReplyFinishedReason.INTERRUPTED
-                                    ),
-                                )
-                                return
+                                # Handled by the CancelledError branch below
+                                raise asyncio.CancelledError()
 
                             if break_execution_for_hitl:
                                 parked_for_hitl = True
@@ -1333,6 +1339,7 @@ class Agent:
                         id=self.state.reply_id,
                         name=self.name,
                         content=self.react_config.interruption_message,
+                        usage=self._get_reply_usage(),
                         finished_reason=ReplyFinishedReason.INTERRUPTED,
                     )
 
@@ -1863,27 +1870,12 @@ class Agent:
             )
             and not has_only_thinking_blocks
         ):
-            last_ctx = self._get_last_msg()
-            final_usage = (
-                Usage(
-                    input_tokens=last_ctx.usage.input_tokens,
-                    output_tokens=last_ctx.usage.output_tokens,
-                    cache_input_tokens=(
-                        last_ctx.usage.cache_input_tokens or 0
-                    ),
-                    cache_creation_input_tokens=(
-                        last_ctx.usage.cache_creation_input_tokens or 0
-                    ),
-                )
-                if last_ctx is not None and last_ctx.usage is not None
-                else None
-            )
             yield AssistantMsg(
                 id=self.state.reply_id,
                 name=self.name,
                 # Text only response message
                 content=list(completed_response.content),
-                usage=final_usage,
+                usage=self._get_reply_usage(),
                 # The INTERRUPTED case is excluded by the branch condition
                 finished_reason=ReplyFinishedReason.COMPLETED,
             )
@@ -2049,6 +2041,13 @@ class Agent:
         elif isinstance(event, ExternalExecutionResultEvent):
             # Directly append the execution results into context
             for tool_result in event.execution_results:
+                # Whoever executed this promised a shape; a result that
+                # breaks it is their bug to fix, and the reply stays
+                # parked so they can send it again.
+                tool = await self.toolkit.get_tool(tool_result.name)
+                if tool is not None:
+                    await tool.check_external_result(tool_result)
+
                 async for evt in self._convert_tool_chunk_to_event(
                     tool_result.id,
                     tool_result.output,
@@ -2539,7 +2538,7 @@ class Agent:
             except jsonschema.ValidationError as e:
                 raise AgentOrientedException(
                     f"Input validation failed for tool '{tool_call.name}': "
-                    f"{e.message}",
+                    f"{e.message} (at {e.json_path})",
                 ) from e
 
         # The exceptions that
@@ -3235,12 +3234,18 @@ class Agent:
             name=tool_result.name,
             output=reserved_blocks,
             state=tool_result.state,
+            metadata=deepcopy(tool_result.metadata),
+            created_at=tool_result.created_at,
+            finished_at=tool_result.finished_at,
         )
         offload_tool_result = ToolResultBlock(
             id=tool_result.id,
             name=tool_result.name,
             output=offload_blocks,
             state=tool_result.state,
+            metadata=deepcopy(tool_result.metadata),
+            created_at=tool_result.created_at,
+            finished_at=tool_result.finished_at,
         )
 
         return reserved_tool_result, offload_tool_result
@@ -3584,6 +3589,17 @@ class Agent:
             )
         return None
 
+    def _get_reply_usage(self) -> Usage | None:
+        """Get a copy of the accumulated usage for the current reply."""
+        last_msg = self._get_last_msg()
+        if (
+            last_msg is None
+            or last_msg.id != self.state.reply_id
+            or last_msg.usage is None
+        ):
+            return None
+        return last_msg.usage.model_copy()
+
     def _next_action(
         self,
         final_msg: Msg | None = None,
@@ -3656,6 +3672,7 @@ class Agent:
                     id=self.state.reply_id,
                     name=self.name,
                     content="The required structured output is generated.",
+                    usage=self._get_reply_usage(),
                     finished_reason=ReplyFinishedReason.COMPLETED,
                     structured_output=deepcopy(
                         self.state.reply_context.structured_output,
@@ -3664,7 +3681,7 @@ class Agent:
             )
 
         elif required and not satisfied:
-            # Maybe the model needs futher reasoning-acting to
+            # Maybe the model needs further reasoning-acting to
             # generate the structured output
             tool_choice = None
             suffix = (
@@ -3702,6 +3719,7 @@ class Agent:
                         name=self.name,
                         content="The maximum reasoning-acting iterations "
                         "are exceeded.",
+                        usage=self._get_reply_usage(),
                         finished_reason=ReplyFinishedReason.EXCEED_MAX_ITERS,
                     ),
                 )
@@ -3878,6 +3896,7 @@ class Agent:
                     name=self.name,
                     content="The maximum reasoning-acting iterations are "
                     "exceeded.",
+                    usage=self._get_reply_usage(),
                     finished_reason=ReplyFinishedReason.EXCEED_MAX_ITERS,
                 ),
             )

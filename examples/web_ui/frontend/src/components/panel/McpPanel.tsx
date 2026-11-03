@@ -37,6 +37,8 @@ import { useTranslation } from '@/i18n/useI18n.ts';
 interface McpPanelProps {
 	/** The MCP servers equipped in the workspace. */
 	mcps: MCPClientStatus[];
+	/** Regular users can use published MCPs but cannot change the list. */
+	readOnly?: boolean;
 	/** Whether the MCP list is still loading. */
 	loading?: boolean;
 	/**
@@ -63,7 +65,7 @@ interface McpRowProps {
 	 * installed through the library.
 	 */
 	installed?: MCPView;
-	onDelete: () => void;
+	onDelete?: () => void;
 }
 
 /**
@@ -116,14 +118,16 @@ function McpRow({ mcp, installed, onDelete }: McpRowProps) {
 				/>
 				{/* Only on hover: deleting is rare, and a delete button on
 				    every row competes with the status for attention. */}
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					onClick={onDelete}
-					title={t('common.delete')}
-				>
-					<Trash className="size-3" />
-				</Button>
+				{onDelete && (
+					<Button
+						variant="secondary"
+						size="icon-sm"
+						onClick={onDelete}
+						title={t('common.delete')}
+					>
+						<Trash className="size-3" />
+					</Button>
+				)}
 			</ItemActions>
 
 			<ItemFooter className="min-w-0">
@@ -196,6 +200,7 @@ function McpRow({ mcp, installed, onDelete }: McpRowProps) {
  */
 export function McpPanel({
 	mcps,
+	readOnly = false,
 	loading = false,
 	onAdd,
 	onAddFromLibrary,
@@ -249,38 +254,46 @@ export function McpPanel({
 							key={mcp.name}
 							mcp={mcp}
 							installed={byName.get(mcp.name)}
-							onDelete={() => {
-								setDeleteTarget(mcp.name);
-								setDeleteOpen(true);
-							}}
+							onDelete={
+								readOnly
+									? undefined
+									: () => {
+											setDeleteTarget(mcp.name);
+											setDeleteOpen(true);
+										}
+							}
 						/>
 					))}
 				</div>
 			)}
 
-			<AddMCPDialog
-				present={new Set(mcps.map((m) => m.name))}
-				onAdd={onAdd}
-				onAddFromLibrary={onAddFromLibrary}
-			>
-				<Button variant="default">
-					<PlusCircle />
-					{t('panel.mcp.add')}
-				</Button>
-			</AddMCPDialog>
+			{!readOnly && (
+				<AddMCPDialog
+					present={new Set(mcps.map((m) => m.name))}
+					onAdd={onAdd}
+					onAddFromLibrary={onAddFromLibrary}
+				>
+					<Button variant="default">
+						<PlusCircle />
+						{t('panel.mcp.add')}
+					</Button>
+				</AddMCPDialog>
+			)}
 
-			<DeleteDialog
-				open={deleteOpen}
-				onOpenChange={setDeleteOpen}
-				title={t('common.deleteTitle', {
-					entity: t('dialog-mcp-delete.entity'),
-					name: deleteTarget ?? '',
-				})}
-				description={t('common.deleteDescription')}
-				onConfirm={async () => {
-					if (deleteTarget) await onRemove(deleteTarget);
-				}}
-			/>
+			{!readOnly && (
+				<DeleteDialog
+					open={deleteOpen}
+					onOpenChange={setDeleteOpen}
+					title={t('common.deleteTitle', {
+						entity: t('dialog-mcp-delete.entity'),
+						name: deleteTarget ?? '',
+					})}
+					description={t('common.deleteDescription')}
+					onConfirm={async () => {
+						if (deleteTarget && onRemove) await onRemove(deleteTarget);
+					}}
+				/>
+			)}
 		</div>
 	);
 }

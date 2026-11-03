@@ -111,6 +111,11 @@ export function useMessages(
 	sessionId: string | null,
 	options?: {
 		/**
+		 * Skill names to expose for the current conversation turn. Omit the
+		 * value to keep the server's backward-compatible all-skills behavior.
+		 */
+		skillNames?: string[];
+		/**
 		 * Called when a ``CUSTOM`` event with ``name="team_updated"``
 		 * arrives — the team membership has changed (TeamCreate /
 		 * AgentCreate / TeamDelete ran). The typical response is to
@@ -390,6 +395,7 @@ export function useMessages(
 					agent_id: agentId,
 					session_id: sessionId,
 					input: userMsg,
+					skill_names: optionsRef.current?.skillNames,
 				});
 			} catch (e) {
 				setPhase('idle');
@@ -437,6 +443,7 @@ export function useMessages(
 					agent_id: agentId,
 					session_id: sessionId,
 					input: event,
+					skill_names: optionsRef.current?.skillNames,
 				});
 			} catch (e) {
 				setError(e as Error);
@@ -529,6 +536,7 @@ export function useMessages(
 					agent_id: agentId,
 					session_id: sessionId,
 					input: event,
+					skill_names: optionsRef.current?.skillNames,
 				});
 			} catch (e) {
 				setError(e as Error);

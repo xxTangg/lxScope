@@ -31,6 +31,7 @@ dependencies = [
     "numpy",
     "openai",
     "python-datauri",
+    "cryptography>=42.0",
     "opentelemetry-api>=1.39.0",
     "opentelemetry-sdk>=1.39.0",
     "opentelemetry-exporter-otlp>=1.39.0",
@@ -54,18 +55,25 @@ dependencies = [
 model-gemini = ["google-genai"]
 model-ollama = ["ollama>=0.5.4"]
 model-xai = ["xai-sdk"]
+classifier-jev = ["typesafe-sdk>=0.7"]
 models = [
     "agentscope[model-gemini]",
     "agentscope[model-ollama]",
     "agentscope[model-xai]",
 ]
+classifiers = ["agentscope[classifier-jev]"]
 # ------------ Service ------------
 service = [
     "fastapi",
+    "Pillow>=10,<13",
+    "python-multipart",
     "uvicorn",
     "apscheduler",
     "ag-ui-protocol>=0.1.10",
     "PyJWT>=2.10,<3",
+    "cryptography>=42,<47",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
 ]
 # ------------ Storage backends ------------
 storage-redis = ["redis"]
@@ -75,6 +83,13 @@ storage-redis = ["redis"]
 storage-sql = [
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
+]
+# Optional application-layer Skill analysis sink.  Kept separate from the
+# generic SQL storage extra so AgentScope's storage backend remains driver-
+# agnostic and existing Redis deployments do not need PostgreSQL.
+observability-postgres = [
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
 ]
 # S3-compatible blob store
 storage-s3 = ["aioboto3"]
@@ -111,6 +126,10 @@ tools = [
 realtime = [
     "websockets>=13",
     "sounddevice",
+]
+# ------------ Terminal UI ------------
+tui = [
+    "textual>=8.2,<9",
 ]
 # ------------ A2A ------------
 a2a = [
@@ -167,6 +186,7 @@ reme = ["agentscope[memory-reme]"]
 # ------------ Full ------------
 full = [
     "agentscope[models]",
+    "agentscope[classifiers]",
     "agentscope[service]",
     "agentscope[storage-redis]",
     "agentscope[storage-sql]",
@@ -174,6 +194,7 @@ full = [
     "agentscope[channel]",
     "agentscope[workspace]",
     "agentscope[tools]",
+    "agentscope[tui]",
     "agentscope[a2a]",
     "agentscope[rag]",
     "agentscope[vdb-qdrant]",
@@ -207,7 +228,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/agentscope-ai/agentscope"
-Documentation = "https://doc.agentscope.io/"
+Documentation = "https://docs.agentscope.io/"
 Repository = "https://github.com/agentscope-ai/agentscope"
 
 [tool.setuptools]

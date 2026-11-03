@@ -1,4 +1,21 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lxscope}
+      POSTGRES_USER: ${POSTGRES_USER:-lxscope}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -28,6 +45,42 @@ services:
       timeout: 3s
       retries: 20
 
+  logto-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${LOGTO_DB_NAME:-logto}
+      POSTGRES_USER: ${LOGTO_DB_USER:-logto}
+      POSTGRES_PASSWORD: ${LOGTO_DB_PASSWORD:-change-me}
+    volumes:
+      - logto-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  logto:
+    image: ${LOGTO_IMAGE:-ghcr.io/logto-io/logto:latest}
+    restart: unless-stopped
+    depends_on:
+      logto-db:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - npm run cli db seed -- --swe && npm start
+    ports:
+      - "${LOGTO_CORE_PORT:-3001}:3001"
+      - "${LOGTO_ADMIN_PORT:-3002}:3002"
+    environment:
+      TRUST_PROXY_HEADER: ${LOGTO_TRUST_PROXY_HEADER:-1}
+      DB_URL: postgres://${LOGTO_DB_USER:-logto}:${LOGTO_DB_PASSWORD:-change-me}@logto-db:5432/${LOGTO_DB_NAME:-logto}
+      ENDPOINT: ${LOGTO_ENDPOINT:-http://localhost:3001}
+      ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT:-http://localhost:3002}
+
   agentscope:
     image: agentscope-intranet:latest
     build:
@@ -37,12 +90,39 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     ports:
       - "${AGENTSCOPE_API_PORT:-8001}:8000"
     environment:
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # lxScope application-owned persistence. AgentScope Core continues to
+      # use RedisStorage; only application Task data uses PostgreSQL here.
+      LXSCOPE_DATABASE_URL: ${LXSCOPE_DATABASE_URL:-postgresql+asyncpg://lxscope:change-me@postgres:5432/lxscope}
+      # Keep existing Redis task data visible until it is explicitly migrated
+      # by setting LXSCOPE_TASK_STORE_BACKEND=postgres.
+      LXSCOPE_TASK_STORE_BACKEND: ${LXSCOPE_TASK_STORE_BACKEND:-redis}
+      LXSCOPE_TENANT_CODE: ${LXSCOPE_TENANT_CODE:-default}
+      LXSCOPE_TENANT_NAME: ${LXSCOPE_TENANT_NAME:-Default Tenant}
+      LXSCOPE_TENANT_ID: ${LXSCOPE_TENANT_ID:-}
+      # Bound the Task planner so a stalled model or MCP cannot leave the
+      # editor in "generating" forever. Override for local demos if needed.
+      LXSCOPE_TASK_GENERATION_TIMEOUT_SECONDS: ${LXSCOPE_TASK_GENERATION_TIMEOUT_SECONDS:-45}
+      # Project-level observability. Metrics are exposed at
+      # /observability/metrics for authenticated administrators.
+      LXSCOPE_OBSERVABILITY_ENABLED: ${LXSCOPE_OBSERVABILITY_ENABLED:-true}
+      LXSCOPE_OBSERVABILITY_MAX_EVENTS: ${LXSCOPE_OBSERVABILITY_MAX_EVENTS:-50000}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-lxscope-agent-service}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      # Optional PostgreSQL sink for the existing Skill-specific event
+      # history. It is not required by the project-level observability layer.
+      SKILL_OBSERVABILITY_DATABASE_URL: ${SKILL_OBSERVABILITY_DATABASE_URL:-}
+      # Project-level runtime events use their own table in the same
+      # PostgreSQL database by default. The application falls back to the
+      # Skill URL for existing deployments that have not split the settings.
+      PROJECT_OBSERVABILITY_DATABASE_URL: ${PROJECT_OBSERVABILITY_DATABASE_URL:-}
       AGENTSCOPE_PORT: 8000
       UVICORN_RELOAD: "false"
       AGENTSCOPE_USERNAME: ${AGENTSCOPE_USERNAME:-admin}
@@ -51,22 +131,62 @@ services:
       AGENTSCOPE_AUTH_USERS: ${AGENTSCOPE_AUTH_USERS:-}
       AGENTSCOPE_JWT_SECRET: ${AGENTSCOPE_JWT_SECRET:-change-me-in-production-use-32-bytes}
       AGENTSCOPE_JWT_EXPIRE_MINUTES: ${AGENTSCOPE_JWT_EXPIRE_MINUTES:-1440}
+      LXSCOPE_AUTH_PROVIDER: ${LXSCOPE_AUTH_PROVIDER:-logto}
+      # The local JWT login path requires a server-side CAPTCHA by default.
+      # Logto-hosted OIDC sign-in is protected separately through Logto's
+      # native bot-protection configuration.
+      LXSCOPE_LOGIN_CAPTCHA_ENABLED: ${LXSCOPE_LOGIN_CAPTCHA_ENABLED:-true}
+      LOGTO_ENDPOINT: ${LOGTO_ENDPOINT:-}
+      LOGTO_INTERNAL_ENDPOINT: ${LOGTO_INTERNAL_ENDPOINT:-}
+      LOGTO_JWKS_URI: ${LOGTO_JWKS_URI:-}
+      LOGTO_JWKS_URL: ${LOGTO_JWKS_URL:-}
+      LOGTO_API_RESOURCE: ${LOGTO_API_RESOURCE:-}
+      LOGTO_M2M_APP_ID: ${LOGTO_M2M_APP_ID:-}
+      LOGTO_M2M_APP_SECRET: ${LOGTO_M2M_APP_SECRET:-}
+      LOGTO_MANAGEMENT_API_RESOURCE: ${LOGTO_MANAGEMENT_API_RESOURCE:-}
+      LOGTO_ACCESS_SCOPE: ${LOGTO_ACCESS_SCOPE:-agent:use}
+      LOGTO_ADMIN_SCOPE: ${LOGTO_ADMIN_SCOPE:-tenant:manage}
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       SILICONFLOW_BASE_URL: ${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
       SILICONFLOW_CHAT_MODEL: ${SILICONFLOW_CHAT_MODEL:-deepseek-ai/DeepSeek-V3.2}
+      LXSCOPE_GRAPH_MODEL: ${LXSCOPE_GRAPH_MODEL:-}
       SILICONFLOW_EMBEDDING_MODEL: ${SILICONFLOW_EMBEDDING_MODEL:-BAAI/bge-m3}
       SILICONFLOW_EMBEDDING_DIMENSIONS: ${SILICONFLOW_EMBEDDING_DIMENSIONS:-1024}
+      # DeepSeek 官方 API 凭据需单独申请，不能复用 SILICONFLOW_API_KEY。
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+      DEEPSEEK_CHAT_MODEL: ${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash}
       QDRANT_PATH: ${QDRANT_PATH:-/app/qdrant_data}
+      LONGXIN_DATA_DIR: ${LONGXIN_DATA_DIR:-/app/longxin-data}
+      LONGXIN_APP_TARGET_DIR: ${LONGXIN_APP_TARGET_DIR:-}
+      LONGXIN_CORE_TARGET_DIR: ${LONGXIN_CORE_TARGET_DIR:-}
+      LONGXIN_UPGRADE_RESTART_COMMAND: ${LONGXIN_UPGRADE_RESTART_COMMAND:-}
+      LONGXIN_UPGRADE_HEALTHCHECK_URL: ${LONGXIN_UPGRADE_HEALTHCHECK_URL:-http://127.0.0.1:8000/health}
       PLAYWRIGHT_MCP_COMMAND: playwright-mcp
       # Keep the MCP child process on the same browser directory used during
       # image build. The compatibility symlink in Dockerfile covers clients
       # that still resolve Playwright's legacy default path.
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
       AGENTSCOPE_DOWNLOAD_SECRET: ${AGENTSCOPE_DOWNLOAD_SECRET:-change-me-in-production}
+      LONGXIN_SYSTEM_NAME: ${LONGXIN_SYSTEM_NAME:-Longxin AgentScope}
+      LONGXIN_SYSTEM_ID: ${LONGXIN_SYSTEM_ID:-local-system}
+      LONGXIN_APP_VERSION: ${LONGXIN_APP_VERSION:-3.8.1}
+      LONGXIN_CORE_VERSION: ${LONGXIN_CORE_VERSION:-2.0.8}
+      SALES_CENTER_BASE_URL: ${SALES_CENTER_BASE_URL:-}
+      SALES_CENTER_API_TOKEN: ${SALES_CENTER_API_TOKEN:-}
+      SALES_CENTER_API_TOKEN_FILE: ${SALES_CENTER_API_TOKEN_FILE:-}
+      SALES_CENTER_TIMEOUT_SECONDS: ${SALES_CENTER_TIMEOUT_SECONDS:-8}
+      SALES_CENTER_VERIFY_TLS: ${SALES_CENTER_VERIFY_TLS:-true}
+      SALES_INTEGRATION_ADMIN_USERNAME: ${SALES_INTEGRATION_ADMIN_USERNAME:-admin}
+      LONGXIN_UPGRADE_DIR: ${LONGXIN_UPGRADE_DIR:-/app/upgrade-packages}
+      LONGXIN_POOL_TOKENS: ${LONGXIN_POOL_TOKENS:-0}
+      LONGXIN_TOTAL_RECHARGED: ${LONGXIN_TOTAL_RECHARGED:-0.00}
+      LONGXIN_CUMULATIVE_CREDITS: ${LONGXIN_CUMULATIVE_CREDITS:-0}
     volumes:
       - agentscope-workspaces:/app/examples/agent_service/workspaces
       - agentscope-blobs:/app/blobs
       - qdrant-data:/app/qdrant_data
+      - longxin-data:/app/longxin-data
     healthcheck:
       test:
         - CMD
@@ -74,7 +194,7 @@ services:
         - -c
         - >-
           import urllib.request;
-          urllib.request.urlopen('http://127.0.0.1:8000/auth/health', timeout=3)
+          urllib.request.urlopen('http://127.0.0.1:8000/docs', timeout=3)
       interval: 10s
       timeout: 5s
       retries: 20
@@ -87,6 +207,9 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_AGENTSCOPE_API_PORT: ${AGENTSCOPE_API_PORT:-8001}
+        VITE_LOGTO_ENDPOINT: ${VITE_LOGTO_ENDPOINT:-}
+        VITE_LOGTO_APP_ID: ${VITE_LOGTO_APP_ID:-}
+        VITE_LOGTO_API_RESOURCE: ${VITE_LOGTO_API_RESOURCE:-}
     restart: unless-stopped
     depends_on:
       agentscope:
@@ -101,7 +224,10 @@ services:
       start_period: 10s
 
 volumes:
+  postgres-data:
   redis-data:
+  logto-postgres-data:
   agentscope-workspaces:
   agentscope-blobs:
   qdrant-data:
+  longxin-data:

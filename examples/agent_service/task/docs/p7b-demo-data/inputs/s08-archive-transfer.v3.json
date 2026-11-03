@@ -1,0 +1,10 @@
+{
+  "template_version": "3.0.0",
+  "inputs": {
+    "project_id": "DEMO-LXSCOPE-2025-001",
+    "archive_category": "DEMO/SYNTHETIC-咨询项目演练材料",
+    "retention_rule_id": "DEMO-RETENTION-RULE-2025-01",
+    "archive_metadata_json": "[{\"file_name\":\"DEMO-SOURCE-001-project-charter.md\",\"category\":\"项目委托与立项背景（虚构）\",\"document_date\":\"2025-03-01\",\"owner\":\"澄湖科创园演示协调组（虚构）\",\"retention_period\":\"演示值：5年，未依据正式制度\",\"document_number\":\"DEMO-DOC-2025-001\"},{\"file_name\":\"DEMO-SOURCE-002-planning-template.md\",\"category\":\"策划模板（虚构）\",\"document_date\":\"2025-03-02\",\"owner\":\"澄湖科创园演示协调组（虚构）\",\"retention_period\":\"演示值：5年，未依据正式制度\",\"document_number\":\"DEMO-DOC-2025-002\"},{\"file_name\":\"DEMO-MTG-2025-001-minutes-demo.docx\",\"category\":\"会议纪要草稿（虚构元数据，不代表文件已生成）\",\"document_date\":\"2025-11-06\",\"owner\":\"澄湖科创园演示协调组（虚构）\",\"retention_period\":\"演示值：5年，未依据正式制度\",\"document_number\":\"DEMO-DOC-2025-003\"}]",
+    "required_metadata_fields_json": "[\"file_name\",\"category\",\"document_date\",\"owner\",\"retention_period\",\"document_number\"]"
+  }
+}

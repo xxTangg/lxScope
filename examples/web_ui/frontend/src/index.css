@@ -253,3 +253,14 @@ svg.lucide {
 		@apply font-sans;
 	}
 }
+
+/* The chart renders its own persistent scrollbar so native overlay scrollbars
+   cannot disappear while the pointer moves from the plot to the thumb. */
+.trend-chart-scroll {
+	-ms-overflow-style: none;
+	scrollbar-width: none;
+}
+
+.trend-chart-scroll::-webkit-scrollbar {
+	display: none;
+}

@@ -1,0 +1,44 @@
+{
+  "data_status": "DEMO/SYNTHETIC",
+  "production_use_permitted": false,
+  "project_id": "DEMO-LXSCOPE-2025-001",
+  "project_name": "[DEMO/SYNTHETIC] 澄湖科创园综合能源与设备台账优化咨询项目",
+  "fictional_organization": "澄湖科创园建设协调组（虚构）",
+  "meeting_id": "DEMO-MTG-2025-001",
+  "meeting_datetime": "2025-11-06T09:00:00+08:00",
+  "participant_count": 8,
+  "expert_ids": [
+    "DEMO-EXPERT-001",
+    "DEMO-EXPERT-002",
+    "DEMO-EXPERT-003"
+  ],
+  "demo_fee_rule_id": "DEMO-FEE-RULE-2025-01",
+  "project_assumptions": {
+    "building_area_sqm": 42000,
+    "asset_ledger_item_count": 286,
+    "electricity_baseline_year": 2024,
+    "electricity_baseline_kwh": 2160000,
+    "budget_ceiling_cny": "480000.00",
+    "planned_duration_months": 5,
+    "proposed_saving_target_percent": "8.00",
+    "status": "synthetic planning assumptions, not independently verified"
+  },
+  "scenario_files": {
+    "S01": "inputs/s01-project-init.v2.json",
+    "S02": "inputs/s02-project-planning.v2.json",
+    "S03": "inputs/s03-expert-matching.v3.json",
+    "S04": "inputs/s04-meeting-preparation.v3.json",
+    "S05": "inputs/s05-meeting-minutes.v3.json",
+    "S06": "inputs/s06-opinion-processing.v3.json",
+    "S07": "inputs/s07-report-generation.v3.json",
+    "S08": "inputs/s08-archive-transfer.v3.json",
+    "S09": "inputs/s09-expense-settlement.v3.json"
+  },
+  "knowledge_source_files": [
+    "knowledge-sources/DEMO-SOURCE-001-project-charter.md",
+    "knowledge-sources/DEMO-SOURCE-002-planning-template.md",
+    "knowledge-sources/DEMO-SOURCE-003-demo-review-rules.md",
+    "knowledge-sources/DEMO-SOURCE-004-report-reference.md"
+  ],
+  "notice": "All organizations, persons, project facts, records, source references, rates and amounts in this package are fabricated for demonstration. demo_source_id values are package-local labels, not server-issued KB document IDs."
+}

@@ -210,6 +210,67 @@ class SearchKnowledgeBaseResponse(BaseModel):
     total: int = Field(description="Total number of returned results.")
 
 
+class KnowledgeGraphSourceRefView(BaseModel):
+    """A document/chunk citation attached to a graph fact."""
+
+    document_id: str
+    chunk_index: int | None = None
+    filename: str | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class KnowledgeGraphNodeView(BaseModel):
+    """A node in the merged knowledge-base graph."""
+
+    id: str
+    label: str
+    type: str
+    properties: dict = Field(default_factory=dict)
+    aliases: list[str] = Field(default_factory=list)
+    source_refs: list[KnowledgeGraphSourceRefView] = Field(
+        default_factory=list,
+    )
+
+
+class KnowledgeGraphEdgeView(BaseModel):
+    """A relation in the merged knowledge-base graph."""
+
+    id: str
+    source: str
+    target: str
+    label: str
+    properties: dict = Field(default_factory=dict)
+    source_refs: list[KnowledgeGraphSourceRefView] = Field(
+        default_factory=list,
+    )
+
+
+class KnowledgeGraphResponse(BaseModel):
+    """Bounded graph data for one knowledge base."""
+
+    status: str = Field(
+        description=(
+            "Graph lifecycle: disabled, empty, building, ready, or error."
+        ),
+    )
+    error: str | None = None
+    nodes: list[KnowledgeGraphNodeView] = Field(default_factory=list)
+    edges: list[KnowledgeGraphEdgeView] = Field(default_factory=list)
+    node_count: int = 0
+    edge_count: int = 0
+    version: int = 0
+    updated_at: str | None = None
+
+
+class RebuildKnowledgeGraphResponse(BaseModel):
+    """Result of rebuilding graph contributions from existing chunks."""
+
+    status: str
+    documents: int = 0
+    skipped: int = 0
+    error: str | None = None
+
+
 class KbEmbeddingProvider(BaseModel):
     """One credential and the embedding models it can serve.
 

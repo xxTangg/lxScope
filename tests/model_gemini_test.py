@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 from utils import AnyString
 
 from agentscope.message import TextBlock, ToolCallBlock, ThinkingBlock
+from agentscope.message._base import Usage
 from agentscope.model import GeminiChatModel
 from agentscope.model._gemini._model import _sanitize_schema_for_gemini
 from agentscope._utils._common import _flatten_json_schema
@@ -254,6 +255,49 @@ class TestGeminiNonStream(IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_usage_normalizes_optional_cache_count(self) -> None:
+        """SDK cache counts remain integer-valued in raw model usage."""
+        from google.genai.types import GenerateContentResponseUsageMetadata
+
+        for cache_count, expected in [(None, 0), (0, 0), (5, 5)]:
+            with self.subTest(cache_count=cache_count):
+                resp = _mock_completion([_make_part(text="hello")])
+                resp.usage_metadata = GenerateContentResponseUsageMetadata(
+                    prompt_token_count=10,
+                    candidates_token_count=5,
+                    total_token_count=15,
+                    cached_content_token_count=cache_count,
+                )
+                self.mock_client.aio.models.generate_content = AsyncMock(
+                    return_value=resp,
+                )
+
+                result = await self.model([])
+
+                self.assertEqual(
+                    dict(result.usage),
+                    {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "time": result.usage.time,
+                        "cache_creation_input_tokens": 0,
+                        "cache_input_tokens": expected,
+                        "type": "chat",
+                        "metadata": None,
+                    },
+                )
+                self.assertIs(type(result.usage.cache_input_tokens), int)
+                usage = Usage(**dict(result.usage))
+                self.assertEqual(
+                    usage.model_dump(),
+                    {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cache_input_tokens": expected,
+                        "cache_creation_input_tokens": 0,
+                    },
+                )
+
     async def test_usage_classifies_tool_use_tokens_as_input(self) -> None:
         """Usage classifies tool-use tokens as input, not output."""
         parts = [_make_part(text="hello")]
@@ -381,6 +425,54 @@ class TestGeminiStream(IsolatedAsyncioTestCase):
                 ),
             ],
         )
+
+    async def test_stream_usage_normalizes_optional_cache_count(self) -> None:
+        """Delta and final usage normalize optional SDK cache counts."""
+        from google.genai.types import GenerateContentResponseUsageMetadata
+
+        for cache_count, expected in [(None, 0), (0, 0), (5, 5)]:
+            with self.subTest(cache_count=cache_count):
+                chunk = _make_stream_chunk([_make_part(text="hello")])
+                chunk.usage_metadata = GenerateContentResponseUsageMetadata(
+                    prompt_token_count=10,
+                    candidates_token_count=5,
+                    total_token_count=15,
+                    cached_content_token_count=cache_count,
+                )
+                self.mock_client.aio.models.generate_content_stream = (
+                    AsyncMock(
+                        return_value=_MockAsyncStream([chunk]),
+                    )
+                )
+
+                gen = await self.model([])
+                responses = [r async for r in gen]
+
+                self.assertEqual(len(responses), 2)
+                for response in responses:
+                    self.assertEqual(
+                        dict(response.usage),
+                        {
+                            "input_tokens": 10,
+                            "output_tokens": 5,
+                            "time": response.usage.time,
+                            "cache_creation_input_tokens": 0,
+                            "cache_input_tokens": expected,
+                            "type": "chat",
+                            "metadata": None,
+                        },
+                    )
+                    self.assertIs(type(response.usage.cache_input_tokens), int)
+                    usage = Usage(**dict(response.usage))
+                    self.assertEqual(
+                        usage.model_dump(),
+                        {
+                            "input_tokens": 10,
+                            "output_tokens": 5,
+                            "cache_input_tokens": expected,
+                            "cache_creation_input_tokens": 0,
+                        },
+                    )
 
     async def test_stream_usage_classifies_tool_use_tokens(self) -> None:
         """Streaming usage classifies tool-use tokens as input."""
@@ -963,6 +1055,68 @@ class TestGeminiSchemaUtils(unittest.TestCase):
                 },
             },
         )
+
+    def test_flatten_keeps_property_names(self) -> None:
+        """Schema keywords used as property names are preserved."""
+        for keyword in (
+            "properties",
+            "patternProperties",
+            "dependentSchemas",
+            "dependencies",
+        ):
+            with self.subTest(keyword=keyword):
+                self.assertEqual(
+                    _flatten_json_schema(
+                        {
+                            "$defs": {"Name": {"type": "string"}},
+                            keyword: {
+                                "definitions": {"$ref": "#/$defs/Name"},
+                                "$defs": {"$ref": "#/$defs/Name"},
+                                "$ref": {"$ref": "#/$defs/Name"},
+                            },
+                        },
+                    ),
+                    {
+                        keyword: {
+                            "definitions": {"type": "string"},
+                            "$defs": {"type": "string"},
+                            "$ref": {"type": "string"},
+                        },
+                    },
+                )
+
+    def test_flatten_keeps_instance_values(self) -> None:
+        """Instance data stays intact, including next to a schema $ref."""
+        data = {
+            "definitions": {"x": 1},
+            "$defs": {"x": 2},
+        }
+        for keyword, value in (
+            ("default", data),
+            ("const", data),
+            ("enum", [{"$ref": "#/$defs/Value"}]),
+            ("examples", [{"nested": data}]),
+        ):
+            for with_ref in (False, True):
+                with self.subTest(keyword=keyword, with_ref=with_ref):
+                    prop = {keyword: value}
+                    if with_ref:
+                        prop["$ref"] = "#/$defs/Value"
+                    else:
+                        prop["type"] = "object"
+                    self.assertEqual(
+                        _flatten_json_schema(
+                            {
+                                "$defs": {"Value": {"type": "object"}},
+                                "properties": {"value": prop},
+                            },
+                        ),
+                        {
+                            "properties": {
+                                "value": {"type": "object", keyword: value},
+                            },
+                        },
+                    )
 
     def test_flatten_legacy_definitions_ref(self) -> None:
         """Legacy 'definitions' keyword is resolved like '$defs'."""

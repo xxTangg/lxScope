@@ -37,18 +37,21 @@ from ..storage import (
     SessionNaming,
     SessionRecord,
     ChannelOrigin,
+    SOPOrigin,
 )
 from ..storage._utils import _resolve_team_leader
 from .._manager import BackgroundTaskManager, SchedulerManager
 from ..workspace_manager import WorkspaceManagerBase
 from ..middleware import (
     InboxMiddleware,
+    SOPStepSubmitMiddleware,
     StateChangeMiddleware,
     ToolOffloadMiddleware,
     TeamMemberLoopMiddleware,
 )
 from ...middleware import TTSMiddleware, RAGMiddleware
 from ...rag import KnowledgeBase
+from ...sop import SOPPhase
 from .._types import (
     AgentMiddlewareFactory,
     AgentToolFactory,
@@ -60,6 +63,7 @@ from ._model import get_model
 from ._tts_model import get_tts_model
 from ._toolkit import get_toolkit
 from ._session_projection import SessionProjection
+from ._sop import SOPService
 from ._projectors import SubagentHitlProjector
 
 from ..._logging import logger
@@ -77,11 +81,18 @@ from ...event import (
 )
 from ._errors import _classify_error, _classify_setup_error
 from ..._utils._common import _generate_id
-from ...message import AssistantMsg, HintBlock, Msg, ToolCallState, UserMsg
+from ...message import AssistantMsg, HintBlock, Msg, UserMsg
 from ...permission import AdditionalWorkingDirectory
 
 if TYPE_CHECKING:
     from ..channel import ChannelClients
+
+
+_DEFAULT_CHAT_LANGUAGE_INSTRUCTION = (
+    "智能体生成的所有用户可见自然语言，包括执行过程、进度和状态说明、"
+    "工具调用前后的说明及最终答复，默认使用简体中文；除非用户明确要求其他语言。"
+    "代码、命令、文件路径、标识符、MCP/工具/API 名称及原始工具输出或引用保持原样。"
+)
 
 
 @dataclass(frozen=True)
@@ -249,6 +260,9 @@ class ChatService:
                 pass
         self._extra_agent_tools = extra_agent_tools
         self._channel_clients = channel_clients
+        self.sop_service: SOPService | None = None
+        """Carries a procedure on after a turn resumes one of its steps.
+        Set by the lifespan, since a SOP service is built on this one."""
         self._sub_agent_templates = custom_subagent_templates
         self._agent_cls = custom_agent_cls or Agent
         self._projection = SessionProjection(message_bus)
@@ -268,6 +282,8 @@ class ChatService:
         | ExternalExecutionResultEvent
         | UserInterruptEvent
         | None = None,
+        skill_names: list[str] | None = None,
+        sop_dispatch: str | None = None,
     ) -> None:
         """Drive a chat run to completion.
 
@@ -307,9 +323,22 @@ class ChatService:
                 - ``UserInterruptEvent``: abort a parked reply — the
                   agent closes pending tool calls with interrupted
                   results and ends the reply (Case B, no reasoning).
+            skill_names (`list[str] | None`, optional):
+                Skill names to expose while assembling this chat turn.
+                ``None`` keeps all workspace skills available.
+            sop_dispatch (`str | None`, optional):
+                ``"<run id>:<step index>"`` when a SOP run dispatched
+                this turn, which gives it a submit tool.
         """
         try:
-            await self._run_impl(user_id, session_id, agent_id, input_msg)
+            await self._run_impl(
+                user_id,
+                session_id,
+                agent_id,
+                input_msg,
+                skill_names=skill_names,
+                sop_dispatch=sop_dispatch,
+            )
         except Exception as e:
             logger.exception(
                 "ChatService.run failed for user_id=%s session_id=%s "
@@ -734,18 +763,10 @@ class ChatService:
             `bool`:
                 ``True`` when the run should be skipped.
         """
-        if input_msg is not None or not agent.state.context:
+        if input_msg is not None:
             return False
 
-        last_msg = agent.state.context[-1]
-        if last_msg.role != "assistant" or last_msg.name != agent.name:
-            return False
-
-        awaiting = [
-            tc
-            for tc in last_msg.get_content_blocks("tool_call")
-            if tc.state in (ToolCallState.ASKING, ToolCallState.SUBMITTED)
-        ]
+        awaiting = agent.state.get_awaiting_tool_calls(agent.name)
         if not awaiting:
             return False
 
@@ -770,6 +791,9 @@ class ChatService:
         | ExternalExecutionResultEvent
         | UserInterruptEvent
         | None,
+        *,
+        skill_names: list[str] | None = None,
+        sop_dispatch: str | None = None,
     ) -> None:
         """The actual chat-run body; wrapped by :meth:`run` for error
         swallowing. Separated so the try/except doesn't bury the
@@ -779,6 +803,10 @@ class ChatService:
         session record must be loaded only after this run owns the lock,
         otherwise a waiter can assemble an agent from a snapshot that the
         preceding holder replaces before releasing the lock."""
+
+        # The run to carry on after the lock, if this turn resumed a step.
+        resumed_sop_run_id: str | None = None
+        interrupted = False
 
         async with self._message_bus.acquire_lock(
             MessageBusKeys.session_lock(session_id),
@@ -828,6 +856,21 @@ class ChatService:
                         ),
                     )
                 worker_name = agent_record.data.name
+                if (
+                    isinstance(session_record.origin, SOPOrigin)
+                    and sop_dispatch is None
+                    and isinstance(
+                        input_msg,
+                        (UserConfirmResultEvent, ExternalExecutionResultEvent),
+                    )
+                ):
+                    # Only an answer to the step's parked call resumes it.
+                    sop_dispatch = await self._parked_dispatch(
+                        user_id,
+                        session_id,
+                    )
+                    if sop_dispatch is not None:
+                        resumed_sop_run_id = session_record.origin.sop_run_id
 
                 # -------------------------------------------------------------
                 # 1b. Resolve the team identity ONCE, before anything that
@@ -896,17 +939,36 @@ class ChatService:
                 # 1c. Resolve the channel binding ONCE; the toolkit and the
                 # system-prompt attachment share it.
                 # -------------------------------------------------------------
+                channel_origin = (
+                    session_record.origin
+                    if isinstance(session_record.origin, ChannelOrigin)
+                    else None
+                )
                 channel = (
                     await self._channel_clients.get(
-                        session_record.origin.channel_id,
+                        channel_origin.channel_id,
                     )
-                    if isinstance(session_record.origin, ChannelOrigin)
+                    if channel_origin is not None
                     and self._channel_clients is not None
                     else None
                 )
+                chat_kind = (
+                    await channel.chat_kind(channel_origin.chat_id)
+                    if channel is not None and channel_origin is not None
+                    else None
+                )
+                # Channel tools that read as the session's user are only
+                # safe in a 1:1 chat. A group session is shared, so one
+                # member's turn would otherwise read with another's
+                # permissions.
                 channel_tools = (
-                    await channel.list_tools(workspace)
-                    if channel is not None
+                    await channel.list_tools(
+                        workspace,
+                        channel_origin.channel_user_id
+                        if chat_kind is ChatKind.PRIVATE
+                        else None,
+                    )
+                    if channel is not None and channel_origin is not None
                     else []
                 )
 
@@ -937,6 +999,11 @@ class ChatService:
                             leader_name=team_ctx.leader_name,
                         ),
                     )
+
+                # Only a turn the run asked for must end in a submission;
+                # a person chatting in the same session must not.
+                if sop_dispatch is not None:
+                    middlewares.append(SOPStepSubmitMiddleware())
 
                 if self._extra_agent_middlewares is not None:
                     factory_args: tuple = (user_id, agent_id, session_id)
@@ -1035,6 +1102,8 @@ class ChatService:
                     sub_agent_templates=self._sub_agent_templates,
                     team_role=team_ctx.role if team_ctx else None,
                     channel_tools=channel_tools,
+                    skill_names=skill_names,
+                    sop_dispatch=sop_dispatch,
                 )
 
                 # -------------------------------------------------------------
@@ -1064,13 +1133,11 @@ class ChatService:
                 attachment = f"You're within a session (id={session_id})."
 
                 # Channel-bound sessions: tell the agent which chat it serves.
-                if channel is not None:
+                if channel is not None and channel_origin is not None:
                     tools = ", ".join(t.name for t in channel_tools)
-                    chat_id = session_record.origin.chat_id
-                    kind = await channel.chat_kind(chat_id)
-                    name = (
-                        session_record.origin.chat_name
-                        or await channel.chat_name(chat_id)
+                    chat_id = channel_origin.chat_id
+                    name = channel_origin.chat_name or await channel.chat_name(
+                        chat_id,
                     )
                     where = f' named "{name}"' if name else ""
                     attachment += (
@@ -1080,13 +1147,13 @@ class ChatService:
                         f"send there are relayed to you here, and your "
                         f"replies are delivered back to that same chat."
                     )
-                    if kind is ChatKind.GROUP:
+                    if chat_kind is ChatKind.GROUP:
                         attachment += (
                             " It is a group chat, so messages may come "
                             "from several different people; each incoming "
                             "user turn is labelled with its sender."
                         )
-                    elif kind is ChatKind.PRIVATE:
+                    elif chat_kind is ChatKind.PRIVATE:
                         attachment += (
                             " It is a one-to-one private chat with a "
                             "single user."
@@ -1102,7 +1169,11 @@ class ChatService:
                     f"<system-notification>{attachment}</system-notification>"
                 )
                 system_prompt = (
-                    agent_record.data.system_prompt + "\n\n" + attachment
+                    agent_record.data.system_prompt
+                    + "\n\n"
+                    + attachment
+                    + "\n\n"
+                    + _DEFAULT_CHAT_LANGUAGE_INSTRUCTION
                 )
 
                 agent_state = session_record.state
@@ -1362,6 +1433,11 @@ class ChatService:
                     ):
                         released = True
                         break
+
+                    # A parked agent can't take a ``None`` turn; the queued
+                    # payloads are drained once it resumes.
+                    if agent.state.has_awaiting_tool_calls(agent.name):
+                        break
                     input_msg = None
 
             finally:
@@ -1385,6 +1461,11 @@ class ChatService:
                     not reply_msgs or reply_msgs[-1] is not reply_msg
                 ):
                     reply_msgs.append(reply_msg)
+
+                interrupted = any(
+                    msg.finished_reason is ReplyFinishedReason.INTERRUPTED
+                    for msg in reply_msgs
+                )
 
                 # All persistence in a single coroutine, shielded from
                 # outer cancellation.  Must complete BEFORE the session
@@ -1453,6 +1534,59 @@ class ChatService:
                     model,
                     trigger_text,
                 )
+
+        # Detached, since the rest of the run can be many turns; an
+        # interrupted turn leaves the run where it is.
+        if (
+            resumed_sop_run_id is not None
+            and not interrupted
+            and self.sop_service is not None
+        ):
+            self.sop_service.advance_later(user_id, resumed_sop_run_id)
+
+    async def _parked_dispatch(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> str | None:
+        """The claim of a step parked on this session, if still valid.
+
+        Valid only while the step is parked on this session's half.
+
+        Args:
+            user_id (`str`):
+                The owner user id.
+            session_id (`str`):
+                The session whose claim to read.
+
+        Returns:
+            `str | None`:
+                ``"<run id>:<step index>"``, or ``None``.
+        """
+        claim = await self._message_bus.registry_get(
+            MessageBusKeys.sop_dispatch(session_id),
+            MessageBusKeys.SOP_DISPATCH_FIELD,
+        )
+        if claim is None:
+            return None
+        sop_run_id, _, step_index = claim.rpartition(":")
+        run = await self._storage.get_sop_run(user_id, sop_run_id)
+        index = int(step_index)
+        if (
+            run is None
+            or index >= len(run.state.steps)
+            or run.state.steps[index].phase is not SOPPhase.AWAITING
+        ):
+            return None
+        step = run.definition.steps[index]
+        ref = (
+            step.executor
+            if run.state.steps[index].submission is None
+            else getattr(step.verifier, "agent", None)
+        )
+        if ref is None or run.sessions.get(ref.session_key) != session_id:
+            return None
+        return claim
 
     async def _project_event(
         self,

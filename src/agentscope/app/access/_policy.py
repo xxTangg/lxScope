@@ -149,6 +149,23 @@ class ResourceAccessPolicyBase(ABC):
             for ref in refs
         )
 
+    async def can_read_owned(
+        self,
+        viewer_id: str,
+        kind: ResourceKind,
+        owner_id: str,
+        storage: StorageBase,
+    ) -> bool:
+        """Return whether a viewer may read an owner-scoped resource.
+
+        The default keeps the historical owner-isolated behavior. Product
+        integrations can override this for policies where a resource type is
+        centrally managed (for example, an administrator-owned credential
+        pool) while still using the regular cross-owner ``ResourceRef`` flow.
+        """
+        del viewer_id, kind, owner_id, storage
+        return True
+
 
 class DenyAllResourceAccessPolicy(ResourceAccessPolicyBase):
     """Default policy that denies all cross-owner resource access."""

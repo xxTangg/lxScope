@@ -1,0 +1,53 @@
+services:
+  agentscope:
+    # Mount the repository over the source baked into the image. The named
+    # data volumes from docker-compose.yml remain active for user data.
+    volumes:
+      - .:/app
+    environment:
+      UVICORN_RELOAD: "false"
+      LXSCOPE_TASK_DAG_ENABLED: "${LXSCOPE_TASK_DAG_ENABLED:-true}"
+      LXSCOPE_TASK_SCENARIO_DAG_EXECUTION_ENABLED: "${LXSCOPE_TASK_SCENARIO_DAG_EXECUTION_ENABLED:-true}"
+      # Keep this exact list in sync with CURRENT_TEMPLATE_VERSIONS. The base
+      # production Compose file remains fail-closed unless explicitly opted in.
+      LXSCOPE_TASK_SCENARIO_DAG_ALLOWED_TEMPLATES: >-
+        ${LXSCOPE_TASK_SCENARIO_DAG_ALLOWED_TEMPLATES:-s01_project_init@3.0.0,s02_project_planning@5.1.0,s03_expert_matching@3.0.0,s04_meeting_preparation@3.0.0,s05_meeting_minutes@3.0.0,s06_opinion_processing@3.0.0,s07_report_generation@5.0.0,s08_archive_transfer@3.0.0,s09_expense_settlement@3.0.0}
+      REDIS_HOST: redis
+
+  web-ui:
+    image: agentscope-web-ui-dev:latest
+    build:
+      context: ./examples/web_ui
+      dockerfile: Dockerfile.dev
+      args:
+        VITE_AGENTSCOPE_API_PORT: ${AGENTSCOPE_API_PORT:-8001}
+        VITE_LOGTO_ENDPOINT: ${VITE_LOGTO_ENDPOINT:-}
+        VITE_LOGTO_APP_ID: ${VITE_LOGTO_APP_ID:-}
+        VITE_LOGTO_API_RESOURCE: ${VITE_LOGTO_API_RESOURCE:-}
+    # Vite serves the frontend directly and provides HMR for source changes.
+    command:
+      - pnpm
+      - --filter
+      - frontend
+      - dev
+      - --host
+      - 0.0.0.0
+      - --port
+      - "80"
+    environment:
+      VITE_AGENTSCOPE_API_PORT: ${AGENTSCOPE_API_PORT:-8001}
+      VITE_LOGTO_ENDPOINT: ${VITE_LOGTO_ENDPOINT:-}
+      VITE_LOGTO_APP_ID: ${VITE_LOGTO_APP_ID:-}
+      VITE_LOGTO_API_RESOURCE: ${VITE_LOGTO_API_RESOURCE:-}
+      DOCKER_DEV: "true"
+    volumes:
+      - ./examples/web_ui:/app
+      # Keep installed dependencies outside the bind mount.
+      - web-ui-node-modules:/app/node_modules
+      - web-ui-frontend-node-modules:/app/frontend/node_modules
+      - web-ui-backend-node-modules:/app/backend/node_modules
+
+volumes:
+  web-ui-node-modules:
+  web-ui-frontend-node-modules:
+  web-ui-backend-node-modules:

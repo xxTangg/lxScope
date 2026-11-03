@@ -11,6 +11,7 @@ import { DeleteDialog } from '@/components/dialog/DeleteDialog.tsx';
 import { EditKnowledgeBaseDialog } from '@/components/dialog/EditKnowledgeBaseDialog.tsx';
 import { KnowledgeSearchDrawer } from '@/components/drawer/KnowledgeSearchDrawer.tsx';
 import { KnowledgeDocumentsPanel } from '@/components/knowledge/KnowledgeDocumentsPanel.tsx';
+import { KnowledgeGraphPanel } from '@/components/knowledge/KnowledgeGraphPanel.tsx';
 import { Badge } from '@/components/ui/badge.tsx';
 import { Button } from '@/components/ui/button.tsx';
 import {
@@ -42,6 +43,7 @@ import {
 	SidebarMenuItem,
 } from '@/components/ui/sidebar.tsx';
 import { useKnowledgeBases } from '@/hooks/useKnowledgeBases.ts';
+import { useAuth } from '@/hooks/useAuth';
 
 interface DetailPanelProps {
 	knowledgeBase?: KnowledgeBaseView;
@@ -97,6 +99,10 @@ function DetailPanel({ knowledgeBase, onTest }: DetailPanelProps) {
 			<div className="min-h-0 flex-1 overflow-y-auto p-[20px_18px_24px]">
 				<div className="flex flex-col gap-y-6">
 					<ConfigCard knowledgeBase={knowledgeBase} />
+					<KnowledgeGraphPanel
+						knowledgeBaseId={knowledgeBase.id}
+						editable={knowledgeBase.editable}
+					/>
 					<KnowledgeDocumentsPanel knowledgeBaseId={knowledgeBase.id} />
 				</div>
 			</div>
@@ -185,6 +191,7 @@ export const KnowledgePage = () => {
 	const navigate = useNavigate();
 	const { kbId: urlKbId } = useParams<{ kbId?: string }>();
 	const { t } = useTranslation();
+	const { user } = useAuth();
 
 	const { knowledgeBases, remove, refetch } = useKnowledgeBases();
 	const [selectedKbId, setSelectedKbId] = useState<string | undefined>(urlKbId);
@@ -343,14 +350,18 @@ export const KnowledgePage = () => {
 				open={createDialogOpen}
 				onOpenChange={setCreateDialogOpen}
 				onCreated={handleCreated}
-				onAddCredential={() => setCredentialOpen(true)}
+				onAddCredential={
+					user?.role === 'admin' ? () => setCredentialOpen(true) : undefined
+				}
 				credentialRefetchTrigger={credentialRefetchTrigger}
 			/>
-			<CreateCredentialDialog
-				open={credentialOpen}
-				onOpenChange={setCredentialOpen}
-				onCreated={() => setCredentialRefetchTrigger((n) => n + 1)}
-			/>
+			{user?.role === 'admin' && (
+				<CreateCredentialDialog
+					open={credentialOpen}
+					onOpenChange={setCredentialOpen}
+					onCreated={() => setCredentialRefetchTrigger((n) => n + 1)}
+				/>
+			)}
 			<EditKnowledgeBaseDialog
 				open={editTarget !== null}
 				onOpenChange={(open) => {

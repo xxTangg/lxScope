@@ -1,0 +1,12 @@
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY apps/admin-web/package.json apps/admin-web/package.json
+RUN corepack enable && pnpm install --filter admin-web... --frozen-lockfile=false
+
+COPY apps/admin-web/ apps/admin-web/
+WORKDIR /app/apps/admin-web
+
+EXPOSE 44101
+CMD ["./node_modules/.bin/vite", "--host", "0.0.0.0", "--port", "44101", "--strictPort"]

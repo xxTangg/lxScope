@@ -1,0 +1,25 @@
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && corepack enable
+
+# Install dependencies in the image once. Source files are mounted by
+# docker-compose.dev.yml, so normal frontend edits do not rebuild this image.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY frontend/package.json frontend/package.json
+COPY backend/package.json backend/package.json
+RUN pnpm install --frozen-lockfile
+
+ARG VITE_AGENTSCOPE_API_PORT=8001
+ENV VITE_AGENTSCOPE_API_PORT=${VITE_AGENTSCOPE_API_PORT}
+ARG VITE_LOGTO_ENDPOINT=
+ARG VITE_LOGTO_APP_ID=
+ARG VITE_LOGTO_API_RESOURCE=
+ENV VITE_LOGTO_ENDPOINT=${VITE_LOGTO_ENDPOINT}
+ENV VITE_LOGTO_APP_ID=${VITE_LOGTO_APP_ID}
+ENV VITE_LOGTO_API_RESOURCE=${VITE_LOGTO_API_RESOURCE}
+
+EXPOSE 80

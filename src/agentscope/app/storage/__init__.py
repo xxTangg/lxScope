@@ -4,6 +4,10 @@ from typing import TYPE_CHECKING
 
 from ._base import StorageBase
 from ._redis_storage import RedisStorage
+from ._knowledge_graph import (
+    KnowledgeGraphStoreBase,
+    RedisKnowledgeGraphStore,
+)
 from ._model import (
     AgentData,
     AgentRecord,
@@ -33,6 +37,16 @@ from ._model import (
     ScheduleSource,
     ChannelOrigin,
     TeamOrigin,
+    AgentVerifier,
+    HumanVerifier,
+    SOPAgentRef,
+    SOPData,
+    SOPOrigin,
+    SOPRecord,
+    SOPRunRecord,
+    SOPStepDataV1,
+    SOPVerifier,
+    SOPWorkspaceGrain,
     SkillRecord,
     ChatModelConfig,
     TTSModelConfig,
@@ -74,6 +88,8 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "StorageBase",
     "RedisStorage",
+    "KnowledgeGraphStoreBase",
+    "RedisKnowledgeGraphStore",
     "AsyncSQLAlchemyStorage",
     # The ORM models
     "InviteConfig",
@@ -102,6 +118,16 @@ __all__ = [
     "ScheduleOrigin",
     "ChannelOrigin",
     "TeamOrigin",
+    "AgentVerifier",
+    "HumanVerifier",
+    "SOPAgentRef",
+    "SOPData",
+    "SOPOrigin",
+    "SOPRecord",
+    "SOPRunRecord",
+    "SOPStepDataV1",
+    "SOPVerifier",
+    "SOPWorkspaceGrain",
     "SkillRecord",
     "ChatModelConfig",
     "TTSModelConfig",

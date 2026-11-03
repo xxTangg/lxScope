@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="description" content="lxScope Task 业务场景模板用户手册：模板理念、九个业务场景、知识沉淀边界与执行检查说明。" />
+		<title>Task 业务场景模板用户手册 · lxScope</title>
+		<style>
+			:root { color-scheme: light; font-family: Inter, "Microsoft YaHei", "PingFang SC", sans-serif; color: #172033; background: #f4f7fb; }
+			* { box-sizing: border-box; }
+			body { margin: 0; line-height: 1.7; }
+			a { color: #1d5ed8; text-decoration: none; }
+			a:hover { text-decoration: underline; }
+			.top { padding: 44px 24px 36px; color: #fff; background: radial-gradient(circle at 85% 5%, #507ce8 0, transparent 32%), linear-gradient(120deg, #122341, #193963 55%, #2454a2); }
+			.top-inner, main { width: min(1120px, 100% - 40px); margin: 0 auto; }
+			.eyebrow { font-size: 12px; letter-spacing: .12em; opacity: .76; text-transform: uppercase; }
+			h1 { margin: 8px 0 10px; font-size: clamp(28px, 5vw, 42px); line-height: 1.2; }
+			.top p { max-width: 780px; margin: 0; color: #dce8ff; }
+			.pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+			.pill { border: 1px solid #ffffff45; border-radius: 99px; padding: 4px 10px; font-size: 12px; color: #eef4ff; }
+			main { padding: 28px 0 64px; }
+			.layout { display: grid; grid-template-columns: 235px minmax(0, 1fr); gap: 22px; align-items: start; }
+			nav { position: sticky; top: 16px; border: 1px solid #dce3ef; border-radius: 16px; padding: 16px; background: white; box-shadow: 0 8px 24px #1939630b; }
+			nav b { display: block; margin-bottom: 9px; font-size: 13px; }
+			nav a { display: block; padding: 5px 0; color: #52617a; font-size: 12px; }
+			article { min-width: 0; }
+			section { scroll-margin-top: 18px; margin-bottom: 18px; border: 1px solid #dce3ef; border-radius: 18px; padding: clamp(18px, 3vw, 28px); background: #fff; box-shadow: 0 8px 24px #1939630b; }
+			h2 { margin: 0 0 12px; font-size: 21px; line-height: 1.35; }
+			h3 { margin: 0 0 8px; font-size: 16px; }
+			p { margin: 8px 0; }
+			ul, ol { padding-left: 22px; }
+			li { margin: 4px 0; }
+			.kicker { color: #61718a; font-size: 12px; }
+			.callout { margin: 14px 0; border-left: 3px solid #3974e6; border-radius: 8px; padding: 10px 14px; color: #33435b; background: #f1f6ff; font-size: 13px; }
+			.callout.warn { border-color: #da9a22; background: #fff8e9; }
+			.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+			.card { border: 1px solid #e1e7f0; border-radius: 12px; padding: 14px; background: #fbfcfe; }
+			.card p, .card li { font-size: 13px; }
+			figure { margin: 18px 0 8px; }
+			.shot { overflow: hidden; border: 1px solid #d8e0ec; border-radius: 14px; background: #edf2f8; box-shadow: 0 12px 32px #1b315515; }
+			.shot svg { display: block; width: 100%; height: auto; }
+			figcaption { margin-top: 7px; color: #6d7890; text-align: center; font-size: 11px; }
+			.scenario { scroll-margin-top: 18px; margin: 16px 0; border: 1px solid #e1e7f0; border-radius: 14px; padding: 17px; background: #fff; }
+			.scenario h3 { display: flex; align-items: center; gap: 9px; }
+			.num { display: inline-grid; width: 27px; height: 27px; place-items: center; border-radius: 8px; color: #1d5ed8; background: #eaf1ff; font-size: 11px; }
+			.meta { display: grid; grid-template-columns: 125px minmax(0, 1fr); gap: 5px 12px; margin-top: 10px; font-size: 12px; }
+			.meta b { color: #53627a; }
+			.status { display: inline-block; border-radius: 999px; padding: 2px 8px; color: #315b99; background: #edf4ff; font-size: 11px; }
+			footer { padding: 22px 0; color: #708098; text-align: center; font-size: 11px; }
+			@media (max-width: 780px) { .layout { grid-template-columns: 1fr; } nav { position: static; } nav div { columns: 2; } .grid { grid-template-columns: 1fr; } .top-inner, main { width: min(100% - 24px, 1120px); } }
+			@media print { :root { background: white; } .top { padding: 20px; } main { width: 100%; } .layout { display: block; } nav { display: none; } section { box-shadow: none; break-inside: avoid; } a { color: inherit; } }
+		</style>
+	</head>
+	<body>
+		<header class="top">
+			<div class="top-inner">
+				<div class="eyebrow">lxScope · Task</div>
+				<h1>业务场景模板用户手册</h1>
+				<p>从九个可复用业务流程开始，查看模板适用范围、知识使用方式、运行前能力检查与执行结果。模板帮助用户把任务拆成可检查的步骤；涉及授权、规则判断或业务写入时，仍保留相应的人工确认。</p>
+				<div class="pills"><span class="pill">九个标准场景</span><span class="pill">运行前检查</span><span class="pill">知识与证据说明</span><span class="pill">章节直达</span></div>
+			</div>
+		</header>
+		<main>
+			<div class="layout">
+				<nav aria-label="手册目录">
+					<b>手册目录</b>
+					<div>
+						<a href="#template-idea">模板设计理念</a>
+						<a href="#quick-start">快速开始</a>
+						<a href="#scenarios">九个业务场景</a>
+						<a href="#knowledge">知识沉淀说明</a>
+						<a href="#execution">执行情报与检查</a>
+						<a href="#checks-plan">合规与安全检查方案</a>
+						<a href="#faq">常见问题</a>
+					</div>
+				</nav>
+				<article>
+					<section id="template-idea">
+						<h2>模板设计理念</h2>
+						<p>Task 模板把常见业务任务固化为有输入、有步骤、有输出要求的流程。它优先复用经过定义的业务路径，帮助用户知道要准备什么资料、哪些节点会调用工具、结果需要怎样复核。</p>
+						<div class="grid">
+							<div class="card"><h3>有边界的流程</h3><p>必填信息、步骤顺序、能力依赖、失败处理和最终输出要求在模板中说明。模板实例化使用服务端已定义的步骤，不会调用 AI Planner 自动改写流程。</p></div>
+							<div class="card"><h3>保留必要的人为判断</h3><p>“草稿”“待核实”“需人工复核”是有意保留的业务状态。模型产出的解释不能代替正式规则源、审批记录或人工签字。</p></div>
+						</div>
+						<figure>
+							<div class="shot" role="img" aria-label="业务模板库界面截图示意">
+								<svg viewBox="0 0 1180 620" xmlns="http://www.w3.org/2000/svg">
+									<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#edf3fc"/><stop offset="1" stop-color="#e5ebf4"/></linearGradient></defs>
+									<rect width="1180" height="620" fill="url(#bg)"/><rect x="0" y="0" width="1180" height="44" fill="#fff"/><circle cx="23" cy="22" r="8" fill="#2764d9"/><text x="43" y="27" fill="#27354d" font-size="14" font-family="Arial">lxScope　/　Task</text>
+									<rect x="120" y="67" width="940" height="510" rx="18" fill="#fff" stroke="#dbe3ef"/><text x="150" y="105" fill="#1e293b" font-size="19" font-weight="700" font-family="Arial">▣ 业务模板</text><text x="150" y="129" fill="#738097" font-size="12" font-family="Arial">从标准流程开始。模板由服务端定义，实例化时不会调用 AI Planner。</text><rect x="835" y="83" width="153" height="32" rx="8" fill="#fff" stroke="#d7deea"/><text x="856" y="104" fill="#34445d" font-size="11" font-family="Arial">✦ 自由任务（AI 规划）</text>
+									<rect x="148" y="151" width="330" height="394" rx="12" fill="#f7f9fc" stroke="#e0e6ef"/><text x="168" y="177" fill="#26364c" font-size="12" font-weight="700" font-family="Arial">九个预置场景</text><text x="410" y="177" fill="#7c8799" font-size="10" font-family="Arial">9 个模板</text>
+									<g font-family="Arial"><rect x="162" y="191" width="302" height="52" rx="9" fill="#edf4ff" stroke="#a9c5f7"/><rect x="174" y="203" width="25" height="25" rx="7" fill="#d7e6ff"/><text x="180" y="220" fill="#2259b5" font-size="9">01</text><text x="208" y="212" fill="#26364c" font-size="11" font-weight="700">项目立项　v2.0</text><text x="208" y="229" fill="#718096" font-size="9">资料整理、相似项目与规则核对</text><circle cx="444" cy="216" r="11" fill="#fff"/><text x="441" y="220" fill="#557094" font-size="12" font-weight="700">?</text>
+									<rect x="162" y="251" width="302" height="52" rx="9" fill="#fff" stroke="#e0e6ef"/><rect x="174" y="263" width="25" height="25" rx="7" fill="#f0f2f6"/><text x="180" y="280" fill="#66758b" font-size="9">02</text><text x="208" y="272" fill="#26364c" font-size="11" font-weight="700">项目策划　v2.0</text><text x="208" y="289" fill="#718096" font-size="9">生成策划大纲、初稿并核验引用</text><circle cx="444" cy="276" r="11" fill="#fff"/><text x="441" y="280" fill="#557094" font-size="12" font-weight="700">?</text>
+									<rect x="162" y="311" width="302" height="52" rx="9" fill="#fff" stroke="#e0e6ef"/><rect x="174" y="323" width="25" height="25" rx="7" fill="#f0f2f6"/><text x="180" y="340" fill="#66758b" font-size="9">03</text><text x="208" y="332" fill="#26364c" font-size="11" font-weight="700">专家智能匹配　v3.0</text><text x="208" y="349" fill="#718096" font-size="9">用户提供候选数据，结果待人工复核</text><circle cx="444" cy="336" r="11" fill="#fff"/><text x="441" y="340" fill="#557094" font-size="12" font-weight="700">?</text>
+									<rect x="162" y="371" width="302" height="52" rx="9" fill="#fff" stroke="#e0e6ef"/><text x="208" y="392" fill="#26364c" font-size="11" font-weight="700">会前准备　·　会议纪要　·　意见整理</text><text x="208" y="409" fill="#718096" font-size="9">每个场景均可查看独立业务说明</text><circle cx="444" cy="397" r="11" fill="#fff"/><text x="441" y="401" fill="#557094" font-size="12" font-weight="700">?</text>
+									<rect x="162" y="431" width="302" height="52" rx="9" fill="#fff" stroke="#e0e6ef"/><text x="208" y="452" fill="#26364c" font-size="11" font-weight="700">报告生成　·　归档移交　·　报销结算</text><text x="208" y="469" fill="#718096" font-size="9">帮助图标打开手册对应章节</text><circle cx="444" cy="457" r="11" fill="#fff"/><text x="441" y="461" fill="#557094" font-size="12" font-weight="700">?</text></g>
+									<rect x="497" y="151" width="544" height="394" rx="12" fill="#fff" stroke="#e0e6ef"/><text x="524" y="183" fill="#1e293b" font-size="16" font-weight="700" font-family="Arial">项目立项</text><rect x="615" y="165" width="47" height="21" rx="10" fill="#fff" stroke="#dce3ec"/><text x="627" y="179" fill="#56647b" font-size="9" font-family="Arial">v2.0</text><text x="524" y="211" fill="#68778e" font-size="11" font-family="Arial">整理项目立项信息，检索相似项目与适用规则，形成待核验的立项建议。</text><rect x="524" y="234" width="492" height="79" rx="10" fill="#f7f9fc" stroke="#e2e7ef"/><text x="542" y="258" fill="#34445d" font-size="11" font-weight="700" font-family="Arial">✧ 能力依赖</text><rect x="542" y="271" width="139" height="22" rx="5" fill="#fff" stroke="#dce3ec"/><text x="551" y="286" fill="#56647b" font-size="9" font-family="Arial">project.similar_search</text><rect x="687" y="271" width="112" height="22" rx="5" fill="#fff" stroke="#dce3ec"/><text x="696" y="286" fill="#56647b" font-size="9" font-family="Arial">project.rule_check</text><text x="524" y="344" fill="#34445d" font-size="11" font-weight="700" font-family="Arial">流程预览</text><g font-family="Arial" font-size="10" fill="#34445d"><rect x="524" y="358" width="492" height="42" rx="8" fill="#fff" stroke="#e2e7ef"/><text x="540" y="383">1　收集项目资料　　　　　　　　　　　　用户输入 · 必需</text><rect x="524" y="407" width="492" height="42" rx="8" fill="#fff" stroke="#e2e7ef"/><text x="540" y="432">2　识别立项字段　　　　　　　　　　　　AgentStep · 可编辑</text><rect x="524" y="456" width="492" height="42" rx="8" fill="#fff" stroke="#e2e7ef"/><text x="540" y="481">3　检索相似项目 / 核对规则　　　　　　　ToolStep · 权限检查</text></g><rect x="882" y="508" width="134" height="26" rx="7" fill="#2463d8"/><text x="911" y="525" fill="#fff" font-size="10" font-family="Arial">使用此模板</text>
+								</svg>
+							</div>
+							<figcaption>图 1 · 模板库布局示意。点击模板卡片查看流程；点击右侧问号打开该场景的手册章节。</figcaption>
+						</figure>
+					</section>
+
+					<section id="quick-start">
+						<h2>快速开始</h2>
+						<ol>
+							<li>在 Task 页面打开“业务模板”，选择适合的场景。先检查适用范围、必需输入、步骤和能力依赖。</li>
+							<li>点击“使用此模板”创建任务，补齐必填资料。只关联当前用户获准访问的知识库和来源。</li>
+							<li>运行任务。Task 会先做运行前能力检查；若工具、接口、权限或数据源不满足，先按提示修正。</li>
+							<li>在“执行情报”中查看执行轨迹、工具调用、引用/证据、产物和待复核项。对关键结果进行人工确认后再进入正式业务系统。</li>
+						</ol>
+						<div class="callout">单击模板行选择模板；右侧的小问号（?）会在新页打开本手册对应业务章节，当前 Task 页面保持不变。</div>
+					</section>
+
+					<section id="scenarios">
+						<h2>九个业务场景</h2>
+						<p class="kicker">场景版本以当前服务端模板为准；部署环境可能使用不同版本。模板卡片展示实际版本号。</p>
+						<div class="scenario" id="scenario-s01-project-init">
+							<h3><span class="num">01</span>项目立项 <span class="status">s01_project_init · v2</span></h3>
+							<p>整理项目立项信息，检索相似项目与适用规则，形成待核验的立项建议。</p>
+							<div class="meta"><b>准备资料</b><span>项目名称、背景/目标/范围；行业和拟评审范围可选。</span><b>主要过程</b><span>识别项目字段 → 检索相似项目 → 核对规则 → 整理立项建议 → 核实事实。</span><b>预期结果</b><span>立项信息卡、相似项目线索、规则核对来源和待人工核实项。</span><b>边界</b><span>建议不是审批结论；不会自动写入项目台账。</span></div>
+						</div>
+						<div class="scenario" id="scenario-s02-project-planning">
+							<h3><span class="num">02</span>项目策划 <span class="status">s02_project_planning · v2</span></h3>
+							<p>根据项目材料和经批准的策划模板生成大纲与初稿，并核验可追溯引用。</p>
+							<div class="meta"><b>准备资料</b><span>项目名称、项目资料、获准的策划模板和适用要求。</span><b>主要过程</b><span>读取项目资料 → 选择/核对策划模板 → 生成策划大纲和正文 → 校验引用 → 人工复核。</span><b>预期结果</b><span>大纲、策划草稿、来源证据和待复核清单。</span><b>边界</b><span>示例/未验证数据不能当作真实结论；资料不足时保留待补字段。</span></div>
+						</div>
+						<div class="scenario" id="scenario-s03-expert-matching">
+							<h3><span class="num">03</span>专家智能匹配 <span class="status">s03_expert_matching · v3</span></h3>
+							<p>按项目专业要求对用户提供的结构化候选专家资料做初步排序，并整理回避信息。</p>
+							<div class="meta"><b>准备资料</b><span>项目名称、专业领域、项目简介、候选专家结构化记录。</span><b>主要过程</b><span>提取项目要求 → 读取候选数据 → 检查候选记录和回避字段 → 按专业字段匹配排序 → 收集人工复核。</span><b>预期结果</b><span>候选匹配结果、输入记录的回避信息、数据质量问题和人工确认项。</span><b>边界</b><span>当前版本不查询正式专家库，不证明实际利益冲突状态，也不构成正式推荐或聘任意见。</span></div>
+						</div>
+						<div class="scenario" id="scenario-s04-meeting-preparation">
+							<h3><span class="num">04</span>会前准备 <span class="status">s04_meeting_preparation · v3</span></h3>
+							<p>依据会议参数准备议程、物料、费用计算和会前检查，为授权通知流程准备材料。</p>
+							<div class="meta"><b>准备资料</b><span>会议主题、日期、参会人数、用户提供的费用标准和修改意见。</span><b>主要过程</b><span>生成会务资料 → 核算费用 → 检查会前要素 → 收集修改 → 整理通知草稿。</span><b>预期结果</b><span>会前材料草稿、费用计算依据、检查结果和通知准备状态。</span><b>边界</b><span>需要真实会议系统、通知权限和授权确认时，应先完成集成与审批；草稿不能视为已通知。</span></div>
+						</div>
+						<div class="scenario" id="scenario-s05-meeting-minutes">
+							<h3><span class="num">05</span>会议召开与纪要 <span class="status">s05_meeting_minutes · v3</span></h3>
+							<p>处理用户提供的已转写会议文本，生成议题摘要和待办草稿，并收集人工修订。</p>
+							<div class="meta"><b>准备资料</b><span>会议标识、已获准使用的转写文本。</span><b>主要过程</b><span>读取转写文本 → 整理议题和行动项 → 生成纪要草稿 → 汇总修订意见。</span><b>预期结果</b><span>议题摘要、待办列表、修改记录和转写来源状态。</span><b>边界</b><span>当前版本不处理原始音频、不执行 ASR；纪要需会后人工确认和发布。</span></div>
+						</div>
+						<div class="scenario" id="scenario-s06-opinion-processing">
+							<h3><span class="num">06</span>意见整理 <span class="status">s06_opinion_processing · v3</span></h3>
+							<p>按业务方提供的分类规则整理已识别文本、去重并生成待复核汇总。</p>
+							<div class="meta"><b>准备资料</b><span>项目名称、意见文本记录、分类规则。</span><b>主要过程</b><span>读取已识别意见文本 → 分类、汇总和去重 → 标记不确定项 → 人工复核 → 生成汇总草稿。</span><b>预期结果</b><span>分类统计、意见摘要、疑似重复项和人工待办清单。</span><b>边界</b><span>当前版本不读取图片、不执行 OCR；分类准确性受输入规则和文本质量影响。</span></div>
+						</div>
+						<div class="scenario" id="scenario-s07-report-generation">
+							<h3><span class="num">07</span>报告生成 <span class="status">s07_report_generation · v4</span></h3>
+							<p>仅基于当前用户获准资料生成评审报告草稿，对引用来源做确定性核验。</p>
+							<div class="meta"><b>准备资料</b><span>项目名称、获准资料标识、必需章节；适用规则标识可选。</span><b>主要过程</b><span>检索授权资料并留证 → 按章节生成草稿 → 校验引用编号、来源身份和逐字摘录 → 检查结构/规则 → 人工复核。</span><b>预期结果</b><span>含引用映射、完整性/一致性检查及未解决事项的报告草稿。</span><b>边界</b><span>引用存在不代表其语义充分；最终内容、适用规则和合规签字仍由真实审核流程确认。</span></div>
+						</div>
+						<div class="scenario" id="scenario-s08-archive-transfer">
+							<h3><span class="num">08</span>归档移交 <span class="status">s08_archive_transfer · v3</span></h3>
+							<p>核对用户提交的归档文件元数据和必需项，输出待移交清单。</p>
+							<div class="meta"><b>准备资料</b><span>项目标识、文件元数据清单、归档类别、必需元数据字段。</span><b>主要过程</b><span>规范文件元数据 → 核对归档要求 → 汇总缺项 → 生成待移交清单。</span><b>预期结果</b><span>文件清单、元数据完整性报告、缺项和待移交状态。</span><b>边界</b><span>当前版本不读取文件内容，也不写入档案系统；需授权的系统写入应另经审批与验收。</span></div>
+						</div>
+						<div class="scenario" id="scenario-s09-expense-settlement">
+							<h3><span class="num">09</span>报销结算 <span class="status">s09_expense_settlement · v3</span></h3>
+							<p>依据用户提供的结构化票据信息和费用规则核算报销草稿。</p>
+							<div class="meta"><b>准备资料</b><span>项目标识、结构化票据记录、费用类别和规则。</span><b>主要过程</b><span>读取结构化票据 → 检查任务内重复 → 应用规则核算 → 整理报销草稿 → 标记提交前条件。</span><b>预期结果</b><span>票据摘要、重复项状态、规则核算和待提交草稿。</span><b>边界</b><span>当前版本不验真、不执行审批、不提交 ERP；真实提交需要实际权限、审批证据和幂等控制。</span></div>
+						</div>
+					</section>
+
+					<section id="knowledge">
+						<h2>知识沉淀是否体现？</h2>
+						<p><b>有知识使用与单次运行证据能力，但不等同于自动写入长期知识库。</b>Task 页面可以关联有权限的知识库；节点可以启用知识图谱；报告类流程可保存本次运行的来源快照、引用编号和校验结果。具体能否检索或生成图谱，取决于任务配置、工具能力、数据源和访问权限。</p>
+						<div class="grid">
+							<div class="card"><h3>知识库检索</h3><p>为任务选择知识库后，运行时可检索授权资料。结果中应保留来源信息，供执行情报查看和人工核对。</p></div>
+							<div class="card"><h3>节点知识图谱</h3><p>在流程节点中启用后，可在相应执行节点查看本次形成的图谱结果。它呈现本次任务的关系信息，不自动意味着已写回长期知识库。</p></div>
+						</div>
+						<div class="callout warn">长期知识沉淀需要明确的写入目标、内容筛选、来源与权限校验、人工审批、版本记录和撤回/更正机制。若页面没有显示知识库写入操作与回执，应将本次结果视为任务产物或运行证据，而非已完成知识入库。</div>
+					</section>
+
+					<section id="execution">
+						<h2>执行情报：过程、结果和依据</h2>
+						<p>执行情报提供任务运行后的观测入口。各标签页显示的资料取决于本次运行所返回的数据。</p>
+						<ul>
+							<li><b>执行轨迹：</b>按步骤查看状态、时间、摘要、完整输出、错误和产物。</li>
+							<li><b>智能分析：</b>检查任务目标、自动拆解、执行策略和风险提示。</li>
+							<li><b>工具：</b>查看使用的工具/MCP、能力名称及可用性。</li>
+							<li><b>产物：</b>预览或下载本次生成的文件。</li>
+						</ul>
+						<p>运行前能力检查会在执行前展示工具、接口兼容性、权限和真实业务数据源状态。它回答“当前配置是否具备运行条件”，不能替代业务规则合规判断。</p>
+						<figure>
+							<div class="shot" role="img" aria-label="Task 执行情报面板截图示意">
+								<svg viewBox="0 0 1180 540" xmlns="http://www.w3.org/2000/svg">
+									<rect width="1180" height="540" fill="#f2f5f9"/><rect x="24" y="22" width="1132" height="496" rx="18" fill="#fff" stroke="#dce3ed"/><rect x="47" y="45" width="724" height="450" rx="14" fill="#fcfdff" stroke="#e0e6ef"/><text x="72" y="80" fill="#1c2a40" font-size="18" font-family="Arial" font-weight="700">Task · 项目策划</text><text x="72" y="103" fill="#758197" font-size="11" font-family="Arial">按模板步骤生成策划初稿并核验引用</text><rect x="72" y="124" width="672" height="58" rx="10" fill="#ecfdf3" stroke="#bde8cd"/><text x="91" y="149" fill="#16613c" font-size="12" font-family="Arial" font-weight="700">✓ 运行前能力检查已通过 · 3 项能力可用</text><text x="91" y="168" fill="#577267" font-size="10" font-family="Arial">工具已绑定；权限与真实数据源状态需结合本次返回结果判断</text><text x="72" y="217" fill="#4b5b73" font-size="11" font-family="Arial">任务目标与资料范围……</text><rect x="72" y="242" width="672" height="114" rx="11" fill="#fff" stroke="#e1e7ef"/><text x="94" y="270" fill="#2b3a51" font-size="11" font-family="Arial" font-weight="700">流程节点</text><circle cx="101" cy="298" r="6" fill="#22a06b"/><text x="118" y="302" fill="#506078" font-size="10" font-family="Arial">读取获准资料　·　已完成</text><circle cx="101" cy="323" r="6" fill="#22a06b"/><text x="118" y="327" fill="#506078" font-size="10" font-family="Arial">生成策划草稿　·　已完成</text><circle cx="101" cy="348" r="6" fill="#22a06b"/><text x="118" y="352" fill="#506078" font-size="10" font-family="Arial">校验引用来源　·　需人工复核语义</text><rect x="72" y="373" width="672" height="95" rx="11" fill="#f7f9fc" stroke="#e1e7ef"/><text x="94" y="400" fill="#2b3a51" font-size="11" font-family="Arial" font-weight="700">来源与产物</text><text x="94" y="425" fill="#52627a" font-size="10" font-family="Arial">来源快照：3 项　·　引用校验：编号和原文摘录有效</text><text x="94" y="448" fill="#52627a" font-size="10" font-family="Arial">最终报告为草稿；请复核语义支持与适用规则后再流转</text>
+									<rect x="791" y="45" width="342" height="450" rx="14" fill="#fff" stroke="#dce3ed"/><text x="815" y="79" fill="#1c2a40" font-size="16" font-family="Arial" font-weight="700">执行情报</text><rect x="1043" y="61" width="68" height="22" rx="11" fill="#e9f8ef"/><text x="1058" y="76" fill="#247146" font-size="9" font-family="Arial">已完成</text><text x="815" y="101" fill="#758197" font-size="10" font-family="Arial">执行状态已同步</text><g font-family="Arial" font-size="9"><text x="817" y="137" fill="#2662c8">执行轨迹</text><text x="886" y="137" fill="#77849a">智能分析</text><text x="955" y="137" fill="#77849a">工具</text><text x="1006" y="137" fill="#77849a">产物</text><rect x="810" y="148" width="304" height="1" fill="#e8edf4"/><rect x="812" y="163" width="300" height="92" rx="10" fill="#fff" stroke="#e0e6ef"/><text x="829" y="185" fill="#2b3a51" font-size="10" font-weight="700">合规 / 安全 / 操作检查（设计目标）</text><text x="829" y="207" fill="#64738a" font-size="9">来源授权　　通过 / 未核验</text><text x="829" y="225" fill="#64738a" font-size="9">敏感数据　　通过 / 需复核</text><text x="829" y="243" fill="#64738a" font-size="9">外部写入　　等待授权 / 阻断</text><rect x="812" y="268" width="300" height="96" rx="10" fill="#f8fafc" stroke="#e0e6ef"/><text x="829" y="292" fill="#2b3a51" font-size="10" font-weight="700">本次运行的依据</text><text x="829" y="314" fill="#64738a" font-size="9">能力检查 · 权限状态 · 来源证据 · 时间</text><text x="829" y="335" fill="#64738a" font-size="9">每一项需显示结果、说明和下一步操作</text><rect x="812" y="377" width="300" height="91" rx="10" fill="#fff8e9" stroke="#f1dcad"/><text x="829" y="401" fill="#785718" font-size="10" font-family="Arial" font-weight="700">人工复核仍然必要</text><text x="829" y="423" fill="#7c6a47" font-size="9" font-family="Arial">系统校验通过不等于业务审批完成。</text><text x="829" y="444" fill="#7c6a47" font-size="9" font-family="Arial">检查规则不可用时应显示“未检查”。</text></g>
+								</svg>
+							</div>
+							<figcaption>图 2 · 执行情报展示位置示意。检查结果示例仅用于说明呈现方式；未接入规则的项目必须显示“未检查/需复核”。</figcaption>
+						</figure>
+					</section>
+
+					<section id="checks-plan">
+						<h2>合规、安全和操作检查：开发方案</h2>
+						<p>这三类检查需要由服务端基于规则、权限、工具调用和审批记录得出结构化结果，再同步到执行情报。界面不能仅凭模型生成的“已合规”文字显示通过。</p>
+						<div class="grid">
+							<div class="card"><h3>合规检查</h3><p>在运行前、规则依赖步骤和最终输出处检查适用规则、授权来源、必需字段和证据引用。显示规则版本、命中项、证据和待核事项。</p></div>
+							<div class="card"><h3>安全检查</h3><p>在读取资料、调用工具和输出结果边界检查主体/租户权限、数据范围、敏感信息、凭据泄露和外部发送目标。权限或策略不可确认时阻断敏感操作。</p></div>
+							<div class="card"><h3>操作是否合规验证</h3><p>将动作分类为只读、内部修改、外部发送或不可逆操作；写入前核对审批证据、二次确认、幂等键和目标系统权限，记录执行回执。</p></div>
+							<div class="card"><h3>状态呈现</h3><p>使用“通过、未通过、待人工复核、未检查、检查中”。无规则或无证据时不得默认为通过；阻断项要说明责任步骤、理由及可采取的下一步。</p></div>
+						</div>
+						<div class="callout warn">当前 Task 已有运行前能力/权限/数据源检查和部分输出引用校验。以上三类统一检查面板与通用业务规则验证属于后续开发范围；在部署版本没有真实检查结果前，不能把截图示意或 AI 文本当作已完成校验。</div>
+					</section>
+
+					<section id="faq">
+						<h2>常见问题</h2>
+						<h3>模板卡片显示“待校验工具”是什么意思？</h3><p>模板定义了所需能力；运行前会结合当前会话检查工具和接口。模板存在不代表外部业务系统已经接通或授权。</p>
+						<h3>知识图谱是否等于已沉淀知识？</h3><p>不等于。图谱可呈现任务节点中的关系结果；只有在明确的授权写入、审批和回执流程完成后，才可称为长期知识库入库。</p>
+						<h3>检查通过后可以直接提交正式业务结果吗？</h3><p>不一定。能力检查只说明运行条件；具体审批、签字、对外通知或业务系统写入仍应依据真实权限和业务流程处理。</p>
+						<h3>手册链接没有打开对应章节怎么办？</h3><p>确认部署包包含 <code>task-user-guide.html</code>，且应用静态资源使用与应用一致的部署前缀；也可从手册目录按场景进入。</p>
+					</section>
+				</article>
+			</div>
+			<footer>lxScope Task 用户手册 · 场景能力及边界以部署环境实际模板版本和服务端检查结果为准。</footer>
+		</main>
+	</body>
+</html>

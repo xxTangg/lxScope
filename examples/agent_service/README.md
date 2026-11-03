@@ -48,6 +48,75 @@ cd examples/agent_service
 python main.py
 ```
 
+### Project-level observability
+
+The service exposes one project-level observability boundary across HTTP
+requests, Agent runs, model calls, tool calls, and configured dependencies.
+Each response carries an `X-Request-ID`; when an OpenTelemetry SDK is active,
+it also carries an `X-Trace-ID`. Authenticated administrators can scrape
+Prometheus-compatible metrics from:
+
+```text
+GET /observability/metrics
+```
+
+The administrator runtime analysis projection is available at:
+
+```text
+GET /admin/observability/overview?days=14
+```
+
+The model, Agent and Tool/MCP cards link to their drill-down projections:
+
+```text
+GET /admin/observability/model?days=14
+GET /admin/observability/agent?days=14
+GET /admin/observability/tool?days=14
+```
+
+It is intentionally project-level: the response combines request volume and
+latency, per-user token usage, model calls, Agent runs, Tool/MCP calls and
+recent failures. Skill analytics remains a separate section of the same
+admin observability module at `/admin/observability/skills`; it is not mixed
+into the project-level overview and is not the owner of the module.
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export the AgentScope trace spans to an
+OTLP/HTTP collector. Leaving it empty keeps the service self-contained while
+still producing local metrics and structured diagnostics.
+
+### Project observability storage
+
+Project-level runtime events are persisted in PostgreSQL when
+`PROJECT_OBSERVABILITY_DATABASE_URL` is configured:
+
+```text
+PROJECT_OBSERVABILITY_DATABASE_URL=postgresql+asyncpg://user:password@host:5432/database
+```
+
+At startup the service creates the application-owned
+`project_observability_events` table and its indexes if they do not exist. The
+table stores bounded dimensions such as users, models, Agents, Tools, timing,
+Token counts, status and correlation IDs. It never stores prompts, messages,
+model output or credentials. Existing deployments may temporarily omit the
+new variable; the service falls back to `SKILL_OBSERVABILITY_DATABASE_URL` so
+the migration does not require changing the current database URL.
+
+### Optional Skill analysis storage
+
+The service can additionally persist Skill-specific event history to
+PostgreSQL without replacing the existing Redis storage. Install the
+`observability-postgres` extra and configure:
+
+```text
+SKILL_OBSERVABILITY_DATABASE_URL=postgresql+asyncpg://user:password@host:5432/database
+```
+
+At startup the service creates the application-owned
+`skill_observability_events` table and its indexes if they do not exist. When
+the variable is empty, the project-level metrics and diagnostics remain
+enabled. The table is only a Skill-specific history store; it does not store
+prompts, Skill Markdown, model output, or credentials.
+
 Launch the Web UI in a separate terminal to experience a chat-style interface:
 
 ```bash

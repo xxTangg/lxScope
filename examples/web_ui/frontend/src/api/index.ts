@@ -3,7 +3,8 @@ export { agentApi } from './agent';
 export { sessionApi, takeFreshlyCreated } from './session';
 export { credentialApi } from './credential';
 export { chatApi } from './chat';
-export { workspaceApi } from './workspace';
+export { managementMcpApi, workspaceApi } from './workspace';
+export type { ActivatePublishedMcpResponse } from './workspace';
 export { hubApi } from './hub';
 export { mcpApi } from './mcp';
 export { skillApi } from './skill';
@@ -13,4 +14,41 @@ export { knowledgeBaseApi } from './knowledgeBase';
 export { channelApi } from './channel';
 export { healthApi } from './health';
 export { authApi } from './auth';
-export type { AuthUser, LoginResponse } from './auth';
+export type {
+	AuthUser,
+	LoginCaptchaChallenge,
+	LoginCaptchaSubmission,
+	LoginResponse,
+} from './auth';
+export { adminApi } from './admin';
+export * from './admin';
+export { publishedApi } from './published';
+export { taskApi } from './task';
+export type {
+	CreateTaskRequest,
+	AgentStepConfig,
+	TaskArtifactConfig,
+	TaskArtifactFormat,
+	TaskArtifactRecord,
+	GenerateTaskRequest,
+	NodeRunRecord,
+	NodeRunStatus,
+	PythonStepConfig,
+	RunStatus,
+	TaskStepConfig,
+	TaskInputQuestion,
+	TaskInputRequest,
+	InputStepConfig,
+	TaskStepType,
+	TaskContext,
+	TaskNode,
+	TaskRecord,
+	TaskRunEvent,
+	TaskRunRecord,
+	TaskRunRequest,
+	TaskStatus,
+	TaskGenerationStatus,
+	TaskToolSchema,
+	ToolStepConfig,
+	UpdateTaskRequest,
+} from './task';

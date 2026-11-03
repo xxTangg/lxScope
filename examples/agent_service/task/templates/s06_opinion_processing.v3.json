@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "template_id": "s06_opinion_processing",
+  "template_version": "3.0.0",
+  "title": "意见整理",
+  "description": "处理用户提供的已识别意见文本，按业务方给出的规则分类并去重，形成待复核汇总；本版本不读取图片或执行 OCR。",
+  "category": "review",
+  "required_capabilities": [
+    "opinion.text_import",
+    "opinion.classify",
+    "document.render"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "project_name",
+      "opinion_records_json",
+      "classification_rules_json"
+    ],
+    "properties": {
+      "project_name": {
+        "type": "string",
+        "description": "项目名称。"
+      },
+      "classification_dimensions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "经确认的分类维度，可选。"
+      },
+      "opinion_records_json": {
+        "type": "string",
+        "description": "用户已识别的意见文本 JSON 数组；Task 不读取图片或调用 OCR。"
+      },
+      "classification_rules_json": {
+        "type": "string",
+        "description": "业务方确认的分类关键词规则 JSON 数组。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "output_requirement": "输出识别文本、分类汇总、低置信或无法识别项和待人工复核清单。",
+  "steps": [
+    {
+      "step_key": "collect_recognized_opinions",
+      "title": "导入已识别意见文本",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请提供用户已识别的意见文本及分类规则；本步骤不读取图片。",
+        "questions": [
+          {
+            "key": "project_name",
+            "label": "项目名称",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "classification_dimensions",
+            "label": "分类维度（如已确定）",
+            "required": false,
+            "options": []
+          },
+          {
+            "key": "opinion_records_json",
+            "label": "已识别意见文本 JSON 数组",
+            "required": true,
+            "options": []
+          },
+          {
+            "key": "classification_rules_json",
+            "label": "分类规则 JSON 数组（类别与关键词）",
+            "required": true,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "获得用户提供的已识别文本和项目上下文。",
+      "failure_handling": "识别文本或分类规则缺失时阻断，不推测意见内容。",
+      "sensitive_information": "只收集分类所需文本，避免记录无关个人信息。"
+    },
+    {
+      "step_key": "recognize_opinion_text",
+      "title": "导入已识别意见文本（不执行 OCR）",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "opinion.text_import",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "assets": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "校验并保留用户提交的识别文本和来源标记；明确未执行 OCR。",
+      "failure_handling": "结构化意见文本无效时阻断，不自动补写或猜字。",
+      "sensitive_information": "不要把图片或识别出的个人信息写入模板文件或日志。"
+    },
+    {
+      "step_key": "classify_opinion_points",
+      "title": "意见分类",
+      "kind": "tool",
+      "required": true,
+      "editable": false,
+      "capability_key": "opinion.classify",
+      "config": {
+        "type": "tool",
+        "arguments": {
+          "opinions": "{{previous_output}}"
+        }
+      },
+      "output_requirement": "按经确认的分类维度返回类别和分类依据。",
+      "failure_handling": "分类规则或工具缺失时保留未分类原始要点，不临时编造正式类别。",
+      "sensitive_information": "分类结果仅包含意见内容和必要来源标识。"
+    },
+    {
+      "step_key": "summarize_opinion_dimensions",
+      "title": "汇总分类统计",
+      "kind": "agent",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "按分类结果汇总意见数量、主要主题和分歧点。数量必须能回溯到原始意见；不把模型归纳当作确定统计。"
+      },
+      "output_requirement": "输出分类汇总、数量来源和无法分类的意见。",
+      "failure_handling": "计数与原始条目不一致时标记异常并停止发布汇总数字。",
+      "sensitive_information": "汇总中不披露无关的提交人身份。"
+    },
+    {
+      "step_key": "review_opinion_summary",
+      "title": "人工复核意见汇总",
+      "kind": "input",
+      "required": true,
+      "editable": true,
+      "capability_key": null,
+      "config": {
+        "type": "input",
+        "reason": "请复核识别文本、分类和统计；此步骤不是审批签发。",
+        "questions": [
+          {
+            "key": "opinion_corrections",
+            "label": "需要更正的意见或分类",
+            "required": false,
+            "options": []
+          }
+        ]
+      },
+      "output_requirement": "记录修改意见并保留未解决项。",
+      "failure_handling": "没有复核意见时保持待复核状态，不自动确认识别内容。",
+      "sensitive_information": "复核意见限于当前项目处理。"
+    },
+    {
+      "step_key": "export_opinion_summary",
+      "title": "生成意见汇总表草稿",
+      "kind": "agent",
+      "required": true,
+      "editable": false,
+      "capability_key": null,
+      "config": {
+        "type": "agent",
+        "prompt": "根据上游确定性分类结果生成 XLSX 友好的 Markdown 汇总。保留未分类、待复核和重复数量；不得声称执行 OCR。输出草稿。"
+      },
+      "output_requirement": "按上游分类结果和数量生成可读汇总表；不改变分类规则结果。",
+      "failure_handling": "分类数据缺失时停止，不生成汇总文件。",
+      "sensitive_information": "导出位置沿用当前 Task 用户权限，不创建公开链接。",
+      "artifact": {
+        "format": "xlsx",
+        "filename": "专家意见汇总表"
+      }
+    }
+  ],
+  "unsupported_capabilities": [
+    {
+      "capability_key": "opinion.image_ocr",
+      "reason": "本版仅处理用户提供的已识别文本，未接入图片读取或 OCR 服务。"
+    }
+  ]
+}

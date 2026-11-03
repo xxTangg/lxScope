@@ -1,0 +1,22 @@
+{
+  "name": "lxscope-sales-console",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20.0.0 <21",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter admin-web dev",
+    "dev:api": "pnpm --filter sales-api dev",
+    "build": "pnpm build:web && pnpm build:api",
+    "build:web": "pnpm --filter admin-web build",
+    "build:api": "pnpm --filter sales-api build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.8.3"
+  }
+}

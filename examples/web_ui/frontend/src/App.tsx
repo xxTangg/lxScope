@@ -23,6 +23,26 @@ import { useAuth } from '@/hooks/useAuth';
 import { useTranslation } from '@/i18n/useI18n';
 import { queryClient } from '@/lib/query-client';
 import { AccountPage } from '@/pages/account';
+import { AdminAuditPage } from '@/pages/admin/audit';
+import { AdminObservabilityPage } from '@/pages/admin/analytics';
+import { AdminObservabilityFailuresPage } from '@/pages/admin/observability-failures';
+import { AdminAgentDetailPage } from '@/pages/admin/agent-detail';
+import { AdminObservabilityDetailPage } from '@/pages/admin/observability-detail';
+import { AdminObservabilityFocusPage } from '@/pages/admin/observability-focus';
+import { AdminSkillAnalyticsPage } from '@/pages/admin/skill-analytics';
+import { AdminTraceDetailPage } from '@/pages/admin/trace-detail';
+import { AdminToolObservabilityPage } from '@/pages/admin/tool-analysis';
+import { AdminLayout } from '@/pages/admin/layout';
+import { AdminMcpPage } from '@/pages/admin/mcp';
+import { AdminMembersPage } from '@/pages/admin/members';
+import { AdminModelObservabilityPage } from '@/pages/admin/model-analysis';
+import { ModelsCredentialsPage } from '@/pages/models-credentials';
+import { AdminOverviewPage } from '@/pages/admin/overview';
+import { AdminPolicyPage } from '@/pages/admin/policy';
+import { AdminQuotaPage } from '@/pages/admin/quota';
+import { AdminSalesHubPage } from '@/pages/admin/sales-hub';
+import { AdminSkillsPage } from '@/pages/admin/skills';
+import { AdminUpgradesPage } from '@/pages/admin/upgrades';
 import { ChannelPage } from '@/pages/channel';
 import { ChatPage } from '@/pages/chat';
 import { CredentialPage } from '@/pages/credential';
@@ -30,6 +50,7 @@ import { KnowledgePage } from '@/pages/knowledge';
 import { LoginPage } from '@/pages/login';
 import { SchedulePage } from '@/pages/schedule';
 import { SetupPage } from '@/pages/setup';
+import { TaskPage } from '@/pages/task';
 
 function SetupPageRoute() {
 	const navigate = useNavigate();
@@ -60,7 +81,23 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 			/>
 		);
 	}
+	if (status === 'selecting_tenant') {
+		return <Navigate to="/login" replace />;
+	}
 	return children;
+}
+
+function LogtoCallbackPage() {
+	return (
+		<div className="flex h-screen items-center justify-center bg-canvas">
+			<Loader2 className="size-5 animate-spin text-muted-foreground" />
+		</div>
+	);
+}
+
+function AdminOnlyRoute({ children }: { children: React.ReactNode }) {
+	const { user } = useAuth();
+	return user?.role === 'admin' ? children : <Navigate to="/chat" replace />;
 }
 
 const router = createBrowserRouter([
@@ -85,8 +122,24 @@ const router = createBrowserRouter([
 						element: <ChatPage />,
 					},
 					{ path: '/schedule', element: <SchedulePage /> },
+					{ path: '/task/:taskId?', element: <TaskPage /> },
 					{ path: '/channel', element: <ChannelPage /> },
-					{ path: '/credential', element: <CredentialPage /> },
+					{
+						path: '/credential',
+						element: (
+							<AdminOnlyRoute>
+								<ModelsCredentialsPage />
+							</AdminOnlyRoute>
+						),
+					},
+					{
+						path: '/credential/config',
+						element: (
+							<AdminOnlyRoute>
+								<CredentialPage />
+							</AdminOnlyRoute>
+						),
+					},
 					{ path: '/mcp', element: <MCPHubPage /> },
 					{ path: '/mcp/:hubId', element: <MCPHubPage /> },
 					{ path: '/skill', element: <SkillHubPage /> },
@@ -94,6 +147,44 @@ const router = createBrowserRouter([
 					{ path: '/knowledge', element: <KnowledgePage /> },
 					{ path: '/knowledge/:kbId', element: <KnowledgePage /> },
 					{ path: '/account', element: <AccountPage /> },
+					// Legacy admin-center addresses for the extracted
+					// models & credentials pages — keep old links working.
+					{ path: '/admin/models/config', element: <Navigate to="/credential/config" replace /> },
+					{ path: '/admin/models', element: <Navigate to="/credential" replace /> },
+					{
+						path: '/admin',
+						element: (
+							<AdminOnlyRoute>
+								<AdminLayout />
+							</AdminOnlyRoute>
+						),
+						children: [
+							{ index: true, element: <Navigate to="overview" replace /> },
+							{ path: 'overview', element: <AdminOverviewPage /> },
+							{ path: 'observability', element: <AdminObservabilityPage /> },
+							{ path: 'observability/failures', element: <AdminObservabilityFailuresPage /> },
+							{ path: 'observability/skills', element: <AdminSkillAnalyticsPage /> },
+							{ path: 'observability/requests', element: <AdminObservabilityFocusPage /> },
+							{ path: 'observability/tokens', element: <AdminObservabilityFocusPage /> },
+							{ path: 'observability/users', element: <AdminObservabilityFocusPage /> },
+							{ path: 'observability/agent/:agentName', element: <AdminAgentDetailPage /> },
+							{ path: 'observability/trace/:traceId', element: <AdminTraceDetailPage /> },
+							{ path: 'observability/model', element: <AdminModelObservabilityPage /> },
+							{ path: 'observability/model/:modelName', element: <AdminModelObservabilityPage /> },
+							{ path: 'observability/tool', element: <AdminToolObservabilityPage /> },
+							{ path: 'observability/tool/:toolName', element: <AdminToolObservabilityPage /> },
+							{ path: 'observability/:component', element: <AdminObservabilityDetailPage /> },
+							{ path: 'analytics/skills', element: <AdminSkillAnalyticsPage /> },
+							{ path: 'members', element: <AdminMembersPage /> },
+							{ path: 'quota', element: <AdminQuotaPage /> },
+							{ path: 'skills', element: <AdminSkillsPage /> },
+							{ path: 'mcp', element: <AdminMcpPage /> },
+							{ path: 'policy', element: <AdminPolicyPage /> },
+							{ path: 'audit', element: <AdminAuditPage /> },
+							{ path: 'upgrades', element: <AdminUpgradesPage /> },
+							{ path: 'sales-hub', element: <AdminSalesHubPage /> },
+						],
+					},
 				],
 			},
 		],
@@ -108,6 +199,7 @@ const router = createBrowserRouter([
 		errorElement: <RouteError />,
 	},
 	{ path: '/login', element: <LoginPage />, errorElement: <RouteError /> },
+	{ path: '/auth/callback', element: <LogtoCallbackPage />, errorElement: <RouteError /> },
 ]);
 
 function App() {
